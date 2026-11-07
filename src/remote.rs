@@ -56,10 +56,12 @@ pub enum RemoteEvent {
     },
     ContactLoaded {
         request_id: u64,
+        id: String,
         result: Result<ApiContactDetail, String>,
     },
     ContactSaved {
         request_id: u64,
+        id: String,
         result: Result<ApiContactDetail, String>,
     },
     ContactCreated {
@@ -198,7 +200,11 @@ fn run(ctx: egui::Context, commands: Receiver<RemoteCommand>, events: Sender<Rem
                 let result = ApiClient::new(&base_url)
                     .and_then(|client| client.get_contact(&token, &id))
                     .map_err(|err| err.to_string());
-                let _ = events.send(RemoteEvent::ContactLoaded { request_id, result });
+                let _ = events.send(RemoteEvent::ContactLoaded {
+                    request_id,
+                    id,
+                    result,
+                });
             }
             RemoteCommand::SaveContact {
                 request_id,
@@ -210,7 +216,11 @@ fn run(ctx: egui::Context, commands: Receiver<RemoteCommand>, events: Sender<Rem
                 let result = ApiClient::new(&base_url)
                     .and_then(|client| client.update_contact(&token, &id, &payload))
                     .map_err(|err| err.to_string());
-                let _ = events.send(RemoteEvent::ContactSaved { request_id, result });
+                let _ = events.send(RemoteEvent::ContactSaved {
+                    request_id,
+                    id,
+                    result,
+                });
             }
             RemoteCommand::CreateContact {
                 request_id,

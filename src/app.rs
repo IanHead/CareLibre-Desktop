@@ -959,11 +959,13 @@ impl CareLibreApp {
                         self.cache_counts = counts;
                     }
                 }
-                RemoteEvent::ContactLoaded { request_id, result } => {
-                    if let Some((_, window)) = self
-                        .contact_windows
-                        .iter_mut()
-                        .find(|(_, window)| window.request_id == Some(request_id))
+                RemoteEvent::ContactLoaded {
+                    request_id,
+                    id,
+                    result,
+                } => {
+                    if let Some(window) = self.contact_windows.get_mut(&id)
+                        && window.request_id == Some(request_id)
                     {
                         window.loading = false;
                         match result {
@@ -972,15 +974,18 @@ impl CareLibreApp {
                         }
                     }
                 }
-                RemoteEvent::ContactSaved { request_id, result } => {
-                    let contact_id = self
-                        .contact_windows
-                        .iter()
-                        .find(|(_, window)| window.request_id == Some(request_id))
-                        .map(|(id, _)| id.clone());
-                    let Some(contact_id) = contact_id else {
+                RemoteEvent::ContactSaved {
+                    request_id,
+                    id,
+                    result,
+                } => {
+                    let Some(window) = self.contact_windows.get_mut(&id) else {
                         continue;
                     };
+                    if window.request_id != Some(request_id) {
+                        continue;
+                    }
+                    let contact_id = id;
                     match result {
                         Ok(_) => {
                             self.close_contact_window(&contact_id);
