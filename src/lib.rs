@@ -5,8 +5,10 @@
 
 pub mod api;
 pub mod app;
+pub mod chrome;
 pub mod config;
 pub mod contact;
+pub mod credentials;
 pub mod intake;
 pub mod pages;
 pub mod perf;

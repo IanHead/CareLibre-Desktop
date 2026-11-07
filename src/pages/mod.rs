@@ -26,6 +26,8 @@ pub enum Action {
         password: String,
     },
     Logout,
+    SetClientSideDecorations(bool),
+    SetRememberLogin(bool),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

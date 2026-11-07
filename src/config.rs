@@ -10,12 +10,21 @@ use crate::api::{DEFAULT_BASE_URL, normalize_base_url};
 #[serde(default)]
 pub struct Config {
     pub server_url: String,
+    #[serde(default)]
+    pub client_side_decorations: bool,
+    #[serde(default)]
+    pub remember_login: bool,
+    #[serde(default)]
+    pub remembered_email: Option<String>,
 }
 
 impl Default for Config {
     fn default() -> Self {
         Self {
             server_url: DEFAULT_BASE_URL.to_owned(),
+            client_side_decorations: false,
+            remember_login: false,
+            remembered_email: None,
         }
     }
 }

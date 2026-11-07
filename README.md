@@ -23,6 +23,8 @@ open-source care management platform for disability and aged care providers.
 
 ![CareLibre contact editor with custom fields](docs/contact-editor.png)
 
+![CareLibre client-side window chrome](docs/client-side.png)
+
 ## Design principles
 
 - **Performance is the feature.** The desktop client is designed to be as fast as
@@ -31,14 +33,15 @@ open-source care management platform for disability and aged care providers.
   fetched directly from the server today; the local-first cache and delta-sync plan for
   large rosters is in [`docs/performance-architecture.md`](docs/performance-architecture.md).
 - **Native, not a web page in a trench coat.** Rust, [egui](https://github.com/emilk/egui)
-  and wgpu. No Electron, no embedded web view, no JavaScript.
+  and wgpu. No Electron, no embedded web view, no JavaScript. Native OS window
+  decorations are the default; a client-side title bar can be enabled in Settings.
 - **Cross-platform.** Windows, macOS and Linux from one codebase.
 - **GPU first, CPU fallback.** wgpu selects Vulkan, Metal, DX12 or OpenGL at runtime and
   can fall back to software adapters (for example lavapipe or llvmpipe) on machines
   without a usable GPU.
-- **Neat by default, multitasking on demand.** Contact records open as centred modals for
-  simplicity, with a **Pop out** button that turns the same form into an independent native
-  OS window that can be moved, resized and kept open alongside the home screen.
+- **Neat by default, multitasking on demand.** Contact records open as centred modals and
+  every wizard-style screen has a **Pop out** button. Either can become an independent
+  native OS window that can be moved, resized and kept open alongside the home screen.
 - **Open source, self-hostable.** Community Edition is free forever. Business and
   Enterprise editions add support, consulting and managed deployment.
 
@@ -84,11 +87,16 @@ Open **Settings** in the sidebar to:
 - check liveness and database readiness (`/healthz` and `/readyz`)
 - sign in, or create the first organisation with an owner account
 - sign out and inspect the active organisation and edition
+- choose native or client-side window decorations
+- remember your sign-in securely on this device
 
 The connection is checked every 15 seconds and the status is shown in the status bar.
 Signing in is required for all contact data and intake completion: the desktop no longer
-uses mock contacts. Access tokens are refreshed automatically; the refresh token is kept in
-memory only for now. Persisting it in the OS keychain is on the roadmap.
+uses mock contacts. Access tokens are refreshed automatically. Enable **Remember me on this device** to
+persist the rotating refresh token: it is stored in the OS keychain (Windows Credential
+Manager, macOS Keychain or Secret Service) or, when no keychain is available, in a local
+vault encrypted with a machine-bound key. Passwords are never stored. Signing out removes
+the saved token.
 
 For local development, the server repository ships a demo seed (Blue Dreams Care) with
 1,700+ contacts and custom fields:
@@ -120,7 +128,8 @@ The **Intake** button in the top bar opens a scenario picker for:
 - **Other contact intake** — coordinators, family, GPs and other support-network contacts.
 
 Wizards save drafts automatically to the local SQLite cache, can be closed and resumed from
-the picker, and create the contact on the server when completed. Core fields are sent as
+the picker, and create the contact on the server when completed. Use **Pop out** at the top
+right to work on an intake in its own native window; **Dock** brings it back to the page. Core fields are sent as
 contact columns; the rest of the intake data is stored in the contact's server-side
 `details` JSON. Completed records appear immediately in the server-backed Contacts list.
 
@@ -143,6 +152,20 @@ definition from the server. Nothing is hardcoded in the UI:
   appears automatically on the next contact open.
 - Profile JSON from intake is rendered as editable fields alongside the stock record.
 - Saving sends a `PATCH /api/v1/contacts/{id}` request and refreshes the server-backed list.
+
+## Window decorations and sign-in
+
+CareLibre uses the operating system's native window decorations by default. In
+**Settings → Application**, enable **Use client-side window decorations** for a custom
+title bar with drag, double-click maximise, minimise/maximise/close and edge resizing. The
+chrome adapts its button placement to Windows/Linux (right) and macOS (traffic lights left).
+The same setting applies to popped-out contact and intake windows. Changing it takes effect
+immediately and is persisted.
+
+**Remember me on this device** keeps the refresh token across launches. At startup the
+desktop exchanges it for a fresh access token and restores the session before loading
+contacts. The token is encrypted at rest through the OS credential store, with an
+encrypted local-vault fallback for minimal environments. Passwords are never saved.
 
 ## Server data and performance
 
@@ -186,6 +209,8 @@ cargo run --example screenshot -- docs/contact-editor.png contacts --live --cont
 | `src/server.rs` | Connection state and the auth/health worker |
 | `src/remote.rs` | Background contact API worker |
 | `src/config.rs` | Persisted desktop preferences |
+| `src/credentials.rs` | OS keychain / encrypted-vault refresh-token storage |
+| `src/chrome.rs` | Optional client-side window title bar and resize handles |
 | `src/contact.rs` | Full contact, custom-field and update models |
 | `src/intake.rs` | Intake draft model and shared types |
 | `src/store/` | Local SQLite store for intake drafts and development tooling |
@@ -208,7 +233,9 @@ The desktop client tracks the wider CareLibre requirements:
 - [x] PostgreSQL-backed CareLibre server (via REST API)
 - [x] Server-backed contacts, background API worker and virtualised lists
 - [x] Guided intake wizards that create server contacts
-- [x] Modal contact editor with optional native pop-out windows
+- [x] Modal contact editor and wizard screens with optional native pop-out windows
+- [x] Native window decorations by default with an optional client-side title bar
+- [x] Encrypted remembered sign-in using the OS keychain or a local vault
 - [x] Contact editing with server-stored custom-field metadata
 - [x] Performance HUD
 - [ ] Delta sync, optimistic local writes and offline cache

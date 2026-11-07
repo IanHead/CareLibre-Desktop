@@ -12,9 +12,10 @@ use eframe::egui::{
 };
 
 use crate::{
-    api,
+    api, chrome,
     config::Config,
     contact::{ApiContactDetail, ApiContactWrite, kind_from_role, row_from_api},
+    credentials,
     intake::IntakeKind,
     pages::{
         self, Action, Page,
@@ -51,6 +52,7 @@ pub struct CareLibreApp {
     store_path: String,
     cache_counts: ContactCounts,
     cache_shifts: Option<usize>,
+    restoring_session: bool,
     perf: PerfHud,
 }
 
@@ -73,7 +75,11 @@ impl CareLibreApp {
     pub fn new() -> Self {
         let config = Config::load();
         let server = ServerState::new(config.server_url.clone());
-        let settings = SettingsForm::new(&config.server_url);
+        let settings = SettingsForm::new(
+            &config.server_url,
+            config.client_side_decorations,
+            config.remember_login,
+        );
 
         Self {
             page: Page::Home,
@@ -96,6 +102,7 @@ impl CareLibreApp {
             store_path: String::new(),
             cache_counts: ContactCounts::default(),
             cache_shifts: None,
+            restoring_session: false,
             perf: PerfHud::new(),
         }
     }
@@ -104,7 +111,76 @@ impl CareLibreApp {
     pub fn with_server(ctx: &egui::Context) -> Self {
         let mut app = Self::new();
         app.connect(ctx);
+        app.try_restore_session();
         app
+    }
+
+    fn try_restore_session(&mut self) {
+        if !self.config.remember_login {
+            return;
+        }
+        let Some(email) = self.config.remembered_email.clone() else {
+            return;
+        };
+
+        match credentials::load(&self.config.server_url, &email) {
+            Ok(Some(token)) => {
+                if let Some(runtime) = &self.runtime {
+                    runtime.refresh(token);
+                    self.server.refresh_in_flight = true;
+                    self.restoring_session = true;
+                }
+            }
+            Ok(None) => {
+                self.config.remembered_email = None;
+                let _ = self.config.save();
+            }
+            Err(error) => {
+                self.settings.error = Some(format!("Could not read the saved login: {error}"));
+            }
+        }
+    }
+
+    fn remember_current_session(&mut self) -> Result<(), String> {
+        let Some(session) = &self.server.session else {
+            return Ok(());
+        };
+        let email = session.auth.user.email.clone();
+        let token = session.auth.refresh_token.clone();
+        credentials::save(&self.config.server_url, &email, &token)?;
+        if self.config.remembered_email.as_deref() != Some(email.as_str()) {
+            self.config.remembered_email = Some(email);
+            self.config.save()?;
+        }
+        Ok(())
+    }
+
+    fn forget_saved_login(&mut self) {
+        if let Some(email) = self.config.remembered_email.clone() {
+            let _ = credentials::delete(&self.config.server_url, &email);
+        }
+        self.config.remembered_email = None;
+        let _ = self.config.save();
+    }
+
+    fn apply_window_decorations(&self, ctx: &egui::Context, client_side: bool) {
+        let decorations = !client_side;
+        ctx.send_viewport_cmd(egui::ViewportCommand::Decorations(decorations));
+        for (id, window) in &self.contact_windows {
+            if window.popped_out {
+                ctx.send_viewport_cmd_to(
+                    contact_viewport_id(id),
+                    egui::ViewportCommand::Decorations(decorations),
+                );
+            }
+        }
+        if self.intake.popped_out {
+            ctx.send_viewport_cmd_to(
+                intake_viewport_id(),
+                egui::ViewportCommand::Decorations(decorations),
+            );
+        }
+        ctx.request_repaint();
     }
 
     /// Start the server worker if it is not already running.
@@ -155,6 +231,12 @@ impl CareLibreApp {
 
     pub fn signed_in(&self) -> bool {
         self.server.session.is_some()
+    }
+
+    /// Change the decoration mode for previews/tests without persisting it.
+    pub fn set_client_side_decorations(&mut self, enabled: bool) {
+        self.config.client_side_decorations = enabled;
+        self.settings.client_side_decorations = enabled;
     }
 
     /// Current server connection state (for previews and integration checks).
@@ -211,6 +293,17 @@ impl CareLibreApp {
         self.ensure_intake_list();
         self.refresh_session_if_needed();
 
+        if self.config.client_side_decorations {
+            egui::Panel::top("app_window_chrome")
+                .exact_size(chrome::HEIGHT)
+                .show_separator_line(false)
+                .frame(Frame::new().fill(theme::SIDEBAR).inner_margin(Margin::ZERO))
+                .show(ui, |ui| {
+                    let ctx = ui.ctx().clone();
+                    chrome::title_bar(ui, &ctx, "CareLibre");
+                });
+        }
+
         self.top_bar(ui);
         self.sidebar(ui);
         self.status_bar(ui);
@@ -236,6 +329,11 @@ impl CareLibreApp {
         }
 
         self.render_contact_windows(ui.ctx());
+        self.render_intake_window(ui.ctx());
+
+        if self.config.client_side_decorations {
+            chrome::resize_handles(ui.ctx());
+        }
 
         let perf_state = match self.page {
             Page::Workers => &self.contacts_workers,
@@ -686,11 +784,24 @@ impl CareLibreApp {
             IntakeAction::Edited => {}
             IntakeAction::SaveNow => self.save_intake_now(),
             IntakeAction::BackToPicker => {
+                let was_popped = self.intake.popped_out;
                 if self.intake.dirty {
                     self.save_intake_now();
                 }
                 self.intake.open_picker();
                 self.intake.list_requested = false;
+                if was_popped && let Some(ctx) = &self.app_ctx {
+                    ctx.send_viewport_cmd_to(intake_viewport_id(), egui::ViewportCommand::Close);
+                }
+            }
+            IntakeAction::PopOut => {
+                self.intake.popped_out = true;
+            }
+            IntakeAction::Dock => {
+                self.intake.popped_out = false;
+                if let Some(ctx) = &self.app_ctx {
+                    ctx.send_viewport_cmd_to(intake_viewport_id(), egui::ViewportCommand::Close);
+                }
             }
             IntakeAction::Complete => {
                 let payload = self.intake.draft.as_ref().map(intake_write);
@@ -864,11 +975,13 @@ impl CareLibreApp {
             let builder = egui::ViewportBuilder::default()
                 .with_title(window.title())
                 .with_app_id("carelibre-contact")
+                .with_decorations(!self.config.client_side_decorations)
                 .with_inner_size([880.0, 780.0])
                 .with_min_inner_size([640.0, 520.0]);
 
+            let client_side = self.config.client_side_decorations;
             let action = ctx.show_viewport_immediate(viewport_id, builder, |ui, _| {
-                pages::contact_editor::show_viewport(ui, window)
+                pages::contact_editor::show_viewport(ui, window, client_side)
             });
 
             if window.close_requested {
@@ -913,6 +1026,46 @@ impl CareLibreApp {
 
         self.contact_windows
             .retain(|_, window| !window.close_requested);
+    }
+
+    fn render_intake_window(&mut self, ctx: &egui::Context) {
+        let visible = self.intake.view == IntakeView::Wizard && self.intake.popped_out;
+
+        if visible {
+            let title = self
+                .intake
+                .draft
+                .as_ref()
+                .map(|draft| format!("Intake — {}", draft.display_name()))
+                .unwrap_or_else(|| "Intake — CareLibre".to_owned());
+            let builder = egui::ViewportBuilder::default()
+                .with_title(title)
+                .with_app_id("carelibre-intake")
+                .with_decorations(!self.config.client_side_decorations)
+                .with_inner_size([1000.0, 820.0])
+                .with_min_inner_size([720.0, 560.0]);
+
+            let client_side = self.config.client_side_decorations;
+            let action = ctx.show_viewport_immediate(intake_viewport_id(), builder, |ui, _| {
+                pages::intake::show_wizard_viewport(ui, &mut self.intake, client_side)
+            });
+
+            if let Some(action) = action {
+                self.handle_intake_action(ctx, action);
+            }
+
+            if !self.intake.popped_out || self.intake.view != IntakeView::Wizard {
+                ctx.send_viewport_cmd_to(intake_viewport_id(), egui::ViewportCommand::Close);
+            }
+        } else if self.intake.popped_out {
+            self.intake.popped_out = false;
+            ctx.send_viewport_cmd_to(intake_viewport_id(), egui::ViewportCommand::Close);
+        }
+    }
+
+    /// True while the intake wizard is detached into a native window.
+    pub fn intake_popped_out(&self) -> bool {
+        self.intake.popped_out
     }
 
     /// Open the first loaded contact. Used by screenshot previews.
@@ -1084,6 +1237,12 @@ impl CareLibreApp {
                 self.intake.view = IntakeView::Completed;
                 self.intake.dirty = false;
                 self.intake.error = None;
+                if self.intake.popped_out
+                    && let Some(ctx) = &self.app_ctx
+                {
+                    ctx.send_viewport_cmd_to(intake_viewport_id(), egui::ViewportCommand::Close);
+                }
+                self.intake.popped_out = false;
                 self.refresh_contact_lists();
                 self.send_contacts_query(ContactFilter::All, false);
 
@@ -1136,7 +1295,16 @@ impl CareLibreApp {
                             auth,
                         });
                         self.server.refresh_in_flight = false;
+                        self.restoring_session = false;
                         self.settings.on_signed_in();
+                        if self.config.remember_login {
+                            if let Err(error) = self.remember_current_session() {
+                                self.settings.error =
+                                    Some(format!("Could not save the login securely: {error}"));
+                            }
+                        } else if self.config.remembered_email.is_some() {
+                            self.forget_saved_login();
+                        }
                         self.refresh_contact_lists();
                         self.send_contacts_query(ContactFilter::All, false);
                         self.notify(ctx, format!("Signed in to {organisation}."));
@@ -1152,21 +1320,40 @@ impl CareLibreApp {
                     return;
                 }
                 self.server.refresh_in_flight = false;
+                let was_restoring = self.restoring_session;
+                self.restoring_session = false;
                 match result {
                     Ok(auth) => {
+                        let organisation = auth.organisation.name.clone();
                         self.server.session = Some(crate::server::Session {
                             expires_at: Instant::now()
                                 + Duration::from_secs(auth.expires_in.max(60)),
                             auth,
                         });
+                        if self.config.remember_login
+                            && let Err(error) = self.remember_current_session()
+                        {
+                            self.settings.error =
+                                Some(format!("Could not refresh the saved login: {error}"));
+                        }
+                        if was_restoring {
+                            self.settings.on_signed_in();
+                            self.refresh_contact_lists();
+                            self.send_contacts_query(ContactFilter::All, false);
+                            self.notify(ctx, format!("Welcome back to {organisation}."));
+                        }
                     }
                     Err(_) => {
                         self.server.session = None;
+                        self.forget_saved_login();
                         self.close_all_contact_windows();
                         self.refresh_contact_lists();
                         self.cache_counts = ContactCounts::default();
-                        self.settings.error =
-                            Some("Your session expired. Please sign in again.".to_owned());
+                        self.settings.error = Some(if was_restoring {
+                            "Saved login expired. Please sign in again.".to_owned()
+                        } else {
+                            "Your session expired. Please sign in again.".to_owned()
+                        });
                         self.notify(ctx, "Session expired. Please sign in again.");
                     }
                 }
@@ -1247,12 +1434,48 @@ impl CareLibreApp {
                         Some("Start the desktop app to connect to a server.".to_owned());
                 }
             }
+            Action::SetClientSideDecorations(enabled) => {
+                self.config.client_side_decorations = enabled;
+                match self.config.save() {
+                    Ok(()) => {
+                        self.apply_window_decorations(ctx, enabled);
+                        self.settings.error = None;
+                        self.settings.notice = Some(if enabled {
+                            "Client-side window decorations enabled.".to_owned()
+                        } else {
+                            "Native window decorations enabled.".to_owned()
+                        });
+                    }
+                    Err(error) => self.settings.error = Some(error),
+                }
+            }
+            Action::SetRememberLogin(enabled) => {
+                self.config.remember_login = enabled;
+                if enabled {
+                    if let Err(error) = self.remember_current_session() {
+                        self.settings.error =
+                            Some(format!("Could not save the login securely: {error}"));
+                    } else {
+                        self.settings.error = None;
+                        self.settings.notice =
+                            Some("Login will be remembered on this device.".to_owned());
+                    }
+                } else {
+                    self.forget_saved_login();
+                    self.settings.error = None;
+                    self.settings.notice = Some("Saved login removed.".to_owned());
+                }
+                if let Err(error) = self.config.save() {
+                    self.settings.error = Some(error);
+                }
+            }
             Action::Logout => {
                 if let Some(session) = self.server.session.take() {
                     if let Some(runtime) = &self.runtime {
                         runtime.logout(session.auth.refresh_token.clone());
                     }
                     self.server.refresh_in_flight = false;
+                    self.forget_saved_login();
                     self.settings.on_signed_out();
                     self.settings.notice = None;
                     self.notify(ctx, "Signed out.");
@@ -1271,6 +1494,9 @@ impl CareLibreApp {
         };
 
         let server_changed = self.server.base_url != url;
+        if server_changed {
+            self.forget_saved_login();
+        }
         if server_changed && self.server.session.is_some() {
             self.server.session = None;
             self.server.refresh_in_flight = false;
@@ -1882,6 +2108,10 @@ fn intake_write(draft: &crate::intake::IntakeDraft) -> ApiContactWrite {
 fn optional_str(value: &str) -> Option<String> {
     let value = value.trim();
     (!value.is_empty()).then(|| value.to_owned())
+}
+
+fn intake_viewport_id() -> egui::ViewportId {
+    egui::ViewportId::from_hash_of("carelibre-intake")
 }
 
 fn contact_viewport_id(id: &str) -> egui::ViewportId {

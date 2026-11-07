@@ -158,3 +158,47 @@ fn server_contacts_load_and_editor_opens() {
 fn app_contacts_loaded(harness: &Harness<'_, carelibre_desktop::CareLibreApp>) -> usize {
     harness.state().contacts_loaded()
 }
+
+#[test]
+#[ignore = "requires a running CareLibre server"]
+fn intake_wizard_pops_out_and_docks() {
+    use carelibre_desktop::intake::IntakeKind;
+    use carelibre_desktop::pages::Page;
+
+    let mut app = carelibre_desktop::CareLibreApp::with_server(&egui::Context::default());
+    app.sign_in("owner@bluedreams.example", "BlueDreamsCare!2026");
+    app.set_page(Page::Intake);
+    app.start_intake(IntakeKind::Client);
+
+    let mut harness = Harness::builder()
+        .with_size(egui::vec2(1280.0, 800.0))
+        .with_context_setup(theme::apply)
+        .build_ui_state(
+            |ui, app: &mut carelibre_desktop::CareLibreApp| app.show(ui),
+            app,
+        );
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !(harness.state().signed_in() && harness.state().cache_ready()) {
+        if Instant::now() >= deadline {
+            panic!("timed out preparing the intake wizard");
+        }
+        harness.run();
+        std::thread::sleep(Duration::from_millis(25));
+    }
+
+    harness.run();
+    harness.get_by_label("Pop out").click();
+    harness.run_steps(2);
+    assert!(
+        harness.state().intake_popped_out(),
+        "the intake wizard should detach into a native window"
+    );
+
+    harness.get_by_label("Dock intake").click_accesskit();
+    harness.run_steps(2);
+    assert!(
+        !harness.state().intake_popped_out(),
+        "the intake wizard should dock back into the page"
+    );
+}

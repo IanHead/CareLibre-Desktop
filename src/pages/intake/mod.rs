@@ -40,6 +40,7 @@ pub struct IntakeState {
     pub load_request: Option<u64>,
     pub discard_request: Option<u64>,
     pub create_request: Option<u64>,
+    pub popped_out: bool,
 }
 
 impl IntakeState {
@@ -62,6 +63,7 @@ impl IntakeState {
             load_request: None,
             discard_request: None,
             create_request: None,
+            popped_out: false,
         }
     }
 
@@ -77,6 +79,7 @@ impl IntakeState {
         self.step_error = false;
         self.list_requested = false;
         self.loading_draft = false;
+        self.popped_out = false;
     }
 
     pub fn start(&mut self, kind: IntakeKind) {
@@ -88,6 +91,7 @@ impl IntakeState {
         self.saving = false;
         self.dirty = true;
         self.save_due = Some(Instant::now());
+        self.popped_out = false;
     }
 
     pub fn mark_edited(&mut self) {
@@ -112,6 +116,8 @@ pub enum IntakeAction {
     Complete,
     ViewContact { page: Page, name: String },
     GoToSettings,
+    PopOut,
+    Dock,
 }
 
 pub fn show(
@@ -145,6 +151,33 @@ pub fn show(
             ui.add_space(10.0);
             if ui.add(theme::primary_button("Go to Settings")).clicked() {
                 action = Some(IntakeAction::GoToSettings);
+            }
+        });
+        return action;
+    }
+
+    if state.view == IntakeView::Wizard && state.popped_out {
+        header(
+            ui,
+            "Intake",
+            "This onboarding workflow is open in its own window.",
+        );
+        ui.add_space(16.0);
+        let mut action = None;
+        theme::card().show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.label(
+                RichText::new("Intake is open in a separate window").font(theme::strong_font(16.0)),
+            );
+            ui.add_space(4.0);
+            ui.label(
+                RichText::new("Continue the wizard in the native window, or bring it back here.")
+                    .color(theme::MUTED)
+                    .size(12.0),
+            );
+            ui.add_space(10.0);
+            if ui.add(theme::primary_button("Dock intake")).clicked() {
+                action = Some(IntakeAction::Dock);
             }
         });
         return action;
@@ -356,6 +389,58 @@ fn scenario_card(ui: &mut Ui, kind: IntakeKind) -> egui::Response {
 
 // Wizard -------------------------------------------------------------------
 
+pub fn show_wizard_viewport(
+    ui: &mut Ui,
+    state: &mut IntakeState,
+    client_side_decorations: bool,
+) -> Option<IntakeAction> {
+    if state.view != IntakeView::Wizard {
+        return Some(IntakeAction::Dock);
+    }
+    if ui.ctx().input(|i| i.viewport().close_requested()) {
+        return Some(IntakeAction::Dock);
+    }
+
+    if client_side_decorations {
+        let title = state
+            .draft
+            .as_ref()
+            .map(|draft| format!("Intake — {}", draft.display_name()))
+            .unwrap_or_else(|| "Intake — CareLibre".to_owned());
+        let ctx = ui.ctx().clone();
+        egui::Panel::top("intake-window-chrome")
+            .exact_size(crate::chrome::HEIGHT)
+            .show_separator_line(false)
+            .frame(
+                egui::Frame::new()
+                    .fill(theme::SIDEBAR)
+                    .inner_margin(Margin::ZERO),
+            )
+            .show(ui, |ui| crate::chrome::title_bar(ui, &ctx, &title));
+    }
+
+    let mut action = None;
+    egui::CentralPanel::default()
+        .frame(
+            egui::Frame::new()
+                .fill(theme::BG)
+                .inner_margin(Margin::same(16)),
+        )
+        .show(ui, |ui| {
+            egui::ScrollArea::vertical()
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    action = wizard(ui, state, true);
+                });
+        });
+
+    if client_side_decorations {
+        crate::chrome::resize_handles(ui.ctx());
+    }
+
+    action
+}
+
 fn wizard(ui: &mut Ui, state: &mut IntakeState, store_ready: bool) -> Option<IntakeAction> {
     if !store_ready {
         message_card(
@@ -407,6 +492,21 @@ fn wizard(ui: &mut Ui, state: &mut IntakeState, store_ready: bool) -> Option<Int
         ui.label(RichText::new(draft.display_name()).font(theme::strong_font(22.0)));
         theme::pill(ui, draft.kind.short_label(), kind_colour(draft.kind));
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            let (label, next) = if state.popped_out {
+                ("Dock", IntakeAction::Dock)
+            } else {
+                ("Pop out", IntakeAction::PopOut)
+            };
+            if ui
+                .add(
+                    egui::Button::new(RichText::new(label).color(theme::ACCENT).size(11.0))
+                        .frame(false),
+                )
+                .clicked()
+            {
+                action = Some(next);
+            }
+
             let (text, colour) = if state.saving {
                 ("Saving…".to_owned(), theme::WARNING)
             } else if state.dirty {

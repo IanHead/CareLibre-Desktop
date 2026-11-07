@@ -29,10 +29,12 @@ pub struct SettingsForm {
     pub new_slug: String,
     pub error: Option<String>,
     pub notice: Option<String>,
+    pub client_side_decorations: bool,
+    pub remember_login: bool,
 }
 
 impl SettingsForm {
-    pub fn new(base_url: &str) -> Self {
+    pub fn new(base_url: &str, client_side_decorations: bool, remember_login: bool) -> Self {
         Self {
             base_url: base_url.to_owned(),
             mode: AuthMode::Login,
@@ -44,6 +46,8 @@ impl SettingsForm {
             new_slug: String::new(),
             error: None,
             notice: None,
+            client_side_decorations,
+            remember_login,
         }
     }
 
@@ -90,6 +94,8 @@ pub fn show(ui: &mut Ui, form: &mut SettingsForm, server: &ServerState) -> Optio
                     Layout::top_down(Align::Min),
                     |ui| {
                         account_card(ui, form, server, &mut action);
+                        ui.add_space(14.0);
+                        appearance_card(ui, form, &mut action);
                     },
                 );
             });
@@ -98,6 +104,58 @@ pub fn show(ui: &mut Ui, form: &mut SettingsForm, server: &ServerState) -> Optio
         });
 
     action
+}
+
+fn appearance_card(ui: &mut Ui, form: &mut SettingsForm, action: &mut Option<Action>) {
+    theme::card().show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.label(RichText::new("Application").font(theme::strong_font(15.0)));
+        ui.label(
+            RichText::new("Appearance and sign-in preferences for this device.")
+                .color(theme::MUTED)
+                .size(11.0),
+        );
+        ui.add_space(10.0);
+
+        let mut client_side = form.client_side_decorations;
+        if ui
+            .checkbox(
+                &mut client_side,
+                RichText::new("Use client-side window decorations").size(12.0),
+            )
+            .changed()
+        {
+            form.client_side_decorations = client_side;
+            *action = Some(Action::SetClientSideDecorations(client_side));
+        }
+        ui.label(
+            RichText::new(
+                "Draw CareLibre's own title bar. Turn this off to use the operating system's native window decorations.",
+            )
+            .color(theme::FAINT)
+            .size(10.0),
+        );
+
+        ui.add_space(10.0);
+        let mut remember = form.remember_login;
+        if ui
+            .checkbox(
+                &mut remember,
+                RichText::new("Remember me on this device").size(12.0),
+            )
+            .changed()
+        {
+            form.remember_login = remember;
+            *action = Some(Action::SetRememberLogin(remember));
+        }
+        ui.label(
+            RichText::new(
+                "Stores a refresh token in the OS keychain (or an encrypted local vault when no keychain is available). Your password is never stored.",
+            )
+            .color(theme::FAINT)
+            .size(10.0),
+        );
+    });
 }
 
 fn header(ui: &mut Ui, server: &ServerState) {

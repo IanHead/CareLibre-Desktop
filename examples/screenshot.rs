@@ -33,6 +33,7 @@ fn main() {
     let live = args.iter().any(|arg| arg == "--live");
     let perf = args.iter().any(|arg| arg == "--perf");
     let contact = args.iter().any(|arg| arg == "--contact");
+    let client_side = args.iter().any(|arg| arg == "--client");
     let login = args.iter().find_map(|arg| {
         arg.strip_prefix("--login=")
             .and_then(|value| value.split_once(':'))
@@ -47,6 +48,9 @@ fn main() {
 
     let mut app = CareLibreApp::new();
     app.set_page(page);
+    if client_side {
+        app.set_client_side_decorations(true);
+    }
     if let Some(kind) = intake {
         app.start_intake(kind);
     }

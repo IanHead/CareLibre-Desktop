@@ -173,13 +173,29 @@ impl ContactWindowState {
     }
 }
 
-pub fn show_viewport(ui: &mut Ui, state: &mut ContactWindowState) -> Option<ContactEditorAction> {
+pub fn show_viewport(
+    ui: &mut Ui,
+    state: &mut ContactWindowState,
+    client_side_decorations: bool,
+) -> Option<ContactEditorAction> {
     if ui.ctx().input(|i| i.viewport().close_requested()) {
         state.close_requested = true;
         return Some(ContactEditorAction::Cancel);
     }
 
     let mut action = None;
+
+    if client_side_decorations {
+        egui::Panel::top("contact-window-chrome")
+            .exact_size(crate::chrome::HEIGHT)
+            .show_separator_line(false)
+            .frame(Frame::new().fill(theme::SIDEBAR).inner_margin(Margin::ZERO))
+            .show(ui, |ui| {
+                let ctx = ui.ctx().clone();
+                let title = state.title();
+                crate::chrome::title_bar(ui, &ctx, &title);
+            });
+    }
 
     egui::Panel::bottom("contact-editor-footer")
         .exact_size(60.0)
@@ -209,6 +225,10 @@ pub fn show_viewport(ui: &mut Ui, state: &mut ContactWindowState) -> Option<Cont
                 action = Some(next);
             }
         });
+
+    if client_side_decorations {
+        crate::chrome::resize_handles(ui.ctx());
+    }
 
     action
 }
