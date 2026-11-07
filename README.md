@@ -4,11 +4,14 @@ A fast, native desktop client for [CareLibre](https://github.com/IanHead/CareLib
 open-source care management platform for disability and aged care providers.
 
 > **Status: prototype.** The native application shell, home dashboard, live server
-> connection, account authentication and organisation onboarding are in place.
-> Clients, workers, rostering, services, documents and communications are navigable
-> placeholders waiting on the care-domain APIs.
+> connection, account authentication and organisation onboarding are in place. Clients
+> and workers now render from a local SQLite cache with virtualised 50,000-row lists.
+> Rostering, services, documents and communications are navigable placeholders waiting on
+> the care-domain APIs.
 
 ![CareLibre home screen](docs/home.png)
+
+![CareLibre virtualised contacts](docs/contacts.png)
 
 ![CareLibre server settings](docs/settings.png)
 
@@ -83,6 +86,26 @@ cargo test --test server_live -- --ignored
 
 Set `CARELIBRE_TEST_SERVER=https://care.example.com` to target another instance.
 
+## Local cache and performance
+
+Rostering and contact screens read from a bundled SQLite cache; the UI thread never
+touches SQLite or the network. The contacts list is virtualised and pages in as you
+scroll, with local full-text search.
+
+Seed a large deterministic fixture and time the hot queries:
+
+```sh
+cargo run --release --example seed_cache -- 50000 1000000
+cargo run --release --example bench_cache
+```
+
+This creates 50,000 contacts and 1,000,000 shifts in the platform data directory. Press
+**F12** in the app to toggle the performance HUD (frame time, loaded rows, last query,
+cache location).
+
+The full architecture and roadmap for local-first sync is in
+[`docs/performance-architecture.md`](docs/performance-architecture.md).
+
 ## Development
 
 ```sh
@@ -110,11 +133,16 @@ cargo run --example screenshot -- docs/settings.png settings --live
 | `src/api.rs` | Blocking HTTP client for the CareLibre REST API |
 | `src/server.rs` | Connection state and the background API worker |
 | `src/config.rs` | Persisted desktop preferences |
+| `src/store/` | SQLite schema, queries, demo seeding and the cache worker |
+| `src/perf.rs` | F12 performance HUD |
 | `src/theme.rs` | Palette, typography and shared card/pill widgets |
-| `src/pages/` | One module per area; `home.rs` is the dashboard, `settings.rs` the connection/account UI |
+| `src/pages/` | One module per area; `home.rs` dashboard, `contacts.rs` virtualised list, `settings.rs` connection/account UI |
 | `assets/fonts/` | Bundled Inter font (SIL OFL 1.1) and licence |
 | `examples/screenshot.rs` | Headless renderer used for snapshots |
+| `examples/seed_cache.rs` | Deterministic cache fixture generator |
+| `examples/bench_cache.rs` | Local query benchmark |
 | `tests/ui.rs` | Headless rendering and sidebar navigation tests |
+| `tests/store.rs` | SQLite schema, filtering, FTS and keyset paging tests |
 | `tests/server_live.rs` | Live server connection tests (`--ignored`) |
 
 ## Roadmap
@@ -125,6 +153,9 @@ The desktop client tracks the wider CareLibre requirements:
 - [x] Home dashboard and navigation
 - [x] Live server connection, account authentication and organisation onboarding
 - [x] PostgreSQL-backed CareLibre server (via REST API)
+- [x] Local SQLite cache, background query worker and virtualised contacts
+- [x] Performance HUD and 1M-shift synthetic fixture
+- [ ] Delta sync and optimistic local writes
 - [ ] Care-domain API integration for the screens below
 - [ ] Contacts, clients, workers and divisions
 - [ ] Services, rates and effective-dated rate versions

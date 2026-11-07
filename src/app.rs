@@ -1,6 +1,9 @@
 //! Application shell: top bar, navigation, status bar and routing.
 
-use std::time::{Duration, Instant};
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use eframe::egui::{
     self, Align, Align2, Color32, CornerRadius, FontId, Frame, Layout, Margin, RichText, Sense,
@@ -10,8 +13,14 @@ use eframe::egui::{
 use crate::{
     api,
     config::Config,
-    pages::{self, Action, Page, settings::SettingsForm},
+    pages::{
+        self, Action, Page,
+        contacts::{ContactsAction, ContactsState, LOAD_MORE_SIZE, PAGE_SIZE},
+        settings::SettingsForm,
+    },
+    perf::{PerfHud, PerfInfo},
     server::{ConnectionState, Event, ServerRuntime, ServerState},
+    store::{self, ContactCounts, ContactFilter, StoreEvent, StoreHandle},
     theme,
 };
 
@@ -23,6 +32,15 @@ pub struct CareLibreApp {
     settings: SettingsForm,
     server: ServerState,
     runtime: Option<ServerRuntime>,
+    contacts_clients: ContactsState,
+    contacts_workers: ContactsState,
+    store: Option<StoreHandle>,
+    store_ready: bool,
+    store_error: Option<String>,
+    store_path: String,
+    cache_counts: ContactCounts,
+    cache_shifts: Option<usize>,
+    perf: PerfHud,
 }
 
 struct Notice {
@@ -54,6 +72,15 @@ impl CareLibreApp {
             settings,
             server,
             runtime: None,
+            contacts_clients: ContactsState::new(ContactFilter::Clients),
+            contacts_workers: ContactsState::new(ContactFilter::Workers),
+            store: None,
+            store_ready: false,
+            store_error: None,
+            store_path: String::new(),
+            cache_counts: ContactCounts::default(),
+            cache_shifts: None,
+            perf: PerfHud::new(),
         }
     }
 
@@ -74,6 +101,19 @@ impl CareLibreApp {
             self.server.connection = ConnectionState::Connecting;
             self.server.last_checked = None;
         }
+
+        if self.store.is_none() {
+            match store::default_cache_path() {
+                Some(path) => {
+                    self.store_path = path.display().to_string();
+                    self.store = Some(StoreHandle::spawn(path, ctx.clone()));
+                }
+                None => {
+                    self.store_error =
+                        Some("Could not locate a data directory for the local cache.".to_owned());
+                }
+            }
+        }
     }
 
     /// Navigate to a page. Useful for deep links and headless previews.
@@ -90,29 +130,73 @@ impl CareLibreApp {
         &self.server.connection
     }
 
+    /// Whether the local cache has finished opening.
+    pub fn cache_ready(&self) -> bool {
+        self.store_ready
+    }
+
+    /// Number of contacts currently materialised in the active list.
+    pub fn contacts_loaded(&self) -> usize {
+        if self.page == Page::Workers {
+            self.contacts_workers.loaded()
+        } else {
+            self.contacts_clients.loaded()
+        }
+    }
+
     /// The whole application UI. Kept separate from [`eframe::App`] so it can be
     /// rendered by tooling (headless screenshot tests) as well.
     pub fn show(&mut self, ui: &mut Ui) {
+        self.perf.begin_frame(ui.ctx());
         self.poll_server(ui.ctx());
+        self.poll_store(ui.ctx());
+        self.tick_contact_search();
+        self.ensure_contacts_loaded();
         self.refresh_session_if_needed();
 
         self.top_bar(ui);
         self.sidebar(ui);
         self.status_bar(ui);
 
+        let mut contacts_action: Option<(ContactFilter, ContactsAction)> = None;
         let action = egui::CentralPanel::default()
             .frame(Frame::new().fill(theme::BG).inner_margin(Margin::same(24)))
-            .show(ui, |ui| self.page_contents(ui))
+            .show(ui, |ui| self.page_contents(ui, &mut contacts_action))
             .inner;
+
+        if let Some((filter, contacts_action)) = contacts_action {
+            self.handle_contacts_action(filter, contacts_action);
+        }
 
         if let Some(action) = action {
             self.handle_action(ui.ctx(), action);
         }
 
+        let perf_state = if self.page == Page::Workers {
+            &self.contacts_workers
+        } else {
+            &self.contacts_clients
+        };
+        let perf_info = PerfInfo {
+            cache_ready: self.store_ready,
+            cache_path: (!self.store_path.is_empty()).then_some(self.store_path.as_str()),
+            cache_error: self.store_error.as_deref(),
+            contacts_loaded: perf_state.loaded(),
+            contacts_total: perf_state.total,
+            contacts_all: self.cache_counts.all,
+            last_query_ms: perf_state.last_query_ms,
+            shifts: self.cache_shifts,
+        };
+        self.perf.show(ui.ctx(), &perf_info);
+
         self.show_notice(ui.ctx());
     }
 
-    fn page_contents(&mut self, ui: &mut Ui) -> Option<Action> {
+    fn page_contents(
+        &mut self,
+        ui: &mut Ui,
+        contacts_action: &mut Option<(ContactFilter, ContactsAction)>,
+    ) -> Option<Action> {
         match self.page {
             Page::Settings => pages::settings::show(ui, &mut self.settings, &self.server),
             Page::Home => {
@@ -122,6 +206,28 @@ impl CareLibreApp {
                     account.as_ref().map(|a| a.first_name.as_str()),
                     account.as_ref().map(|a| a.organisation.as_str()),
                 )
+            }
+            Page::Clients => {
+                if let Some(action) = pages::contacts::show(
+                    ui,
+                    &mut self.contacts_clients,
+                    self.store_ready,
+                    self.store_error.as_deref(),
+                ) {
+                    *contacts_action = Some((ContactFilter::Clients, action));
+                }
+                None
+            }
+            Page::Workers => {
+                if let Some(action) = pages::contacts::show(
+                    ui,
+                    &mut self.contacts_workers,
+                    self.store_ready,
+                    self.store_error.as_deref(),
+                ) {
+                    *contacts_action = Some((ContactFilter::Workers, action));
+                }
+                None
             }
             other => pages::placeholder::show(ui, other),
         }
@@ -157,6 +263,211 @@ impl CareLibreApp {
 
         for event in events {
             self.handle_server_event(ctx, event);
+        }
+    }
+
+    fn contact_state(&self, filter: ContactFilter) -> &ContactsState {
+        match filter {
+            ContactFilter::Workers => &self.contacts_workers,
+            ContactFilter::Clients | ContactFilter::All => &self.contacts_clients,
+        }
+    }
+
+    fn contact_state_mut(&mut self, filter: ContactFilter) -> &mut ContactsState {
+        match filter {
+            ContactFilter::Workers => &mut self.contacts_workers,
+            ContactFilter::Clients | ContactFilter::All => &mut self.contacts_clients,
+        }
+    }
+
+    fn poll_store(&mut self, ctx: &egui::Context) {
+        let events: Vec<StoreEvent> = match &self.store {
+            Some(store) => std::iter::from_fn(|| store.try_recv()).collect(),
+            None => Vec::new(),
+        };
+
+        for event in events {
+            match event {
+                StoreEvent::Ready {
+                    path,
+                    counts,
+                    shifts,
+                } => {
+                    self.store_ready = true;
+                    self.store_error = None;
+                    self.store_path = path;
+                    self.cache_counts = counts;
+                    self.cache_shifts = Some(shifts);
+                    self.contacts_clients.counts = counts;
+                    self.contacts_clients.total = counts.for_filter(ContactFilter::Clients);
+                    self.contacts_workers.counts = counts;
+                    self.contacts_workers.total = counts.for_filter(ContactFilter::Workers);
+                }
+                StoreEvent::Failed { error } => {
+                    self.store_ready = false;
+                    self.store_error = Some(error);
+                }
+                StoreEvent::Contacts {
+                    generation,
+                    filter,
+                    append,
+                    page,
+                } => {
+                    let state = self.contact_state_mut(filter);
+                    if generation != state.generation {
+                        continue;
+                    }
+
+                    state.loading = false;
+                    match page {
+                        Ok(page) => {
+                            state.total = page.total;
+                            state.counts = page.counts;
+                            state.last_query_ms = Some(page.query_ms);
+                            state.next_cursor = page.next_cursor;
+                            state.error = None;
+
+                            if append {
+                                let mut rows = (*state.rows.load_full()).clone();
+                                rows.extend(page.rows);
+                                state.rows.store(Arc::new(rows));
+                            } else {
+                                state.rows.store(Arc::new(page.rows));
+                            }
+                        }
+                        Err(error) => state.error = Some(error),
+                    }
+                }
+                StoreEvent::Seeded {
+                    result,
+                    counts,
+                    shifts,
+                } => {
+                    self.cache_counts = counts;
+                    self.cache_shifts = Some(shifts);
+                    self.contacts_clients.seed_in_flight = false;
+                    self.contacts_workers.seed_in_flight = false;
+
+                    match result {
+                        Ok(report) => {
+                            for state in [&mut self.contacts_clients, &mut self.contacts_workers] {
+                                state.reset();
+                                state.total = counts.for_filter(state.filter);
+                                state.counts = counts;
+                                state.next_cursor = None;
+                                state.generation = 0;
+                                state.loading = false;
+                                state.error = None;
+                                state.selected = None;
+                                state.needs_more = false;
+                            }
+                            self.notify(
+                                ctx,
+                                format!(
+                                    "Generated {} contacts and {} shifts in {:.0} ms.",
+                                    report.contacts, report.shifts, report.duration_ms
+                                ),
+                            );
+                        }
+                        Err(error) => {
+                            self.contacts_clients.error = Some(error.clone());
+                            self.contacts_workers.error = Some(error);
+                            self.notify(ctx, "Could not generate demo data.");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fn tick_contact_search(&mut self) {
+        for filter in [ContactFilter::Clients, ContactFilter::Workers] {
+            let due = self.contact_state(filter).search_due;
+            if let Some(due) = due
+                && Instant::now() >= due
+            {
+                self.contact_state_mut(filter).search_due = None;
+                self.send_contacts_query(filter, false);
+            }
+        }
+    }
+
+    fn ensure_contacts_loaded(&mut self) {
+        if !self.store_ready {
+            return;
+        }
+
+        let filter = match self.page {
+            Page::Clients => ContactFilter::Clients,
+            Page::Workers => ContactFilter::Workers,
+            _ => return,
+        };
+
+        let needs_load = {
+            let state = self.contact_state(filter);
+            state.generation == 0 && state.search_due.is_none()
+        };
+        if needs_load {
+            self.send_contacts_query(filter, false);
+        }
+    }
+
+    fn send_contacts_query(&mut self, filter: ContactFilter, append: bool) {
+        let (generation, search, after, limit) = {
+            let state = self.contact_state_mut(filter);
+            if append && state.next_cursor.is_none() {
+                return;
+            }
+
+            state.generation += 1;
+            state.loading = true;
+            state.error = None;
+
+            (
+                state.generation,
+                state.search.clone(),
+                if append {
+                    state.next_cursor.clone()
+                } else {
+                    None
+                },
+                if append { LOAD_MORE_SIZE } else { PAGE_SIZE },
+            )
+        };
+
+        if let Some(store) = &self.store {
+            store.query(generation, filter, search, after, limit);
+        } else {
+            let state = self.contact_state_mut(filter);
+            state.loading = false;
+            state.error = Some("The local cache is not running.".to_owned());
+        }
+    }
+
+    fn handle_contacts_action(&mut self, filter: ContactFilter, action: ContactsAction) {
+        match action {
+            ContactsAction::SearchChanged => {
+                let state = self.contact_state_mut(filter);
+                state.generation += 1;
+                state.search_due = Some(Instant::now() + Duration::from_millis(120));
+                state.loading = true;
+                state.next_cursor = None;
+                state.needs_more = false;
+            }
+            ContactsAction::LoadMore => self.send_contacts_query(filter, true),
+            ContactsAction::SeedDemo => {
+                let state = self.contact_state_mut(filter);
+                state.seed_in_flight = true;
+                state.error = None;
+
+                if let Some(store) = &self.store {
+                    store.seed_demo(10_000, 50_000);
+                } else {
+                    let state = self.contact_state_mut(filter);
+                    state.seed_in_flight = false;
+                    state.error = Some("The local cache is not running.".to_owned());
+                }
+            }
         }
     }
 
@@ -470,8 +781,15 @@ impl CareLibreApp {
                             && ui.input(|i| i.key_pressed(egui::Key::Enter))
                             && !self.search.trim().is_empty()
                         {
-                            let query = self.search.clone();
-                            self.notify(ui.ctx(), format!("No results yet for “{query}”."));
+                            let query = self.search.trim().to_owned();
+                            self.page = Page::Clients;
+                            let state = &mut self.contacts_clients;
+                            state.search = query;
+                            state.generation += 1;
+                            state.search_due = Some(Instant::now());
+                            state.loading = true;
+                            state.next_cursor = None;
+                            state.selected = None;
                         }
                     });
                 });
@@ -525,7 +843,13 @@ impl CareLibreApp {
                         self.page = Page::Settings;
                     }
                     ui.add_space(10.0);
-                    edition_card(ui, account.as_ref().map(|a| a.edition.as_str()));
+                    edition_card(
+                        ui,
+                        account.as_ref().map(|a| a.edition.as_str()),
+                        self.store_ready,
+                        self.cache_counts.all,
+                        self.store_error.is_some(),
+                    );
                 });
             });
     }
@@ -771,7 +1095,13 @@ fn user_row(ui: &mut Ui, account: Option<&AccountBadge>) -> bool {
     clicked
 }
 
-fn edition_card(ui: &mut Ui, edition: Option<&str>) {
+fn edition_card(
+    ui: &mut Ui,
+    edition: Option<&str>,
+    cache_ready: bool,
+    cache_contacts: usize,
+    cache_error: bool,
+) {
     let title = match edition {
         Some(edition) if !edition.eq_ignore_ascii_case("community") => {
             format!("{} EDITION", edition.to_uppercase())
@@ -806,22 +1136,36 @@ fn edition_card(ui: &mut Ui, edition: Option<&str>) {
                 );
                 ui.add_space(8.0);
 
-                let (rect, _) =
-                    ui.allocate_exact_size(vec2(ui.available_width(), 4.0), Sense::hover());
-                ui.painter()
-                    .rect_filled(rect, CornerRadius::same(2), theme::SURFACE_RAISED);
-                let filled =
-                    egui::Rect::from_min_size(rect.min, vec2(rect.width() * 0.25, rect.height()));
-                ui.painter()
-                    .rect_filled(filled, CornerRadius::same(2), theme::ACCENT);
-                ui.add_space(4.0);
-                ui.label(
-                    RichText::new("Prototype · 2 of 8 milestones")
-                        .color(theme::FAINT)
-                        .size(9.5),
-                );
+                let (colour, text) = if cache_error {
+                    (theme::DANGER, "Local cache unavailable".to_owned())
+                } else if cache_ready {
+                    (
+                        theme::SUCCESS,
+                        format!("Local cache · {} contacts", format_count(cache_contacts)),
+                    )
+                } else {
+                    (theme::WARNING, "Local cache starting…".to_owned())
+                };
+
+                ui.horizontal(|ui| {
+                    let (rect, _) = ui.allocate_exact_size(vec2(7.0, 7.0), Sense::hover());
+                    ui.painter().circle_filled(rect.center(), 3.5, colour);
+                    ui.label(RichText::new(text).color(theme::MUTED).size(9.5));
+                });
             });
         });
+}
+
+fn format_count(value: usize) -> String {
+    let digits = value.to_string();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+    for (index, ch) in digits.chars().enumerate() {
+        if index > 0 && (digits.len() - index).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(ch);
+    }
+    out
 }
 
 fn status_segment(ui: &mut Ui, text: &str, colour: Color32, tooltip: Option<&str>) {

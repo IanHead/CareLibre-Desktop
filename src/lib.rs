@@ -7,7 +7,9 @@ pub mod api;
 pub mod app;
 pub mod config;
 pub mod pages;
+pub mod perf;
 pub mod server;
+pub mod store;
 pub mod theme;
 
 pub use app::CareLibreApp;

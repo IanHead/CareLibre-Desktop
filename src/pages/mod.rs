@@ -1,3 +1,4 @@
+pub mod contacts;
 pub mod home;
 pub mod placeholder;
 pub mod settings;

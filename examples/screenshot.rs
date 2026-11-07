@@ -27,6 +27,7 @@ fn main() {
         _ => Page::Home,
     };
     let live = args.iter().any(|arg| arg == "--live");
+    let perf = args.iter().any(|arg| arg == "--perf");
 
     let mut app = CareLibreApp::new();
     app.set_page(page);
@@ -50,9 +51,33 @@ fn main() {
             harness.run();
             std::thread::sleep(Duration::from_millis(50));
         }
+
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !harness.state().cache_ready() {
+            if Instant::now() >= deadline {
+                panic!("timed out waiting for the local cache");
+            }
+            harness.run();
+            std::thread::sleep(Duration::from_millis(25));
+        }
+
+        if matches!(page, Page::Clients | Page::Workers) {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while harness.state().contacts_loaded() == 0 && Instant::now() < deadline {
+                harness.run();
+                std::thread::sleep(Duration::from_millis(25));
+            }
+        }
     }
 
-    harness.run();
+    if perf {
+        harness.run();
+        harness.key_press(egui::Key::F12);
+        harness.run_steps(2);
+    } else {
+        harness.run();
+    }
+
     let image = harness.render().expect("failed to render screenshot");
     image.save(&output).expect("failed to save screenshot");
 
