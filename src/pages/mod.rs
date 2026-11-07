@@ -3,7 +3,10 @@ pub mod contacts;
 pub mod home;
 pub mod intake;
 pub mod placeholder;
+pub mod relationships;
 pub mod settings;
+
+use crate::theme::ThemeMode;
 
 /// A user intent raised by a page, handled by the application shell.
 pub enum Action {
@@ -28,6 +31,7 @@ pub enum Action {
     Logout,
     SetClientSideDecorations(bool),
     SetRememberLogin(bool),
+    SetTheme(ThemeMode),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -38,6 +42,7 @@ pub enum Page {
     Clients,
     Workers,
     Rostering,
+    Relationships,
     Services,
     Documents,
     Communications,
@@ -54,6 +59,7 @@ impl Page {
             Self::Clients => "Clients",
             Self::Workers => "Workers",
             Self::Rostering => "Rostering",
+            Self::Relationships => "Relationships",
             Self::Services => "Services & rates",
             Self::Documents => "Documents",
             Self::Communications => "Communications",
@@ -70,6 +76,7 @@ impl Page {
             Self::Clients => "👤",
             Self::Workers => "👷",
             Self::Rostering => "📅",
+            Self::Relationships => "🔗",
             Self::Services => "🏷",
             Self::Documents => "📄",
             Self::Communications => "✉",
@@ -86,6 +93,7 @@ impl Page {
             Self::Clients => "Participant and client records, contacts and care plans.",
             Self::Workers => "Support worker records, availability, skills and compliance.",
             Self::Rostering => "Shifts, client and worker assignments, and sessions.",
+            Self::Relationships => "Two-sided links between contacts and organisations.",
             Self::Services => "Funded services, rate cards and effective-dated rate versions.",
             Self::Documents => "Merge templates for quotes, service agreements and reports.",
             Self::Communications => "Configurable SMS, email and other external channels.",
@@ -119,6 +127,11 @@ impl Page {
                 "Availability and preferred client matching",
                 "Worker assignment history and utilisation",
                 "Mobile access controls per field",
+            ],
+            Self::Relationships => &[
+                "Link any contact to any contact or organisation",
+                "A role for each side of the relationship",
+                "Delete links without touching either record",
             ],
             Self::Rostering => &[
                 "Shifts with client and worker assignments or sessions",

@@ -41,6 +41,10 @@ chrono = "0.4"
 crossbeam-channel = "0.5"
 rusqlite = { version = "0.41", default-features = false, features = ["bundled"] }
 
+# System appearance detection through the freedesktop settings portal.
+[target.'cfg(target_os = "linux")'.dependencies]
+zbus = "5"
+
 [dev-dependencies]
 egui_kittest = { version = "0.37", features = ["wgpu"] }
 image = { version = "0.25", default-features = false, features = ["png"] }

@@ -7,7 +7,10 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
-use crate::contact::{ApiContactDetail, ApiContactList, ApiContactWrite};
+use crate::contact::{
+    ApiContactDetail, ApiContactList, ApiContactWrite, ApiRelationship, ApiRelationshipGraph,
+    ApiRelationshipList, ApiRelationshipWrite,
+};
 
 pub const DEFAULT_BASE_URL: &str = "http://127.0.0.1:8484";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(6);
@@ -293,6 +296,59 @@ impl ApiClient {
         let (status, body) =
             self.send_with_token("POST", "/api/v1/contacts", access_token, payload)?;
         decode(status, &body)
+    }
+
+    /// Relationships touching a contact (or an organisation).
+    pub fn list_relationships(
+        &self,
+        access_token: &str,
+        contact_id: Option<&str>,
+        organisation_id: Option<&str>,
+    ) -> ApiResult<ApiRelationshipList> {
+        let mut query = url::form_urlencoded::Serializer::new(String::new());
+        if let Some(id) = contact_id {
+            query.append_pair("contact_id", id);
+        }
+        if let Some(id) = organisation_id {
+            query.append_pair("organisation_id", id);
+        }
+        query.append_pair("limit", "1000");
+        let path = format!("/api/v1/relationships?{}", query.finish());
+        self.get_json_with_token(&path, access_token)
+    }
+
+    /// The whole-tenant relationship graph, used as the party lookup catalogue.
+    pub fn relationship_graph(&self, access_token: &str) -> ApiResult<ApiRelationshipGraph> {
+        self.get_json_with_token("/api/v1/relationships/graph", access_token)
+    }
+
+    pub fn create_relationship(
+        &self,
+        access_token: &str,
+        payload: &ApiRelationshipWrite,
+    ) -> ApiResult<ApiRelationship> {
+        let (status, body) =
+            self.send_with_token("POST", "/api/v1/relationships", access_token, payload)?;
+        decode(status, &body)
+    }
+
+    pub fn delete_relationship(&self, access_token: &str, id: &str) -> ApiResult<()> {
+        let mut response = self
+            .agent
+            .delete(self.endpoint(&format!("/api/v1/relationships/{id}")))
+            .header("authorization", format!("Bearer {access_token}"))
+            .call()
+            .map_err(map_transport_error)?;
+        let status = response.status().as_u16();
+        let body = response
+            .body_mut()
+            .read_to_string()
+            .map_err(|err| ApiError::Network(err.to_string()))?;
+        if (200..300).contains(&status) {
+            Ok(())
+        } else {
+            Err(error_from_body(status, &body))
+        }
     }
 
     fn get_json_with_token<T: DeserializeOwned>(

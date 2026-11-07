@@ -145,7 +145,7 @@ pub fn show(
                 RichText::new(
                     "Completed intakes are saved directly to the CareLibre server. Sign in with your organisation account to begin.",
                 )
-                .color(theme::MUTED)
+                .color(theme::muted())
                 .size(12.0),
             );
             ui.add_space(10.0);
@@ -172,7 +172,7 @@ pub fn show(
             ui.add_space(4.0);
             ui.label(
                 RichText::new("Continue the wizard in the native window, or bring it back here.")
-                    .color(theme::MUTED)
+                    .color(theme::muted())
                     .size(12.0),
             );
             ui.add_space(10.0);
@@ -217,14 +217,14 @@ fn picker(ui: &mut Ui, state: &mut IntakeState, store_ready: bool) -> Option<Int
             ui,
             "Starting local cache",
             "Intake drafts will be available as soon as the cache opens.",
-            theme::MUTED,
+            theme::muted(),
         );
         return None;
     }
 
     if let Some(error) = &state.error {
         ui.add_space(6.0);
-        message_card(ui, "Intake error", error, theme::DANGER);
+        message_card(ui, "Intake error", error, theme::danger());
         ui.add_space(10.0);
     }
 
@@ -245,7 +245,7 @@ fn picker(ui: &mut Ui, state: &mut IntakeState, store_ready: bool) -> Option<Int
     if state.list_loading {
         ui.label(
             RichText::new("Loading saved drafts…")
-                .color(theme::FAINT)
+                .color(theme::faint())
                 .size(11.0),
         );
     } else if state.drafts.is_empty() {
@@ -253,7 +253,7 @@ fn picker(ui: &mut Ui, state: &mut IntakeState, store_ready: bool) -> Option<Int
             ui.set_width(ui.available_width());
             ui.label(
                 RichText::new("No drafts yet")
-                    .color(theme::MUTED)
+                    .color(theme::muted())
                     .font(theme::strong_font(13.0)),
             );
             ui.label(
@@ -261,7 +261,7 @@ fn picker(ui: &mut Ui, state: &mut IntakeState, store_ready: bool) -> Option<Int
                     "Start a scenario above. Drafts save automatically and appear here \
                      if you close the wizard.",
                 )
-                .color(theme::FAINT)
+                .color(theme::faint())
                 .size(11.0),
             );
         });
@@ -269,8 +269,8 @@ fn picker(ui: &mut Ui, state: &mut IntakeState, store_ready: bool) -> Option<Int
         for draft in &state.drafts {
             let total = fields::steps(draft.kind).len();
             let response = Frame::new()
-                .fill(theme::SURFACE)
-                .stroke(Stroke::new(1.0, theme::BORDER))
+                .fill(theme::surface())
+                .stroke(Stroke::new(1.0, theme::border()))
                 .corner_radius(CornerRadius::same(10))
                 .inner_margin(Margin::symmetric(14, 10))
                 .show(ui, |ui| {
@@ -280,14 +280,14 @@ fn picker(ui: &mut Ui, state: &mut IntakeState, store_ready: bool) -> Option<Int
                         ui.painter().rect_filled(
                             rect,
                             CornerRadius::same(9),
-                            theme::SURFACE_RAISED,
+                            theme::surface_raised(),
                         );
                         ui.painter().text(
                             rect.center(),
                             Align2::CENTER_CENTER,
                             draft.kind.icon(),
                             FontId::proportional(15.0),
-                            theme::TEXT,
+                            theme::text(),
                         );
                         ui.add_space(2.0);
                         ui.vertical(|ui| {
@@ -301,7 +301,7 @@ fn picker(ui: &mut Ui, state: &mut IntakeState, store_ready: bool) -> Option<Int
                                         total,
                                         relative_time(draft.updated_at)
                                     ))
-                                    .color(theme::FAINT)
+                                    .color(theme::faint())
                                     .size(10.5),
                                 );
                             });
@@ -314,7 +314,7 @@ fn picker(ui: &mut Ui, state: &mut IntakeState, store_ready: bool) -> Option<Int
                             if ui
                                 .add(
                                     egui::Button::new(
-                                        RichText::new("Discard").color(theme::DANGER).size(11.0),
+                                        RichText::new("Discard").color(theme::danger()).size(11.0),
                                     )
                                     .frame(false),
                                 )
@@ -335,7 +335,7 @@ fn picker(ui: &mut Ui, state: &mut IntakeState, store_ready: bool) -> Option<Int
         RichText::new(
             "Drafts are stored in the local SQLite cache and never block on the network.",
         )
-        .color(theme::FAINT)
+        .color(theme::faint())
         .size(10.0),
     );
 
@@ -349,26 +349,26 @@ fn scenario_card(ui: &mut Ui, kind: IntakeKind) -> egui::Response {
 
         let (rect, _) = ui.allocate_exact_size(vec2(42.0, 42.0), Sense::hover());
         ui.painter()
-            .rect_filled(rect, CornerRadius::same(11), theme::SURFACE_RAISED);
+            .rect_filled(rect, CornerRadius::same(11), theme::surface_raised());
         ui.painter().text(
             rect.center(),
             Align2::CENTER_CENTER,
             kind.icon(),
             FontId::proportional(20.0),
-            theme::TEXT,
+            theme::text(),
         );
 
         ui.add_space(8.0);
         ui.label(RichText::new(kind.short_label()).font(theme::strong_font(16.0)));
         ui.label(
             RichText::new(kind.description())
-                .color(theme::MUTED)
+                .color(theme::muted())
                 .size(11.5),
         );
         ui.add_space(8.0);
         ui.label(
             RichText::new(format!("{} steps  →", fields::steps(kind).len()))
-                .color(theme::ACCENT)
+                .color(theme::accent())
                 .size(11.0),
         );
     });
@@ -413,7 +413,7 @@ pub fn show_wizard_viewport(
             .show_separator_line(false)
             .frame(
                 egui::Frame::new()
-                    .fill(theme::SIDEBAR)
+                    .fill(theme::sidebar())
                     .inner_margin(Margin::ZERO),
             )
             .show(ui, |ui| crate::chrome::title_bar(ui, &ctx, &title));
@@ -423,7 +423,7 @@ pub fn show_wizard_viewport(
     egui::CentralPanel::default()
         .frame(
             egui::Frame::new()
-                .fill(theme::BG)
+                .fill(theme::bg())
                 .inner_margin(Margin::same(16)),
         )
         .show(ui, |ui| {
@@ -447,7 +447,7 @@ fn wizard(ui: &mut Ui, state: &mut IntakeState, store_ready: bool) -> Option<Int
             ui,
             "Starting local cache",
             "The intake wizard needs the local cache. It will be ready in a moment.",
-            theme::MUTED,
+            theme::muted(),
         );
         return None;
     }
@@ -457,7 +457,7 @@ fn wizard(ui: &mut Ui, state: &mut IntakeState, store_ready: bool) -> Option<Int
             ui,
             "Opening draft",
             "Loading the saved intake from the local cache.",
-            theme::MUTED,
+            theme::muted(),
         );
         return None;
     }
@@ -467,7 +467,7 @@ fn wizard(ui: &mut Ui, state: &mut IntakeState, store_ready: bool) -> Option<Int
             ui,
             "No draft selected",
             "Choose an intake scenario to begin.",
-            theme::MUTED,
+            theme::muted(),
         );
         return None;
     };
@@ -481,7 +481,7 @@ fn wizard(ui: &mut Ui, state: &mut IntakeState, store_ready: bool) -> Option<Int
     ui.horizontal(|ui| {
         if ui
             .add(
-                egui::Button::new(RichText::new("←  Intake").color(theme::MUTED).size(11.5))
+                egui::Button::new(RichText::new("←  Intake").color(theme::muted()).size(11.5))
                     .frame(false),
             )
             .clicked()
@@ -499,7 +499,7 @@ fn wizard(ui: &mut Ui, state: &mut IntakeState, store_ready: bool) -> Option<Int
             };
             if ui
                 .add(
-                    egui::Button::new(RichText::new(label).color(theme::ACCENT).size(11.0))
+                    egui::Button::new(RichText::new(label).color(theme::accent()).size(11.0))
                         .frame(false),
                 )
                 .clicked()
@@ -508,11 +508,11 @@ fn wizard(ui: &mut Ui, state: &mut IntakeState, store_ready: bool) -> Option<Int
             }
 
             let (text, colour) = if state.saving {
-                ("Saving…".to_owned(), theme::WARNING)
+                ("Saving…".to_owned(), theme::warning())
             } else if state.dirty {
-                ("Unsaved changes".to_owned(), theme::WARNING)
+                ("Unsaved changes".to_owned(), theme::warning())
             } else {
-                ("Saved locally".to_owned(), theme::SUCCESS)
+                ("Saved locally".to_owned(), theme::success())
             };
             ui.label(RichText::new(text).color(colour).size(10.5));
         });
@@ -532,16 +532,16 @@ fn wizard(ui: &mut Ui, state: &mut IntakeState, store_ready: bool) -> Option<Int
             let button = egui::Button::new(
                 RichText::new(label)
                     .color(if selected {
-                        theme::BG
+                        theme::on_accent()
                     } else if visited {
-                        theme::TEXT
+                        theme::text()
                     } else {
-                        theme::FAINT
+                        theme::faint()
                     })
                     .font(theme::strong_font(10.0)),
             )
             .fill(if selected {
-                theme::ACCENT
+                theme::accent()
             } else if visited {
                 theme::accent_soft(22)
             } else {
@@ -581,7 +581,7 @@ fn wizard(ui: &mut Ui, state: &mut IntakeState, store_ready: bool) -> Option<Int
                 ui.label(RichText::new(step.title).font(theme::strong_font(18.0)));
                 ui.label(
                     RichText::new(step.description)
-                        .color(theme::MUTED)
+                        .color(theme::muted())
                         .size(12.0),
                 );
                 ui.add_space(14.0);
@@ -590,7 +590,7 @@ fn wizard(ui: &mut Ui, state: &mut IntakeState, store_ready: bool) -> Option<Int
 
                 if let Some(error) = &state.error {
                     ui.add_space(8.0);
-                    message_inline(ui, error, theme::DANGER);
+                    message_inline(ui, error, theme::danger());
                 }
 
                 ui.add_space(14.0);
@@ -669,14 +669,14 @@ fn summary_card(
         ui.label(RichText::new(draft.display_name()).font(theme::strong_font(12.5)));
         ui.label(
             RichText::new(draft.kind.label())
-                .color(theme::MUTED)
+                .color(theme::muted())
                 .size(11.0),
         );
         ui.add_space(8.0);
 
         ui.label(
             RichText::new(format!("Step {} of {}", step_index + 1, total_steps))
-                .color(theme::TEXT)
+                .color(theme::text())
                 .size(11.5),
         );
 
@@ -685,25 +685,25 @@ fn summary_card(
         ui.add_space(8.0);
 
         let (label, colour) = if state.saving {
-            ("Saving draft…", theme::WARNING)
+            ("Saving draft…", theme::warning())
         } else if state.dirty {
-            ("Autosave pending", theme::WARNING)
+            ("Autosave pending", theme::warning())
         } else {
-            ("Draft saved", theme::SUCCESS)
+            ("Draft saved", theme::success())
         };
         ui.label(RichText::new(label).color(colour).size(10.5));
         ui.label(
             RichText::new(
                 "Drafts are stored locally; completing the intake creates the contact on the server.",
             )
-            .color(theme::FAINT)
+            .color(theme::faint())
             .size(9.5),
         );
 
         ui.add_space(12.0);
         ui.label(
             RichText::new("Tips")
-                .color(theme::MUTED)
+                .color(theme::muted())
                 .font(theme::strong_font(10.5)),
         );
         for tip in [
@@ -714,7 +714,7 @@ fn summary_card(
         ] {
             ui.label(
                 RichText::new(format!("· {tip}"))
-                    .color(theme::FAINT)
+                    .color(theme::faint())
                     .size(9.5),
             );
         }
@@ -774,9 +774,9 @@ fn render_field(
                 ui.label(
                     RichText::new("*")
                         .color(if invalid {
-                            theme::DANGER
+                            theme::danger()
                         } else {
-                            theme::ACCENT
+                            theme::accent()
                         })
                         .size(11.0),
                 );
@@ -863,16 +863,20 @@ fn field_label(ui: &mut Ui, field: &FieldSpec, invalid: bool) {
     ui.horizontal(|ui| {
         ui.label(
             RichText::new(field.label)
-                .color(if invalid { theme::DANGER } else { theme::MUTED })
+                .color(if invalid {
+                    theme::danger()
+                } else {
+                    theme::muted()
+                })
                 .size(10.5),
         );
         if field.required {
             ui.label(
                 RichText::new("*")
                     .color(if invalid {
-                        theme::DANGER
+                        theme::danger()
                     } else {
-                        theme::ACCENT
+                        theme::accent()
                     })
                     .size(10.5),
             );
@@ -919,8 +923,8 @@ fn completed(ui: &mut Ui, state: &mut IntakeState) -> Option<IntakeAction> {
         ui.painter()
             .circle_filled(rect.center(), 28.0, theme::accent_soft(40));
         ui.painter()
-            .circle_stroke(rect.center(), 27.0, Stroke::new(1.0, theme::ACCENT));
-        let tick = Stroke::new(2.0, theme::ACCENT);
+            .circle_stroke(rect.center(), 27.0, Stroke::new(1.0, theme::accent()));
+        let tick = Stroke::new(2.0, theme::accent());
         ui.painter().line_segment(
             [
                 rect.center() + vec2(-8.0, 0.0),
@@ -940,7 +944,7 @@ fn completed(ui: &mut Ui, state: &mut IntakeState) -> Option<IntakeAction> {
         ui.label(RichText::new("Intake complete").font(theme::strong_font(26.0)));
         ui.label(
             RichText::new(format!("{} has been added to the local cache.", completed.name))
-                .color(theme::MUTED)
+                .color(theme::muted())
                 .size(13.0),
         );
         ui.add_space(4.0);
@@ -948,7 +952,7 @@ fn completed(ui: &mut Ui, state: &mut IntakeState) -> Option<IntakeAction> {
         ui.add_space(4.0);
         ui.label(
             RichText::new("The contact is saved with status Onboarding and will sync when the server API is available.")
-                .color(theme::FAINT)
+                .color(theme::faint())
                 .size(10.5),
         );
 
@@ -980,21 +984,21 @@ fn header(ui: &mut Ui, title: &str, subtitle: &str) {
     ui.horizontal(|ui| {
         let (rect, _) = ui.allocate_exact_size(vec2(52.0, 52.0), Sense::hover());
         ui.painter()
-            .rect_filled(rect, CornerRadius::same(14), theme::SURFACE_RAISED);
+            .rect_filled(rect, CornerRadius::same(14), theme::surface_raised());
         ui.painter().text(
             rect.center(),
             Align2::CENTER_CENTER,
             "📝",
             FontId::proportional(22.0),
-            theme::TEXT,
+            theme::text(),
         );
         ui.add_space(6.0);
         ui.vertical(|ui| {
             ui.label(RichText::new(title).font(theme::strong_font(26.0)));
-            ui.label(RichText::new(subtitle).color(theme::MUTED).size(13.0));
+            ui.label(RichText::new(subtitle).color(theme::muted()).size(13.0));
         });
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            theme::pill(ui, "WIZARDS", theme::ACCENT);
+            theme::pill(ui, "WIZARDS", theme::accent());
         });
     });
 }
@@ -1002,7 +1006,7 @@ fn header(ui: &mut Ui, title: &str, subtitle: &str) {
 fn section_header(ui: &mut Ui, title: &str, count: usize) {
     ui.horizontal(|ui| {
         ui.label(RichText::new(title).font(theme::strong_font(15.0)));
-        theme::pill(ui, &count.to_string(), theme::FAINT);
+        theme::pill(ui, &count.to_string(), theme::faint());
     });
     ui.add_space(8.0);
 }
@@ -1011,10 +1015,10 @@ fn progress(ui: &mut Ui, steps: &[StepSpec], current: usize) {
     let fraction = (current + 1) as f32 / steps.len().max(1) as f32;
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 5.0), Sense::hover());
     ui.painter()
-        .rect_filled(rect, CornerRadius::same(3), theme::SURFACE_RAISED);
+        .rect_filled(rect, CornerRadius::same(3), theme::surface_raised());
     let filled = egui::Rect::from_min_size(rect.min, vec2(rect.width() * fraction, 5.0));
     ui.painter()
-        .rect_filled(filled, CornerRadius::same(3), theme::ACCENT);
+        .rect_filled(filled, CornerRadius::same(3), theme::accent());
 }
 
 fn message_card(ui: &mut Ui, title: &str, message: &str, colour: Color32) {
@@ -1026,7 +1030,7 @@ fn message_card(ui: &mut Ui, title: &str, message: &str, colour: Color32) {
                 .font(theme::strong_font(14.0)),
         );
         ui.add_space(4.0);
-        ui.label(RichText::new(message).color(theme::MUTED).size(12.0));
+        ui.label(RichText::new(message).color(theme::muted()).size(12.0));
     });
 }
 
@@ -1049,9 +1053,9 @@ fn message_inline(ui: &mut Ui, message: &str, colour: Color32) {
 
 fn kind_colour(kind: IntakeKind) -> Color32 {
     match kind {
-        IntakeKind::Client => theme::ACCENT_BLUE,
-        IntakeKind::Worker => theme::ACCENT,
-        IntakeKind::Other => theme::WARNING,
+        IntakeKind::Client => theme::accent_blue(),
+        IntakeKind::Worker => theme::accent(),
+        IntakeKind::Other => theme::warning(),
     }
 }
 

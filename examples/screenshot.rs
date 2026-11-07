@@ -7,7 +7,11 @@
 use std::time::{Duration, Instant};
 
 use carelibre_desktop::{
-    CareLibreApp, intake::IntakeKind, pages::Page, server::ConnectionState, theme,
+    CareLibreApp,
+    intake::IntakeKind,
+    pages::Page,
+    server::ConnectionState,
+    theme::{self, ThemeMode},
 };
 use eframe::egui;
 
@@ -22,6 +26,7 @@ fn main() {
         Some("clients") => Page::Clients,
         Some("workers") => Page::Workers,
         Some("rostering") => Page::Rostering,
+        Some("relationships") => Page::Relationships,
         Some("services") => Page::Services,
         Some("documents") => Page::Documents,
         Some("communications") => Page::Communications,
@@ -34,6 +39,15 @@ fn main() {
     let perf = args.iter().any(|arg| arg == "--perf");
     let contact = args.iter().any(|arg| arg == "--contact");
     let client_side = args.iter().any(|arg| arg == "--client");
+    let theme_mode = args
+        .iter()
+        .find_map(|arg| arg.strip_prefix("--theme="))
+        .map(|value| match value {
+            "light" => ThemeMode::Light,
+            "dark" => ThemeMode::Dark,
+            _ => ThemeMode::System,
+        })
+        .unwrap_or(ThemeMode::System);
     let login = args.iter().find_map(|arg| {
         arg.strip_prefix("--login=")
             .and_then(|value| value.split_once(':'))
@@ -48,6 +62,7 @@ fn main() {
 
     let mut app = CareLibreApp::new();
     app.set_page(page);
+    app.set_theme_mode(theme_mode);
     if client_side {
         app.set_client_side_decorations(true);
     }
@@ -57,7 +72,7 @@ fn main() {
 
     let mut harness = egui_kittest::Harness::builder()
         .with_size(egui::vec2(1360.0, 860.0))
-        .with_context_setup(theme::apply)
+        .with_context_setup(move |ctx| theme::apply(ctx, theme_mode))
         .wgpu()
         .build_ui_state(|ui, app: &mut CareLibreApp| app.show(ui), app);
 
@@ -107,6 +122,14 @@ fn main() {
         if matches!(page, Page::Clients | Page::Workers | Page::Contacts) {
             let deadline = Instant::now() + Duration::from_secs(5);
             while harness.state().contacts_loaded() == 0 && Instant::now() < deadline {
+                harness.run();
+                std::thread::sleep(Duration::from_millis(25));
+            }
+        }
+
+        if page == Page::Relationships {
+            let deadline = Instant::now() + Duration::from_secs(15);
+            while !harness.state().relationship_graph_ready() && Instant::now() < deadline {
                 harness.run();
                 std::thread::sleep(Duration::from_millis(25));
             }

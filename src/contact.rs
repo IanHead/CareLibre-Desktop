@@ -177,3 +177,99 @@ impl ContactRecord {
             .unwrap_or("")
     }
 }
+
+// Relationship graph API ---------------------------------------------------
+
+/// The kind of party at one end of a relationship.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PartyKind {
+    Contact,
+    Organisation,
+}
+
+impl PartyKind {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Contact => "Contact",
+            Self::Organisation => "Organisation",
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Contact => "contact",
+            Self::Organisation => "organisation",
+        }
+    }
+}
+
+/// One two-sided relationship, with a role for each endpoint.
+#[derive(Clone, Debug, Deserialize)]
+pub struct ApiRelationship {
+    pub id: String,
+    pub from_kind: PartyKind,
+    pub from_id: String,
+    pub from_name: String,
+    pub from_role: String,
+    pub to_kind: PartyKind,
+    pub to_id: String,
+    pub to_name: String,
+    pub to_role: String,
+    pub start_date: Option<String>,
+    pub end_date: Option<String>,
+    pub notes: Option<String>,
+    pub updated_at: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct ApiRelationshipList {
+    pub items: Vec<ApiRelationship>,
+    pub total: usize,
+}
+
+/// A node in the relationship graph, used as the party lookup catalogue.
+#[derive(Clone, Debug, Deserialize)]
+pub struct ApiGraphNode {
+    pub kind: PartyKind,
+    pub id: String,
+    pub label: String,
+    #[serde(default)]
+    pub degree: usize,
+    #[serde(default)]
+    pub depth: Option<usize>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct ApiRelationshipGraph {
+    pub nodes: Vec<ApiGraphNode>,
+    pub edges: Vec<ApiRelationship>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct ApiRelationshipWrite {
+    pub from_kind: PartyKind,
+    pub from_id: String,
+    pub from_role: String,
+    pub to_kind: PartyKind,
+    pub to_id: String,
+    pub to_role: String,
+    pub start_date: Option<String>,
+    pub end_date: Option<String>,
+    pub notes: Option<String>,
+}
+
+/// Render a stored role (`emergency_contact`) for the UI.
+pub fn relationship_role_label(role: &str) -> String {
+    role.split(['_', '-', ' '])
+        .filter(|word| !word.is_empty())
+        .map(|word| {
+            let mut chars = word.chars();
+            match chars.next() {
+                Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}

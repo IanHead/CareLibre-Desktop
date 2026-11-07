@@ -85,7 +85,7 @@ pub fn show(
     }
 
     if let Some(error) = server_error {
-        message_card(ui, "Server unavailable", error, theme::DANGER);
+        message_card(ui, "Server unavailable", error, theme::danger());
         return None;
     }
 
@@ -97,7 +97,7 @@ pub fn show(
 
     if let Some(error) = &state.error {
         ui.add_space(8.0);
-        message_card(ui, "Query failed", error, theme::DANGER);
+        message_card(ui, "Query failed", error, theme::danger());
     }
 
     ui.add_space(8.0);
@@ -107,7 +107,7 @@ pub fn show(
             ui,
             "Loading contacts",
             "Fetching the first page from the CareLibre server.",
-            theme::MUTED,
+            theme::muted(),
         );
     } else if state.counts.all == 0 && state.search.trim().is_empty() && state.error.is_none() {
         empty_card(ui, &mut action);
@@ -116,7 +116,7 @@ pub fn show(
             ui,
             "No matches",
             &format!("No contacts match “{}”.", state.search.trim()),
-            theme::MUTED,
+            theme::muted(),
         );
     } else {
         contacts_table(ui, state, &mut action);
@@ -130,37 +130,37 @@ fn header(ui: &mut Ui, state: &ContactsState) {
         ui.vertical(|ui| {
             ui.horizontal(|ui| {
                 ui.label(RichText::new(state.filter.label()).font(theme::strong_font(26.0)));
-                theme::pill(ui, &format_count(state.total), theme::ACCENT);
+                theme::pill(ui, &format_count(state.total), theme::accent());
             });
             ui.label(
                 RichText::new(
                     "Live contact data from the CareLibre server, fetched by a background worker.",
                 )
-                .color(theme::MUTED)
+                .color(theme::muted())
                 .size(12.5),
             );
         });
 
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            theme::pill(ui, "SERVER", theme::ACCENT);
+            theme::pill(ui, "SERVER", theme::accent());
         });
     });
 }
 
 fn stat_chips(ui: &mut Ui, state: &ContactsState) {
     ui.horizontal(|ui| {
-        chip(ui, "All contacts", state.counts.all, theme::TEXT);
-        chip(ui, "Clients", state.counts.clients, theme::ACCENT_BLUE);
-        chip(ui, "Workers", state.counts.workers, theme::ACCENT);
-        chip(ui, "Dual role", state.counts.dual, theme::WARNING);
-        chip(ui, "Other", state.counts.other, theme::FAINT);
+        chip(ui, "All contacts", state.counts.all, theme::text());
+        chip(ui, "Clients", state.counts.clients, theme::accent_blue());
+        chip(ui, "Workers", state.counts.workers, theme::accent());
+        chip(ui, "Dual role", state.counts.dual, theme::warning());
+        chip(ui, "Other", state.counts.other, theme::faint());
     });
 }
 
 fn chip(ui: &mut Ui, label: &str, value: usize, colour: Color32) {
     egui::Frame::new()
-        .fill(theme::SURFACE)
-        .stroke(Stroke::new(1.0, theme::BORDER))
+        .fill(theme::surface())
+        .stroke(Stroke::new(1.0, theme::border()))
         .corner_radius(CornerRadius::same(8))
         .inner_margin(Margin::symmetric(11, 6))
         .show(ui, |ui| {
@@ -170,7 +170,7 @@ fn chip(ui: &mut Ui, label: &str, value: usize, colour: Color32) {
                         .color(colour)
                         .font(theme::strong_font(14.0)),
                 );
-                ui.label(RichText::new(label).color(theme::MUTED).size(10.5));
+                ui.label(RichText::new(label).color(theme::muted()).size(10.5));
             });
         });
 }
@@ -194,7 +194,7 @@ fn search_row(ui: &mut Ui, state: &mut ContactsState) -> Option<ContactsAction> 
         if !state.search.is_empty()
             && ui
                 .add(
-                    egui::Button::new(RichText::new("Clear").color(theme::FAINT).size(11.0))
+                    egui::Button::new(RichText::new("Clear").color(theme::faint()).size(11.0))
                         .frame(false),
                 )
                 .clicked()
@@ -210,11 +210,11 @@ fn search_row(ui: &mut Ui, state: &mut ContactsState) -> Option<ContactsAction> 
             if state.loading {
                 text.push_str(" · updating");
             }
-            ui.label(RichText::new(text).color(theme::FAINT).size(10.5));
+            ui.label(RichText::new(text).color(theme::faint()).size(10.5));
             if let Some(ms) = state.last_query_ms {
                 ui.label(
                     RichText::new(format!("{ms:.1} ms"))
-                        .color(theme::FAINT)
+                        .color(theme::faint())
                         .size(10.5)
                         .monospace(),
                 );
@@ -286,7 +286,7 @@ fn contacts_table(ui: &mut Ui, state: &mut ContactsState, action: &mut Option<Co
                 format_count(state.total),
                 state.filter.label().to_lowercase(),
             ))
-            .color(theme::FAINT)
+            .color(theme::faint())
             .size(10.0),
         );
     });
@@ -296,17 +296,17 @@ fn table_header(ui: &mut Ui) {
     let (rect, _) =
         ui.allocate_exact_size(vec2(ui.available_width(), HEADER_HEIGHT), Sense::hover());
     let painter = ui.painter();
-    painter.rect_filled(rect, CornerRadius::ZERO, theme::SIDEBAR);
+    painter.rect_filled(rect, CornerRadius::ZERO, theme::sidebar());
     painter.hline(
         rect.x_range(),
         rect.bottom(),
-        Stroke::new(1.0, theme::BORDER),
+        Stroke::new(1.0, theme::border()),
     );
 
     let width = rect.width();
     let y = rect.center().y;
     let font = FontId::proportional(10.5);
-    let colour = theme::FAINT;
+    let colour = theme::faint();
 
     painter.text(
         pos2(rect.left() + 58.0, y),
@@ -353,9 +353,9 @@ fn row_row(ui: &mut Ui, row: &ContactRow, index: usize, selected: Option<&str>) 
     let fill = if is_selected {
         theme::accent_soft(20)
     } else if response.hovered() {
-        theme::SURFACE
+        theme::surface()
     } else if index % 2 == 1 {
-        Color32::from_rgb(12, 19, 32)
+        theme::row_alt()
     } else {
         Color32::TRANSPARENT
     };
@@ -365,7 +365,7 @@ fn row_row(ui: &mut Ui, row: &ContactRow, index: usize, selected: Option<&str>) 
     painter.hline(
         rect.x_range(),
         rect.bottom(),
-        Stroke::new(1.0, Color32::from_rgb(24, 34, 53)),
+        Stroke::new(1.0, theme::border()),
     );
 
     let width = rect.width();
@@ -395,7 +395,7 @@ fn row_row(ui: &mut Ui, row: &ContactRow, index: usize, selected: Option<&str>) 
         Align2::LEFT_CENTER,
         truncate(&row.name, (name_width / 6.7) as usize),
         theme::strong_font(13.0),
-        theme::TEXT,
+        theme::text(),
     );
 
     // Contact details
@@ -407,14 +407,14 @@ fn row_row(ui: &mut Ui, row: &ContactRow, index: usize, selected: Option<&str>) 
         Align2::LEFT_CENTER,
         truncate(email, (contact_width / 5.5) as usize),
         FontId::proportional(10.5),
-        theme::MUTED,
+        theme::muted(),
     );
     painter.text(
         pos2(contact_x, centre_y + 7.0),
         Align2::LEFT_CENTER,
         row.phone.as_deref().unwrap_or("—"),
         FontId::monospace(9.5),
-        theme::FAINT,
+        theme::faint(),
     );
 
     // Division
@@ -427,7 +427,7 @@ fn row_row(ui: &mut Ui, row: &ContactRow, index: usize, selected: Option<&str>) 
             (width * 0.17 / 5.8) as usize,
         ),
         FontId::proportional(11.0),
-        theme::MUTED,
+        theme::muted(),
     );
 
     // Role and status pills
@@ -463,22 +463,22 @@ fn placeholder_row(ui: &mut Ui, index: usize) {
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), ROW_HEIGHT), Sense::hover());
     let painter = ui.painter();
     if index % 2 == 1 {
-        painter.rect_filled(rect, CornerRadius::ZERO, Color32::from_rgb(12, 19, 32));
+        painter.rect_filled(rect, CornerRadius::ZERO, theme::row_alt());
     }
     painter.text(
         pos2(rect.left() + 58.0, rect.center().y),
         Align2::LEFT_CENTER,
         "Loading local rows…",
         FontId::proportional(11.0),
-        theme::FAINT,
+        theme::faint(),
     );
 }
 
 fn sign_in_card(ui: &mut Ui) -> Option<ContactsAction> {
     let mut action = None;
     egui::Frame::new()
-        .fill(theme::SURFACE)
-        .stroke(Stroke::new(1.0, theme::BORDER))
+        .fill(theme::surface())
+        .stroke(Stroke::new(1.0, theme::border()))
         .corner_radius(CornerRadius::same(14))
         .inner_margin(Margin::same(22))
         .show(ui, |ui| {
@@ -489,7 +489,7 @@ fn sign_in_card(ui: &mut Ui) -> Option<ContactsAction> {
                 RichText::new(
                     "Contacts are read directly from the CareLibre server. Sign in with your organisation account in Settings to continue.",
                 )
-                .color(theme::MUTED)
+                .color(theme::muted())
                 .size(12.0),
             );
             ui.add_space(12.0);
@@ -502,8 +502,8 @@ fn sign_in_card(ui: &mut Ui) -> Option<ContactsAction> {
 
 fn empty_card(ui: &mut Ui, action: &mut Option<ContactsAction>) {
     egui::Frame::new()
-        .fill(theme::SURFACE)
-        .stroke(Stroke::new(1.0, theme::BORDER))
+        .fill(theme::surface())
+        .stroke(Stroke::new(1.0, theme::border()))
         .corner_radius(CornerRadius::same(14))
         .inner_margin(Margin::same(22))
         .show(ui, |ui| {
@@ -514,7 +514,7 @@ fn empty_card(ui: &mut Ui, action: &mut Option<ContactsAction>) {
                 RichText::new(
                     "Create the first contact with a guided intake. Completed intakes are saved to the server.",
                 )
-                .color(theme::MUTED)
+                .color(theme::muted())
                 .size(12.0),
             );
             ui.add_space(12.0);
@@ -526,8 +526,8 @@ fn empty_card(ui: &mut Ui, action: &mut Option<ContactsAction>) {
 
 fn message_card(ui: &mut Ui, title: &str, message: &str, colour: Color32) {
     egui::Frame::new()
-        .fill(theme::SURFACE)
-        .stroke(Stroke::new(1.0, theme::BORDER))
+        .fill(theme::surface())
+        .stroke(Stroke::new(1.0, theme::border()))
         .corner_radius(CornerRadius::same(14))
         .inner_margin(Margin::same(20))
         .show(ui, |ui| {
@@ -538,25 +538,25 @@ fn message_card(ui: &mut Ui, title: &str, message: &str, colour: Color32) {
                     .font(theme::strong_font(15.0)),
             );
             ui.add_space(4.0);
-            ui.label(RichText::new(message).color(theme::MUTED).size(12.0));
+            ui.label(RichText::new(message).color(theme::muted()).size(12.0));
         });
 }
 
 fn kind_colour(kind: ContactKind) -> Color32 {
     match kind {
-        ContactKind::Client => theme::ACCENT_BLUE,
-        ContactKind::Worker => theme::ACCENT,
-        ContactKind::Dual => theme::WARNING,
-        ContactKind::Other => theme::FAINT,
+        ContactKind::Client => theme::accent_blue(),
+        ContactKind::Worker => theme::accent(),
+        ContactKind::Dual => theme::warning(),
+        ContactKind::Other => theme::faint(),
     }
 }
 
 fn status_colour(status: &str) -> Color32 {
     match status {
-        "Active" => theme::SUCCESS,
-        "Onboarding" => theme::WARNING,
-        "Inactive" => theme::FAINT,
-        _ => theme::MUTED,
+        "Active" => theme::success(),
+        "Onboarding" => theme::warning(),
+        "Inactive" => theme::faint(),
+        _ => theme::muted(),
     }
 }
 

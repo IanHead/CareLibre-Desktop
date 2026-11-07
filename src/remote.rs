@@ -10,7 +10,10 @@ use eframe::egui;
 
 use crate::{
     api::ApiClient,
-    contact::{ApiContactDetail, ApiContactList, ApiContactWrite},
+    contact::{
+        ApiContactDetail, ApiContactList, ApiContactWrite, ApiRelationship, ApiRelationshipGraph,
+        ApiRelationshipList, ApiRelationshipWrite,
+    },
     store::{ContactCursor, ContactFilter},
 };
 
@@ -45,6 +48,30 @@ pub enum RemoteCommand {
         token: String,
         payload: Box<ApiContactWrite>,
     },
+    ListRelationships {
+        request_id: u64,
+        base_url: String,
+        token: String,
+        contact_id: Option<String>,
+        organisation_id: Option<String>,
+    },
+    RelationshipGraph {
+        request_id: u64,
+        base_url: String,
+        token: String,
+    },
+    CreateRelationship {
+        request_id: u64,
+        base_url: String,
+        token: String,
+        payload: Box<ApiRelationshipWrite>,
+    },
+    DeleteRelationship {
+        request_id: u64,
+        base_url: String,
+        token: String,
+        id: String,
+    },
 }
 
 pub enum RemoteEvent {
@@ -67,6 +94,25 @@ pub enum RemoteEvent {
     ContactCreated {
         request_id: u64,
         result: Result<ApiContactDetail, String>,
+    },
+    RelationshipsListed {
+        request_id: u64,
+        contact_id: Option<String>,
+        organisation_id: Option<String>,
+        result: Result<ApiRelationshipList, String>,
+    },
+    RelationshipGraphLoaded {
+        request_id: u64,
+        result: Result<ApiRelationshipGraph, String>,
+    },
+    RelationshipCreated {
+        request_id: u64,
+        result: Result<ApiRelationship, String>,
+    },
+    RelationshipDeleted {
+        request_id: u64,
+        id: String,
+        result: Result<(), String>,
     },
 }
 
@@ -155,6 +201,61 @@ impl RemoteHandle {
         });
     }
 
+    pub fn list_relationships(
+        &self,
+        request_id: u64,
+        base_url: String,
+        token: String,
+        contact_id: Option<String>,
+        organisation_id: Option<String>,
+    ) {
+        let _ = self.commands.send(RemoteCommand::ListRelationships {
+            request_id,
+            base_url,
+            token,
+            contact_id,
+            organisation_id,
+        });
+    }
+
+    pub fn relationship_graph(&self, request_id: u64, base_url: String, token: String) {
+        let _ = self.commands.send(RemoteCommand::RelationshipGraph {
+            request_id,
+            base_url,
+            token,
+        });
+    }
+
+    pub fn create_relationship(
+        &self,
+        request_id: u64,
+        base_url: String,
+        token: String,
+        payload: ApiRelationshipWrite,
+    ) {
+        let _ = self.commands.send(RemoteCommand::CreateRelationship {
+            request_id,
+            base_url,
+            token,
+            payload: Box::new(payload),
+        });
+    }
+
+    pub fn delete_relationship(
+        &self,
+        request_id: u64,
+        base_url: String,
+        token: String,
+        id: String,
+    ) {
+        let _ = self.commands.send(RemoteCommand::DeleteRelationship {
+            request_id,
+            base_url,
+            token,
+            id,
+        });
+    }
+
     pub fn try_recv(&self) -> Option<RemoteEvent> {
         self.events.try_recv().ok()
     }
@@ -232,6 +333,65 @@ fn run(ctx: egui::Context, commands: Receiver<RemoteCommand>, events: Sender<Rem
                     .and_then(|client| client.create_contact(&token, &payload))
                     .map_err(|err| err.to_string());
                 let _ = events.send(RemoteEvent::ContactCreated { request_id, result });
+            }
+            RemoteCommand::ListRelationships {
+                request_id,
+                base_url,
+                token,
+                contact_id,
+                organisation_id,
+            } => {
+                let result = ApiClient::new(&base_url)
+                    .and_then(|client| {
+                        client.list_relationships(
+                            &token,
+                            contact_id.as_deref(),
+                            organisation_id.as_deref(),
+                        )
+                    })
+                    .map_err(|err| err.to_string());
+                let _ = events.send(RemoteEvent::RelationshipsListed {
+                    request_id,
+                    contact_id,
+                    organisation_id,
+                    result,
+                });
+            }
+            RemoteCommand::RelationshipGraph {
+                request_id,
+                base_url,
+                token,
+            } => {
+                let result = ApiClient::new(&base_url)
+                    .and_then(|client| client.relationship_graph(&token))
+                    .map_err(|err| err.to_string());
+                let _ = events.send(RemoteEvent::RelationshipGraphLoaded { request_id, result });
+            }
+            RemoteCommand::CreateRelationship {
+                request_id,
+                base_url,
+                token,
+                payload,
+            } => {
+                let result = ApiClient::new(&base_url)
+                    .and_then(|client| client.create_relationship(&token, &payload))
+                    .map_err(|err| err.to_string());
+                let _ = events.send(RemoteEvent::RelationshipCreated { request_id, result });
+            }
+            RemoteCommand::DeleteRelationship {
+                request_id,
+                base_url,
+                token,
+                id,
+            } => {
+                let result = ApiClient::new(&base_url)
+                    .and_then(|client| client.delete_relationship(&token, &id))
+                    .map_err(|err| err.to_string());
+                let _ = events.send(RemoteEvent::RelationshipDeleted {
+                    request_id,
+                    id,
+                    result,
+                });
             }
         }
 

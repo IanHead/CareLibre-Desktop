@@ -650,6 +650,7 @@ dependencies = [
  "ureq",
  "url",
  "uuid",
+ "zbus",
 ]
 
 [[package]]

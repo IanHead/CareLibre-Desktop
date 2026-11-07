@@ -1,11 +1,17 @@
-use carelibre_desktop::{CareLibreApp, pages::Page, theme};
+use carelibre_desktop::{
+    CareLibreApp,
+    pages::Page,
+    theme::{self, ThemeMode},
+};
 use eframe::egui;
 use egui_kittest::{Harness, kittest::Queryable};
 
 fn harness(app: CareLibreApp) -> Harness<'static, CareLibreApp> {
+    let mut app = app;
+    app.set_theme_mode(ThemeMode::Dark);
     Harness::builder()
         .with_size(egui::vec2(1280.0, 800.0))
-        .with_context_setup(theme::apply)
+        .with_context_setup(|ctx| theme::apply(ctx, ThemeMode::Dark))
         .build_ui_state(|ui, app| app.show(ui), app)
 }
 
@@ -16,6 +22,7 @@ fn every_page_renders() {
         Page::Clients,
         Page::Workers,
         Page::Rostering,
+        Page::Relationships,
         Page::Services,
         Page::Documents,
         Page::Communications,
@@ -43,4 +50,52 @@ fn sidebar_navigation_works() {
     harness.run();
 
     assert_eq!(harness.state().page(), Page::Rostering);
+}
+
+#[test]
+fn settings_offers_all_appearance_modes() {
+    let mut app = CareLibreApp::new();
+    app.set_page(Page::Settings);
+
+    let mut harness = harness(app);
+    harness.run();
+
+    for label in ["Light", "Dark", "Follow System"] {
+        harness.get_by_label(label);
+    }
+}
+
+#[test]
+fn pointer_clicks_work_across_the_window() {
+    let mut app = CareLibreApp::new();
+    app.set_page(Page::Home);
+    app.set_client_side_decorations(true);
+
+    let mut harness = harness(app);
+    harness.run();
+
+    let button = harness.get_by_label("Sign in to the server");
+    let centre = button.rect().center();
+    assert!(
+        centre.x > 800.0 && centre.y > 500.0,
+        "expected a button in the lower-right quadrant, got {centre:?}"
+    );
+    button.click();
+    harness.run();
+
+    assert_eq!(harness.state().page(), Page::Settings);
+}
+
+#[test]
+fn multiple_contacts_open_as_dock_tabs() {
+    let mut app = CareLibreApp::new();
+    app.open_contact("first-contact");
+    app.open_contact("second-contact");
+    // Re-opening an existing record must focus its tab, not duplicate it.
+    app.open_contact("first-contact");
+
+    assert_eq!(
+        app.docked_contact_ids(),
+        vec!["first-contact".to_owned(), "second-contact".to_owned()]
+    );
 }

@@ -3,6 +3,7 @@ use eframe::egui;
 
 fn main() -> eframe::Result {
     let config = Config::load();
+    let theme_mode = config.theme;
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("CareLibre")
@@ -20,8 +21,8 @@ fn main() -> eframe::Result {
     eframe::run_native(
         "CareLibre",
         options,
-        Box::new(|cc| {
-            theme::apply(&cc.egui_ctx);
+        Box::new(move |cc| {
+            theme::apply(&cc.egui_ctx, theme_mode);
             Ok(Box::new(CareLibreApp::with_server(&cc.egui_ctx)))
         }),
     )

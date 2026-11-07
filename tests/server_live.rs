@@ -10,8 +10,9 @@
 
 use carelibre_desktop::{
     api::{ApiClient, DEFAULT_BASE_URL},
+    contact::{ApiRelationshipWrite, PartyKind},
     server::{ConnectionState, Event, ServerRuntime},
-    theme,
+    theme::{self, ThemeMode},
 };
 use eframe::egui;
 use egui_kittest::{Harness, kittest::Queryable};
@@ -68,7 +69,7 @@ fn app_connects_to_live_server() {
 
     let mut harness = Harness::builder()
         .with_size(egui::vec2(1280.0, 800.0))
-        .with_context_setup(theme::apply)
+        .with_context_setup(|ctx| theme::apply(ctx, ThemeMode::Dark))
         .build_ui_state(
             |ui, app: &mut carelibre_desktop::CareLibreApp| app.show(ui),
             app,
@@ -117,7 +118,7 @@ fn server_contacts_load_and_editor_opens() {
 
     let mut harness = Harness::builder()
         .with_size(egui::vec2(1280.0, 800.0))
-        .with_context_setup(theme::apply)
+        .with_context_setup(|ctx| theme::apply(ctx, ThemeMode::Dark))
         .build_ui_state(
             |ui, app: &mut carelibre_desktop::CareLibreApp| app.show(ui),
             app,
@@ -172,7 +173,7 @@ fn intake_wizard_pops_out_and_docks() {
 
     let mut harness = Harness::builder()
         .with_size(egui::vec2(1280.0, 800.0))
-        .with_context_setup(theme::apply)
+        .with_context_setup(|ctx| theme::apply(ctx, ThemeMode::Dark))
         .build_ui_state(
             |ui, app: &mut carelibre_desktop::CareLibreApp| app.show(ui),
             app,
@@ -200,5 +201,72 @@ fn intake_wizard_pops_out_and_docks() {
     assert!(
         !harness.state().intake_popped_out(),
         "the intake wizard should dock back into the page"
+    );
+}
+
+#[test]
+#[ignore = "requires a running CareLibre server with the demo seed"]
+fn relationship_graph_round_trip() {
+    let base_url =
+        std::env::var("CARELIBRE_TEST_SERVER").unwrap_or_else(|_| DEFAULT_BASE_URL.to_owned());
+    let client = ApiClient::new(&base_url).expect("valid server URL");
+    let session = client
+        .login("owner@bluedreams.example", "BlueDreamsCare!2026", None)
+        .expect("demo sign-in");
+
+    let graph = client
+        .relationship_graph(&session.access_token)
+        .expect("graph loads");
+    assert!(!graph.nodes.is_empty(), "graph should have nodes");
+    assert!(!graph.edges.is_empty(), "demo graph should have edges");
+
+    let contact = graph
+        .nodes
+        .iter()
+        .find(|node| node.kind == PartyKind::Contact)
+        .expect("a contact node");
+    let organisation = graph
+        .nodes
+        .iter()
+        .find(|node| node.kind == PartyKind::Organisation)
+        .expect("an organisation node");
+
+    let suffix = uuid::Uuid::now_v7().simple().to_string();
+    let write = ApiRelationshipWrite {
+        from_kind: PartyKind::Contact,
+        from_id: contact.id.clone(),
+        from_role: format!("verify_from_{suffix}"),
+        to_kind: PartyKind::Organisation,
+        to_id: organisation.id.clone(),
+        to_role: format!("verify_to_{suffix}"),
+        start_date: None,
+        end_date: None,
+        notes: Some("desktop live verification".to_owned()),
+    };
+
+    let edge = client
+        .create_relationship(&session.access_token, &write)
+        .expect("relationship created");
+    assert_eq!(edge.from_id, contact.id);
+    assert_eq!(edge.to_kind, PartyKind::Organisation);
+
+    let listed = client
+        .list_relationships(&session.access_token, Some(&contact.id), None)
+        .expect("relationships list");
+    assert!(
+        listed.items.iter().any(|item| item.id == edge.id),
+        "created relationship should be listed for the contact"
+    );
+
+    client
+        .delete_relationship(&session.access_token, &edge.id)
+        .expect("relationship deleted");
+
+    let after = client
+        .list_relationships(&session.access_token, Some(&contact.id), None)
+        .expect("relationships list after delete");
+    assert!(
+        !after.items.iter().any(|item| item.id == edge.id),
+        "deleted relationship should disappear"
     );
 }

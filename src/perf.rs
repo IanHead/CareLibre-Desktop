@@ -86,8 +86,8 @@ impl PerfHud {
             .collapsible(false)
             .frame(
                 egui::Frame::new()
-                    .fill(theme::SURFACE.gamma_multiply(0.96))
-                    .stroke(Stroke::new(1.0, theme::BORDER))
+                    .fill(theme::surface().gamma_multiply(0.96))
+                    .stroke(Stroke::new(1.0, theme::border()))
                     .corner_radius(CornerRadius::same(10))
                     .inner_margin(Margin::same(12)),
             )
@@ -96,11 +96,11 @@ impl PerfHud {
                 ui.horizontal(|ui| {
                     ui.label(
                         RichText::new("PERFORMANCE")
-                            .color(theme::ACCENT)
+                            .color(theme::accent())
                             .font(theme::strong_font(10.0)),
                     );
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.label(RichText::new("F12").color(theme::FAINT).size(9.0));
+                        ui.label(RichText::new("F12").color(theme::faint()).size(9.0));
                     });
                 });
                 ui.add_space(6.0);
@@ -111,7 +111,7 @@ impl PerfHud {
                     ui,
                     "p95 / worst",
                     &format!("{p95:.1} / {worst:.1} ms"),
-                    theme::MUTED,
+                    theme::muted(),
                 );
                 ui.add_space(4.0);
                 ui.separator();
@@ -126,22 +126,22 @@ impl PerfHud {
                         "starting"
                     },
                     if info.cache_ready {
-                        theme::SUCCESS
+                        theme::success()
                     } else {
-                        theme::WARNING
+                        theme::warning()
                     },
                 );
                 row(
                     ui,
                     "Contacts",
                     &format!("{} / {}", info.contacts_loaded, info.contacts_total),
-                    theme::TEXT,
+                    theme::text(),
                 );
                 row(
                     ui,
                     "Total contacts",
                     &info.contacts_all.to_string(),
-                    theme::MUTED,
+                    theme::muted(),
                 );
                 row(
                     ui,
@@ -150,24 +150,24 @@ impl PerfHud {
                         .last_query_ms
                         .map(|ms| format!("{ms:.2} ms"))
                         .unwrap_or_else(|| "—".to_owned()),
-                    theme::MUTED,
+                    theme::muted(),
                 );
                 if let Some(shifts) = info.shifts {
-                    row(ui, "Shifts", &shifts.to_string(), theme::MUTED);
+                    row(ui, "Shifts", &shifts.to_string(), theme::muted());
                 }
 
                 if let Some(path) = info.cache_path {
                     ui.add_space(4.0);
                     ui.label(
                         RichText::new(path)
-                            .color(theme::FAINT)
+                            .color(theme::faint())
                             .size(8.5)
                             .monospace(),
                     );
                 }
                 if let Some(error) = info.cache_error {
                     ui.add_space(4.0);
-                    ui.label(RichText::new(error).color(theme::DANGER).size(9.5));
+                    ui.label(RichText::new(error).color(theme::danger()).size(9.5));
                 }
             });
     }
@@ -175,7 +175,7 @@ impl PerfHud {
 
 fn row(ui: &mut egui::Ui, label: &str, value: &str, colour: Color32) {
     ui.horizontal(|ui| {
-        ui.label(RichText::new(label).color(theme::MUTED).size(10.0));
+        ui.label(RichText::new(label).color(theme::muted()).size(10.0));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.label(RichText::new(value).color(colour).size(10.0).monospace());
         });
@@ -184,10 +184,10 @@ fn row(ui: &mut egui::Ui, label: &str, value: &str, colour: Color32) {
 
 fn frame_colour(avg_ms: f32) -> Color32 {
     if avg_ms <= 8.5 {
-        theme::SUCCESS
+        theme::success()
     } else if avg_ms <= 16.7 {
-        theme::WARNING
+        theme::warning()
     } else {
-        theme::DANGER
+        theme::danger()
     }
 }

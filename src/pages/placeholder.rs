@@ -16,22 +16,22 @@ pub fn show(ui: &mut Ui, page: Page) -> Option<Action> {
             ui.horizontal(|ui| {
                 let (rect, _) = ui.allocate_exact_size(vec2(52.0, 52.0), Sense::hover());
                 ui.painter()
-                    .rect_filled(rect, CornerRadius::same(14), theme::SURFACE_RAISED);
+                    .rect_filled(rect, CornerRadius::same(14), theme::surface_raised());
                 ui.painter().text(
                     rect.center(),
                     Align2::CENTER_CENTER,
                     page.icon(),
                     FontId::proportional(22.0),
-                    theme::TEXT,
+                    theme::text(),
                 );
 
                 ui.add_space(6.0);
                 ui.vertical(|ui| {
                     ui.horizontal(|ui| {
                         ui.label(RichText::new(page.label()).font(theme::strong_font(26.0)));
-                        theme::pill(ui, "PLANNED", theme::WARNING);
+                        theme::pill(ui, "PLANNED", theme::warning());
                     });
-                    ui.label(RichText::new(page.blurb()).color(theme::MUTED).size(13.0));
+                    ui.label(RichText::new(page.blurb()).color(theme::muted()).size(13.0));
                 });
             });
 
@@ -53,9 +53,9 @@ pub fn show(ui: &mut Ui, page: Page) -> Option<Action> {
                                     let (rect, _) =
                                         ui.allocate_exact_size(vec2(18.0, 18.0), Sense::hover());
                                     ui.painter()
-                                        .circle_filled(rect.center(), 3.0, theme::ACCENT);
+                                        .circle_filled(rect.center(), 3.0, theme::accent());
                                     ui.label(
-                                        RichText::new(*feature).color(theme::MUTED).size(12.5),
+                                        RichText::new(*feature).color(theme::muted()).size(12.5),
                                     );
                                 });
                                 ui.add_space(3.0);
@@ -82,13 +82,13 @@ pub fn show(ui: &mut Ui, page: Page) -> Option<Action> {
                                      home dashboard. Each module will be wired up to the \
                                      shared CareLibre API as it lands.",
                                 )
-                                .color(theme::MUTED)
+                                .color(theme::muted())
                                 .size(12.5),
                             );
                             ui.add_space(12.0);
                             ui.label(
                                 RichText::new("Rust · egui · wgpu · no web view")
-                                    .color(theme::FAINT)
+                                    .color(theme::faint())
                                     .size(11.0)
                                     .monospace(),
                             );
@@ -100,10 +100,10 @@ pub fn show(ui: &mut Ui, page: Page) -> Option<Action> {
                             .add(
                                 egui::Button::new(
                                     RichText::new("←  Back to home")
-                                        .color(theme::BG)
+                                        .color(theme::on_accent())
                                         .font(theme::strong_font(13.0)),
                                 )
-                                .fill(theme::ACCENT)
+                                .fill(theme::accent())
                                 .corner_radius(CornerRadius::same(8))
                                 .min_size(vec2(150.0, 34.0)),
                             )

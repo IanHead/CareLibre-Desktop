@@ -10,24 +10,29 @@ use eframe::egui::{
     self, Align, Align2, Color32, CornerRadius, FontId, Frame, Layout, Margin, RichText, Sense,
     Stroke, Ui, vec2,
 };
+use serde_json::Value;
 
 use crate::{
     api, chrome,
     config::Config,
-    contact::{ApiContactDetail, ApiContactWrite, kind_from_role, row_from_api},
+    contact::{
+        ApiContactDetail, ApiContactWrite, ApiGraphNode, ApiRelationship, ApiRelationshipWrite,
+        PartyKind, kind_from_role, row_from_api,
+    },
     credentials,
     intake::IntakeKind,
     pages::{
         self, Action, Page,
-        contact_editor::{ContactEditorAction, ContactWindowState},
+        contact_editor::{ContactEditorAction, ContactWindowState, NewRelationshipContact},
         contacts::{ContactsAction, ContactsState, LOAD_MORE_SIZE, PAGE_SIZE},
         intake::{IntakeAction, IntakeState, IntakeView},
+        relationships::{RelationshipsAction, RelationshipsForm},
         settings::SettingsForm,
     },
     perf::{PerfHud, PerfInfo},
     remote::{RemoteEvent, RemoteHandle},
     server::{ConnectionState, Event, ServerRuntime, ServerState},
-    store::{self, ContactCounts, ContactFilter, ContactKind, StoreEvent, StoreHandle},
+    store::{self, ContactCounts, ContactFilter, ContactKind, ContactRow, StoreEvent, StoreHandle},
     theme,
 };
 
@@ -44,6 +49,23 @@ pub struct CareLibreApp {
     contacts_workers: ContactsState,
     intake: IntakeState,
     contact_windows: BTreeMap<String, ContactWindowState>,
+    contact_order: Vec<String>,
+    active_contact: Option<String>,
+    drag_tab: Option<String>,
+    relationship_request_seq: u64,
+    relationship_list_requests: BTreeMap<u64, String>,
+    relationship_create_requests: BTreeMap<u64, Option<String>>,
+    relationship_delete_requests: BTreeMap<u64, Option<String>>,
+    relationship_contact_creates: BTreeMap<u64, PendingInlineRelationship>,
+    party_catalog: Vec<ApiGraphNode>,
+    party_catalog_request: Option<u64>,
+    relationship_edges: Vec<ApiRelationship>,
+    relationship_graph_loaded: bool,
+    relationship_form: RelationshipsForm,
+    known_contacts: BTreeMap<String, ContactRow>,
+    last_page: Page,
+    page_changed_at: f64,
+    dock_opened_at: Option<f64>,
     remote: Option<RemoteHandle>,
     app_ctx: Option<egui::Context>,
     store: Option<StoreHandle>,
@@ -58,7 +80,15 @@ pub struct CareLibreApp {
 
 struct Notice {
     text: String,
+    created_at: f64,
     expires_at: f64,
+}
+
+struct PendingInlineRelationship {
+    window_id: String,
+    from_role: String,
+    to_role: String,
+    notes: String,
 }
 
 struct AccountBadge {
@@ -77,6 +107,7 @@ impl CareLibreApp {
         let server = ServerState::new(config.server_url.clone());
         let settings = SettingsForm::new(
             &config.server_url,
+            config.theme,
             config.client_side_decorations,
             config.remember_login,
         );
@@ -94,6 +125,25 @@ impl CareLibreApp {
             contacts_workers: ContactsState::new(ContactFilter::Workers),
             intake: IntakeState::new(),
             contact_windows: BTreeMap::new(),
+            contact_order: Vec::new(),
+            active_contact: None,
+            drag_tab: None,
+            // Keep relationship request ids in a separate range so they can
+            // never collide with intake creation request ids.
+            relationship_request_seq: 1 << 32,
+            relationship_list_requests: BTreeMap::new(),
+            relationship_create_requests: BTreeMap::new(),
+            relationship_delete_requests: BTreeMap::new(),
+            relationship_contact_creates: BTreeMap::new(),
+            party_catalog: Vec::new(),
+            party_catalog_request: None,
+            relationship_edges: Vec::new(),
+            relationship_graph_loaded: false,
+            relationship_form: RelationshipsForm::default(),
+            known_contacts: BTreeMap::new(),
+            last_page: Page::Home,
+            page_changed_at: f64::NEG_INFINITY,
+            dock_opened_at: None,
             remote: None,
             app_ctx: None,
             store: None,
@@ -215,6 +265,19 @@ impl CareLibreApp {
     /// Navigate to a page. Useful for deep links and headless previews.
     pub fn set_page(&mut self, page: Page) {
         self.page = page;
+        self.last_page = page;
+    }
+
+    pub fn docked_contact_ids(&self) -> Vec<String> {
+        self.contact_order
+            .iter()
+            .filter(|id| {
+                self.contact_windows
+                    .get(*id)
+                    .is_some_and(|window| !window.popped_out)
+            })
+            .cloned()
+            .collect()
     }
 
     pub fn page(&self) -> Page {
@@ -237,6 +300,12 @@ impl CareLibreApp {
     pub fn set_client_side_decorations(&mut self, enabled: bool) {
         self.config.client_side_decorations = enabled;
         self.settings.client_side_decorations = enabled;
+    }
+
+    /// Change the appearance for previews/tests without persisting it.
+    pub fn set_theme_mode(&mut self, mode: theme::ThemeMode) {
+        self.config.theme = mode;
+        self.settings.theme = mode;
     }
 
     /// Current server connection state (for previews and integration checks).
@@ -283,6 +352,16 @@ impl CareLibreApp {
     /// The whole application UI. Kept separate from [`eframe::App`] so it can be
     /// rendered by tooling (headless screenshot tests) as well.
     pub fn show(&mut self, ui: &mut Ui) {
+        theme::sync(ui.ctx(), self.config.theme);
+        let now = ui.ctx().input(|i| i.time);
+        if self.page != self.last_page {
+            self.last_page = self.page;
+            self.page_changed_at = now;
+        }
+        let page_progress = ((now - self.page_changed_at) / 0.18).clamp(0.0, 1.0) as f32;
+        if page_progress < 1.0 {
+            ui.ctx().request_repaint();
+        }
         self.perf.begin_frame(ui.ctx());
         self.poll_server(ui.ctx());
         self.poll_store(ui.ctx());
@@ -297,7 +376,11 @@ impl CareLibreApp {
             egui::Panel::top("app_window_chrome")
                 .exact_size(chrome::HEIGHT)
                 .show_separator_line(false)
-                .frame(Frame::new().fill(theme::SIDEBAR).inner_margin(Margin::ZERO))
+                .frame(
+                    Frame::new()
+                        .fill(theme::sidebar())
+                        .inner_margin(Margin::ZERO),
+                )
                 .show(ui, |ui| {
                     let ctx = ui.ctx().clone();
                     chrome::title_bar(ui, &ctx, "CareLibre");
@@ -307,13 +390,29 @@ impl CareLibreApp {
         self.top_bar(ui);
         self.sidebar(ui);
         self.status_bar(ui);
+        self.render_contact_dock(ui);
 
         let mut contacts_action: Option<(ContactFilter, ContactsAction)> = None;
         let mut intake_action: Option<IntakeAction> = None;
+        let mut relationship_action: Option<RelationshipsAction> = None;
         let action = egui::CentralPanel::default()
-            .frame(Frame::new().fill(theme::BG).inner_margin(Margin::same(24)))
+            .frame(
+                Frame::new()
+                    .fill(theme::bg())
+                    .inner_margin(Margin::same(24)),
+            )
             .show(ui, |ui| {
-                self.page_contents(ui, &mut contacts_action, &mut intake_action)
+                if page_progress < 1.0 {
+                    let enter = theme::ease_out(page_progress);
+                    ui.multiply_opacity(0.35 + 0.65 * enter);
+                    ui.add_space((1.0 - enter) * 8.0);
+                }
+                self.page_contents(
+                    ui,
+                    &mut contacts_action,
+                    &mut intake_action,
+                    &mut relationship_action,
+                )
             })
             .inner;
 
@@ -322,6 +421,9 @@ impl CareLibreApp {
         }
         if let Some(intake_action) = intake_action {
             self.handle_intake_action(ui.ctx(), intake_action);
+        }
+        if let Some(relationship_action) = relationship_action {
+            self.handle_relationships_action(ui.ctx(), relationship_action);
         }
 
         if let Some(action) = action {
@@ -360,7 +462,11 @@ impl CareLibreApp {
         ui: &mut Ui,
         contacts_action: &mut Option<(ContactFilter, ContactsAction)>,
         intake_action: &mut Option<IntakeAction>,
+        relationship_action: &mut Option<RelationshipsAction>,
     ) -> Option<Action> {
+        if self.page == Page::Relationships {
+            self.ensure_party_catalog();
+        }
         match self.page {
             Page::Settings => pages::settings::show(ui, &mut self.settings, &self.server),
             Page::Home => {
@@ -442,6 +548,20 @@ impl CareLibreApp {
                 }
                 None
             }
+            Page::Relationships => {
+                let loading =
+                    self.party_catalog_request.is_some() || !self.relationship_graph_loaded;
+                if let Some(action) = pages::relationships::show(
+                    ui,
+                    &mut self.relationship_form,
+                    &self.party_catalog,
+                    &self.relationship_edges,
+                    loading,
+                ) {
+                    *relationship_action = Some(action);
+                }
+                None
+            }
             other => pages::placeholder::show(ui, other),
         }
     }
@@ -462,6 +582,7 @@ impl CareLibreApp {
         let now = ctx.input(|i| i.time);
         self.notice = Some(Notice {
             text: text.into(),
+            created_at: now,
             expires_at: now + 4.5,
         });
     }
@@ -859,17 +980,77 @@ impl CareLibreApp {
 
     pub fn open_contact(&mut self, id: &str) {
         if let Some(window) = self.contact_windows.get(id) {
-            if let Some(ctx) = &self.app_ctx {
+            if window.popped_out
+                && let Some(ctx) = &self.app_ctx
+            {
                 ctx.send_viewport_cmd_to(contact_viewport_id(id), egui::ViewportCommand::Focus);
+            } else {
+                self.active_contact = Some(id.to_owned());
             }
-            let _ = window;
+            let needs_relationships =
+                window.relationships.is_empty() && !window.relationships_loading;
+            self.ensure_party_catalog();
+            if needs_relationships {
+                self.load_contact_relationships(id);
+            }
             return;
         }
 
         let state = ContactWindowState::new(id.to_owned());
         let request_id = state.request_id.unwrap_or(1);
         self.contact_windows.insert(id.to_owned(), state);
+        self.contact_order.push(id.to_owned());
+        self.active_contact = Some(id.to_owned());
         self.load_contact_window(id, request_id);
+        self.ensure_party_catalog();
+        self.load_contact_relationships(id);
+    }
+
+    fn next_relationship_request(&mut self) -> u64 {
+        self.relationship_request_seq += 1;
+        self.relationship_request_seq
+    }
+
+    fn ensure_party_catalog(&mut self) {
+        if self.relationship_graph_loaded || self.party_catalog_request.is_some() {
+            return;
+        }
+        let Some(token) = self.access_token() else {
+            return;
+        };
+        if self.remote.is_none() {
+            return;
+        }
+        let request = self.next_relationship_request();
+        if let Some(remote) = &self.remote {
+            remote.relationship_graph(request, self.server.base_url.clone(), token);
+        }
+        self.party_catalog_request = Some(request);
+    }
+
+    fn load_contact_relationships(&mut self, id: &str) {
+        let Some(token) = self.access_token() else {
+            return;
+        };
+        if self.remote.is_none() {
+            return;
+        }
+        let request = self.next_relationship_request();
+        if let Some(remote) = &self.remote {
+            remote.list_relationships(
+                request,
+                self.server.base_url.clone(),
+                token,
+                Some(id.to_owned()),
+                None,
+            );
+        }
+        self.relationship_list_requests
+            .insert(request, id.to_owned());
+        if let Some(window) = self.contact_windows.get_mut(id) {
+            window.relationships_loading = true;
+            window.relationship_request_id = Some(request);
+        }
     }
 
     fn load_contact_window(&mut self, id: &str, request_id: u64) {
@@ -940,6 +1121,24 @@ impl CareLibreApp {
             .map(|window| window.popped_out)
             .unwrap_or(false);
         self.contact_windows.remove(id);
+        self.contact_order.retain(|open| open != id);
+        self.relationship_list_requests
+            .retain(|_, contact_id| contact_id != id);
+        self.relationship_create_requests
+            .retain(|_, window_id| window_id.as_deref() != Some(id));
+        self.relationship_contact_creates
+            .retain(|_, pending| pending.window_id != id);
+        if self.active_contact.as_deref() == Some(id) {
+            self.active_contact = self
+                .contact_order
+                .iter()
+                .find(|open| {
+                    self.contact_windows
+                        .get(*open)
+                        .is_some_and(|window| !window.popped_out)
+                })
+                .cloned();
+        }
         if popped_out && let Some(ctx) = &self.app_ctx {
             ctx.send_viewport_cmd_to(contact_viewport_id(id), egui::ViewportCommand::Close);
         }
@@ -954,17 +1153,16 @@ impl CareLibreApp {
 
     fn render_contact_windows(&mut self, ctx: &egui::Context) {
         let popped: Vec<String> = self
-            .contact_windows
+            .contact_order
             .iter()
-            .filter(|(_, window)| window.popped_out)
-            .map(|(id, _)| id.clone())
+            .filter(|id| {
+                self.contact_windows
+                    .get(*id)
+                    .is_some_and(|window| window.popped_out)
+            })
+            .cloned()
             .collect();
-        let modals: Vec<String> = self
-            .contact_windows
-            .iter()
-            .filter(|(_, window)| !window.popped_out)
-            .map(|(id, _)| id.clone())
-            .collect();
+        let catalog = self.lookup_parties();
         let mut actions: Vec<(String, ContactEditorAction)> = Vec::new();
 
         for id in popped {
@@ -981,7 +1179,7 @@ impl CareLibreApp {
 
             let client_side = self.config.client_side_decorations;
             let action = ctx.show_viewport_immediate(viewport_id, builder, |ui, _| {
-                pages::contact_editor::show_viewport(ui, window, client_side)
+                pages::contact_editor::show_viewport(ui, window, client_side, &catalog)
             });
 
             if window.close_requested {
@@ -992,40 +1190,554 @@ impl CareLibreApp {
             }
         }
 
-        for id in modals {
-            let Some(window) = self.contact_windows.get_mut(&id) else {
-                continue;
-            };
-            if let Some(action) = pages::contact_editor::show_modal(ctx, window) {
-                actions.push((id.clone(), action));
-            }
-        }
-
         for (id, action) in actions {
-            match action {
-                ContactEditorAction::Save => self.save_contact_window(&id),
-                ContactEditorAction::Cancel => self.close_contact_window(&id),
-                ContactEditorAction::PopOut => {
-                    if let Some(window) = self.contact_windows.get_mut(&id) {
-                        window.popped_out = true;
-                        window.close_requested = false;
-                    }
-                }
-                ContactEditorAction::Dock => {
-                    if let Some(window) = self.contact_windows.get_mut(&id) {
-                        window.popped_out = false;
-                        window.close_requested = false;
-                    }
-                    ctx.send_viewport_cmd_to(
-                        contact_viewport_id(&id),
-                        egui::ViewportCommand::Close,
-                    );
-                }
-            }
+            self.handle_editor_action(ctx, &id, action);
         }
 
         self.contact_windows
             .retain(|_, window| !window.close_requested);
+    }
+
+    /// The right-hand record dock: tabs for every open record, a draggable tab
+    /// strip, and the active contact editor.
+    fn render_contact_dock(&mut self, ui: &mut Ui) {
+        let mut docked: Vec<String> = self
+            .contact_order
+            .iter()
+            .filter(|id| {
+                self.contact_windows
+                    .get(*id)
+                    .is_some_and(|window| !window.popped_out)
+            })
+            .cloned()
+            .collect();
+        for (id, window) in &self.contact_windows {
+            if !window.popped_out && !self.contact_order.contains(id) {
+                docked.push(id.clone());
+            }
+        }
+
+        if docked.is_empty() {
+            self.active_contact = None;
+            self.dock_opened_at = None;
+            return;
+        }
+
+        let now = ui.ctx().input(|i| i.time);
+        let opened_at = *self.dock_opened_at.get_or_insert(now);
+        let progress = ((now - opened_at) / 0.2).clamp(0.0, 1.0) as f32;
+        if progress < 1.0 {
+            ui.ctx().request_repaint();
+        }
+
+        let active = self
+            .active_contact
+            .clone()
+            .filter(|id| docked.iter().any(|open| open == id))
+            .unwrap_or_else(|| docked[0].clone());
+        self.active_contact = Some(active.clone());
+
+        let catalog = self.lookup_parties();
+        let mut close: Option<String> = None;
+        let mut activate: Option<String> = None;
+        let mut reorder: Option<(String, String)> = None;
+        let mut close_all = false;
+        let mut editor_action: Option<(String, ContactEditorAction)> = None;
+
+        egui::Panel::right("contact_dock")
+            .resizable(true)
+            .default_size(520.0)
+            .size_range(380.0..=780.0)
+            .show_separator_line(false)
+            .frame(
+                Frame::new()
+                    .fill(theme::surface())
+                    .stroke(Stroke::new(1.0, theme::border()))
+                    .inner_margin(Margin::ZERO),
+            )
+            .show(ui, |ui| {
+                if progress < 1.0 {
+                    ui.multiply_opacity(0.4 + 0.6 * theme::ease_out(progress));
+                }
+
+                self.dock_tab_strip(
+                    ui,
+                    &docked,
+                    &mut close,
+                    &mut activate,
+                    &mut reorder,
+                    &mut close_all,
+                );
+
+                if let Some(action) = self
+                    .contact_windows
+                    .get_mut(&active)
+                    .and_then(|window| pages::contact_editor::show_docked(ui, window, &catalog))
+                {
+                    editor_action = Some((active.clone(), action));
+                }
+            });
+
+        if let Some((dragged, target)) = reorder {
+            let from = self.contact_order.iter().position(|id| id == &dragged);
+            let to = self.contact_order.iter().position(|id| id == &target);
+            if let (Some(from), Some(to)) = (from, to)
+                && dragged != target
+            {
+                let target = if from < to { to - 1 } else { to };
+                let id = self.contact_order.remove(from);
+                let target = target.min(self.contact_order.len());
+                self.contact_order.insert(target, id);
+            }
+        }
+
+        if let Some(id) = activate {
+            self.active_contact = Some(id);
+        }
+        if let Some(id) = close {
+            self.close_contact_window(&id);
+        }
+        if close_all {
+            let ids: Vec<String> = docked.clone();
+            for id in ids {
+                self.close_contact_window(&id);
+            }
+        }
+        if let Some((id, action)) = editor_action {
+            let ctx = ui.ctx().clone();
+            self.handle_editor_action(&ctx, &id, action);
+        }
+    }
+
+    fn dock_tab_strip(
+        &mut self,
+        ui: &mut Ui,
+        docked: &[String],
+        close: &mut Option<String>,
+        activate: &mut Option<String>,
+        reorder: &mut Option<(String, String)>,
+        close_all: &mut bool,
+    ) {
+        Frame::new()
+            .fill(theme::sidebar())
+            .inner_margin(Margin::symmetric(10, 7))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new("OPEN RECORDS")
+                            .color(theme::faint())
+                            .font(theme::strong_font(9.0)),
+                    );
+                    ui.add_space(4.0);
+
+                    let mut rects: Vec<(String, egui::Rect)> = Vec::new();
+                    egui::ScrollArea::horizontal()
+                        .id_salt("contact_dock_tabs")
+                        .max_height(34.0)
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.spacing_mut().item_spacing.x = 4.0;
+                                for id in docked {
+                                    let name = self
+                                        .contact_windows
+                                        .get(id)
+                                        .map(|window| {
+                                            if window.display_name.is_empty() {
+                                                "Loading…".to_owned()
+                                            } else {
+                                                window.display_name.clone()
+                                            }
+                                        })
+                                        .unwrap_or_else(|| "Contact".to_owned());
+                                    let selected =
+                                        self.active_contact.as_deref() == Some(id.as_str());
+                                    let (response, close_clicked) =
+                                        dock_tab(ui, id, &name, selected);
+                                    rects.push((id.clone(), response.rect));
+
+                                    if close_clicked {
+                                        *close = Some(id.clone());
+                                    } else if response.clicked() {
+                                        *activate = Some(id.clone());
+                                    }
+                                    if response.drag_started() {
+                                        self.drag_tab = Some(id.clone());
+                                    }
+                                    if response.dragged() {
+                                        ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+                                    }
+                                }
+                            });
+                        });
+
+                    if let Some(dragged) = self.drag_tab.clone() {
+                        if let Some(pointer) = ui.ctx().input(|i| i.pointer.interact_pos())
+                            && let Some((target, _)) =
+                                rects.iter().find(|(_, rect)| rect.contains(pointer))
+                            && target != &dragged
+                        {
+                            *reorder = Some((dragged.clone(), target.clone()));
+                        }
+                        if ui.ctx().input(|i| i.pointer.any_released()) {
+                            self.drag_tab = None;
+                        }
+                    }
+
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if ui
+                            .add(
+                                egui::Button::new(
+                                    RichText::new("Close all").color(theme::faint()).size(10.0),
+                                )
+                                .frame(false),
+                            )
+                            .clicked()
+                        {
+                            *close_all = true;
+                        }
+                    });
+                });
+            });
+    }
+
+    fn handle_editor_action(&mut self, ctx: &egui::Context, id: &str, action: ContactEditorAction) {
+        match action {
+            ContactEditorAction::Save => self.save_contact_window(id),
+            ContactEditorAction::Cancel => self.close_contact_window(id),
+            ContactEditorAction::PopOut => {
+                if let Some(window) = self.contact_windows.get_mut(id) {
+                    window.popped_out = true;
+                    window.close_requested = false;
+                }
+                if self.active_contact.as_deref() == Some(id) {
+                    self.active_contact = self
+                        .contact_order
+                        .iter()
+                        .find(|open| {
+                            self.contact_windows
+                                .get(*open)
+                                .is_some_and(|window| !window.popped_out)
+                        })
+                        .cloned();
+                }
+            }
+            ContactEditorAction::Dock => {
+                if let Some(window) = self.contact_windows.get_mut(id) {
+                    window.popped_out = false;
+                    window.close_requested = false;
+                }
+                self.active_contact = Some(id.to_owned());
+                ctx.send_viewport_cmd_to(contact_viewport_id(id), egui::ViewportCommand::Close);
+            }
+            ContactEditorAction::OpenContact(contact_id) => {
+                self.open_contact(&contact_id);
+            }
+            ContactEditorAction::CreateRelationship {
+                from_role,
+                to_kind,
+                to_id,
+                to_role,
+                notes,
+            } => {
+                self.create_relationship(ctx, id, from_role, to_kind, to_id, to_role, notes);
+            }
+            ContactEditorAction::DeleteRelationship(edge_id) => {
+                self.delete_relationship(id, edge_id);
+            }
+            ContactEditorAction::CreateContact {
+                from_role,
+                to_role,
+                notes,
+                draft,
+            } => {
+                self.create_relationship_contact(ctx, id, from_role, to_role, notes, draft);
+            }
+        }
+    }
+
+    fn handle_relationships_action(&mut self, ctx: &egui::Context, action: RelationshipsAction) {
+        match action {
+            RelationshipsAction::Create {
+                from_kind,
+                from_id,
+                from_role,
+                to_kind,
+                to_id,
+                to_role,
+                notes,
+            } => {
+                self.create_relationship_request(
+                    from_kind, from_id, from_role, to_kind, to_id, to_role, notes, None, ctx,
+                );
+            }
+            RelationshipsAction::Delete(id) => {
+                self.delete_relationship_request(id, None);
+            }
+            RelationshipsAction::OpenContact(id) => self.open_contact(&id),
+            RelationshipsAction::Refresh => {
+                self.party_catalog.clear();
+                self.relationship_edges.clear();
+                self.relationship_graph_loaded = false;
+                self.party_catalog_request = None;
+                self.relationship_form.error = None;
+                self.ensure_party_catalog();
+                self.notify(ctx, "Refreshing the relationship network…");
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn create_relationship(
+        &mut self,
+        ctx: &egui::Context,
+        window_id: &str,
+        from_role: String,
+        to_kind: PartyKind,
+        to_id: String,
+        to_role: String,
+        notes: String,
+    ) {
+        let Some(contact_id) = self
+            .contact_windows
+            .get(window_id)
+            .map(|window| window.contact_id.clone())
+        else {
+            return;
+        };
+        self.create_relationship_request(
+            PartyKind::Contact,
+            contact_id,
+            from_role,
+            to_kind,
+            to_id,
+            to_role,
+            notes,
+            Some(window_id.to_owned()),
+            ctx,
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn create_relationship_request(
+        &mut self,
+        from_kind: PartyKind,
+        from_id: String,
+        from_role: String,
+        to_kind: PartyKind,
+        to_id: String,
+        to_role: String,
+        notes: String,
+        window_id: Option<String>,
+        ctx: &egui::Context,
+    ) {
+        let Some(token) = self.access_token() else {
+            if let Some(window_id) = &window_id {
+                if let Some(window) = self.contact_windows.get_mut(window_id) {
+                    window.relationship_failed("Sign in to link relationships.".to_owned());
+                }
+            } else {
+                self.relationship_form.error = Some("Sign in to link relationships.".to_owned());
+                self.relationship_form.pending = false;
+            }
+            return;
+        };
+
+        let notes = notes.trim().to_owned();
+        let payload = ApiRelationshipWrite {
+            from_kind,
+            from_id,
+            from_role,
+            to_kind,
+            to_id,
+            to_role,
+            start_date: None,
+            end_date: None,
+            notes: (!notes.is_empty()).then_some(notes),
+        };
+
+        let request = self.next_relationship_request();
+        self.relationship_create_requests
+            .insert(request, window_id.clone());
+        match &self.remote {
+            Some(remote) => {
+                remote.create_relationship(request, self.server.base_url.clone(), token, payload)
+            }
+            None => {
+                self.relationship_create_requests.remove(&request);
+                if let Some(window_id) = &window_id {
+                    if let Some(window) = self.contact_windows.get_mut(window_id) {
+                        window.relationship_failed(
+                            "The server connection is not available.".to_owned(),
+                        );
+                    }
+                } else {
+                    self.relationship_form.error =
+                        Some("The server connection is not available.".to_owned());
+                    self.relationship_form.pending = false;
+                }
+            }
+        }
+        let _ = ctx;
+    }
+
+    fn delete_relationship(&mut self, window_id: &str, edge_id: String) {
+        self.delete_relationship_request(edge_id, Some(window_id.to_owned()));
+    }
+
+    fn delete_relationship_request(&mut self, edge_id: String, window_id: Option<String>) {
+        let Some(token) = self.access_token() else {
+            if let Some(window_id) = &window_id {
+                if let Some(window) = self.contact_windows.get_mut(window_id) {
+                    window.relationship_failed("Sign in to edit relationships.".to_owned());
+                }
+            } else {
+                self.relationship_form.error = Some("Sign in to edit relationships.".to_owned());
+                self.relationship_form.pending = false;
+            }
+            return;
+        };
+        let request = self.next_relationship_request();
+        self.relationship_delete_requests
+            .insert(request, window_id.clone());
+        match &self.remote {
+            Some(remote) => {
+                remote.delete_relationship(request, self.server.base_url.clone(), token, edge_id)
+            }
+            None => {
+                self.relationship_delete_requests.remove(&request);
+                if let Some(window_id) = &window_id {
+                    if let Some(window) = self.contact_windows.get_mut(window_id) {
+                        window.relationship_failed(
+                            "The server connection is not available.".to_owned(),
+                        );
+                    }
+                } else {
+                    self.relationship_form.error =
+                        Some("The server connection is not available.".to_owned());
+                    self.relationship_form.pending = false;
+                }
+            }
+        }
+    }
+
+    fn create_relationship_contact(
+        &mut self,
+        ctx: &egui::Context,
+        window_id: &str,
+        from_role: String,
+        to_role: String,
+        notes: String,
+        draft: NewRelationshipContact,
+    ) {
+        let Some(token) = self.access_token() else {
+            if let Some(window) = self.contact_windows.get_mut(window_id) {
+                window.relationship_failed("Sign in to create a contact record.".to_owned());
+            }
+            return;
+        };
+
+        let payload = ApiContactWrite {
+            display_name: draft.display_name.trim().to_owned(),
+            given_name: optional_str(&draft.given_name),
+            family_name: optional_str(&draft.family_name),
+            preferred_name: None,
+            pronouns: None,
+            date_of_birth: None,
+            email: optional_str(&draft.email),
+            phone: optional_str(&draft.phone),
+            notes: None,
+            details: Value::Object(Default::default()),
+            is_active: true,
+            custom_fields: BTreeMap::new(),
+        };
+
+        let request = self.next_relationship_request();
+        self.relationship_contact_creates.insert(
+            request,
+            PendingInlineRelationship {
+                window_id: window_id.to_owned(),
+                from_role,
+                to_role,
+                notes,
+            },
+        );
+
+        match &self.remote {
+            Some(remote) => {
+                remote.create_contact(request, self.server.base_url.clone(), token, payload)
+            }
+            None => {
+                self.relationship_contact_creates.remove(&request);
+                if let Some(window) = self.contact_windows.get_mut(window_id) {
+                    window
+                        .relationship_failed("The server connection is not available.".to_owned());
+                }
+            }
+        }
+        let _ = ctx;
+    }
+
+    /// Insert a newly created contact into the local list snapshots so it can be
+    /// selected from a relationship lookup immediately.
+    fn lookup_parties(&self) -> Vec<ApiGraphNode> {
+        let mut nodes = self.party_catalog.clone();
+        let loaded = self.contacts_all.rows.load_full();
+        for row in loaded.iter().chain(self.known_contacts.values()) {
+            if !nodes
+                .iter()
+                .any(|node| node.kind == PartyKind::Contact && node.id == row.id)
+            {
+                nodes.push(ApiGraphNode {
+                    kind: PartyKind::Contact,
+                    id: row.id.clone(),
+                    label: row.name.clone(),
+                    degree: 0,
+                    depth: None,
+                });
+            }
+        }
+        nodes
+    }
+
+    fn remember_contact(&mut self, detail: &ApiContactDetail) {
+        let row = row_from_api(&detail.contact);
+        let kind = row.kind;
+        self.known_contacts.insert(row.id.clone(), row.clone());
+        if !self
+            .party_catalog
+            .iter()
+            .any(|node| node.kind == PartyKind::Contact && node.id == row.id)
+        {
+            self.party_catalog.push(ApiGraphNode {
+                kind: PartyKind::Contact,
+                id: row.id.clone(),
+                label: row.name.clone(),
+                degree: 0,
+                depth: None,
+            });
+        }
+
+        let states = [
+            &self.contacts_all,
+            &self.contacts_clients,
+            &self.contacts_workers,
+        ];
+        let matches = [
+            true,
+            matches!(kind, ContactKind::Client | ContactKind::Dual),
+            matches!(kind, ContactKind::Worker | ContactKind::Dual),
+        ];
+
+        for (state, matches) in states.into_iter().zip(matches) {
+            if !matches {
+                continue;
+            }
+            let mut rows = (*state.rows.load_full()).clone();
+            if !rows.iter().any(|existing| existing.id == row.id) {
+                rows.insert(0, row.clone());
+            }
+            state.rows.store(Arc::new(rows));
+        }
     }
 
     fn render_intake_window(&mut self, ctx: &egui::Context) {
@@ -1087,6 +1799,20 @@ impl CareLibreApp {
 
     pub fn contact_editor_ready(&self) -> bool {
         self.contact_windows.values().any(|window| !window.loading)
+    }
+
+    /// True once the relationship graph (nodes and edges) has loaded.
+    pub fn relationship_graph_ready(&self) -> bool {
+        self.relationship_graph_loaded
+    }
+
+    /// Number of server relationships loaded across open record editors.
+    pub fn relationship_count(&self) -> usize {
+        self.contact_windows
+            .values()
+            .map(|window| window.relationships.len())
+            .max()
+            .unwrap_or(0)
     }
 
     /// Number of custom-field definitions loaded in the active editor window.
@@ -1180,22 +1906,24 @@ impl CareLibreApp {
                     id,
                     result,
                 } => {
-                    let Some(window) = self.contact_windows.get_mut(&id) else {
-                        continue;
-                    };
-                    if window.request_id != Some(request_id) {
+                    let current = self
+                        .contact_windows
+                        .get(&id)
+                        .is_some_and(|window| window.request_id == Some(request_id));
+                    if !current {
                         continue;
                     }
-                    let contact_id = id;
                     match result {
-                        Ok(_) => {
-                            self.close_contact_window(&contact_id);
+                        Ok(detail) => {
+                            if let Some(window) = self.contact_windows.get_mut(&id) {
+                                window.apply(detail);
+                            }
                             self.refresh_contact_lists();
                             self.send_contacts_query(ContactFilter::All, false);
                             self.notify(ctx, "Contact saved to the server.");
                         }
                         Err(error) => {
-                            if let Some(window) = self.contact_windows.get_mut(&contact_id) {
+                            if let Some(window) = self.contact_windows.get_mut(&id) {
                                 window.saving = false;
                                 window.error = Some(error);
                             }
@@ -1204,6 +1932,168 @@ impl CareLibreApp {
                 }
                 RemoteEvent::ContactCreated { request_id, result } => {
                     self.handle_contact_created(ctx, request_id, result);
+                }
+                RemoteEvent::RelationshipsListed {
+                    request_id,
+                    contact_id,
+                    organisation_id,
+                    result,
+                } => {
+                    self.handle_relationships_listed(
+                        request_id,
+                        contact_id,
+                        organisation_id,
+                        result,
+                    );
+                }
+                RemoteEvent::RelationshipGraphLoaded { request_id, result } => {
+                    self.handle_relationship_graph(ctx, request_id, result);
+                }
+                RemoteEvent::RelationshipCreated { request_id, result } => {
+                    self.handle_relationship_created(ctx, request_id, result);
+                }
+                RemoteEvent::RelationshipDeleted {
+                    request_id,
+                    id,
+                    result,
+                } => {
+                    self.handle_relationship_deleted(ctx, request_id, id, result);
+                }
+            }
+        }
+    }
+
+    fn handle_relationships_listed(
+        &mut self,
+        request_id: u64,
+        contact_id: Option<String>,
+        organisation_id: Option<String>,
+        result: Result<crate::contact::ApiRelationshipList, String>,
+    ) {
+        self.relationship_list_requests.remove(&request_id);
+        let _ = organisation_id;
+        let Some(contact_id) = contact_id else {
+            return;
+        };
+        let Some(window) = self.contact_windows.get_mut(&contact_id) else {
+            return;
+        };
+        if window.relationship_request_id != Some(request_id) {
+            return;
+        }
+        match result {
+            Ok(list) => window.apply_relationships(list.items),
+            Err(error) => window.relationships_failed(error),
+        }
+    }
+
+    fn handle_relationship_graph(
+        &mut self,
+        ctx: &egui::Context,
+        request_id: u64,
+        result: Result<crate::contact::ApiRelationshipGraph, String>,
+    ) {
+        if self.party_catalog_request != Some(request_id) {
+            return;
+        }
+        self.party_catalog_request = None;
+        match result {
+            Ok(graph) => {
+                self.party_catalog = graph.nodes;
+                self.relationship_edges = graph.edges;
+                self.relationship_graph_loaded = true;
+                self.relationship_form.error = None;
+                self.relationship_form.pending = false;
+            }
+            Err(error) => {
+                self.relationship_form.error = Some(error.clone());
+                self.relationship_form.pending = false;
+                self.notify(
+                    ctx,
+                    format!("Could not load the relationship directory: {error}"),
+                );
+            }
+        }
+    }
+
+    fn handle_relationship_created(
+        &mut self,
+        ctx: &egui::Context,
+        request_id: u64,
+        result: Result<ApiRelationship, String>,
+    ) {
+        let Some(window_id) = self.relationship_create_requests.remove(&request_id) else {
+            return;
+        };
+        match result {
+            Ok(edge) => {
+                if !self
+                    .relationship_edges
+                    .iter()
+                    .any(|existing| existing.id == edge.id)
+                {
+                    self.relationship_edges.push(edge.clone());
+                }
+                let mut targets: Vec<String> = window_id.iter().cloned().collect();
+                for (id, window) in &self.contact_windows {
+                    let touches = (edge.from_kind == PartyKind::Contact
+                        && edge.from_id == window.contact_id)
+                        || (edge.to_kind == PartyKind::Contact && edge.to_id == window.contact_id);
+                    if touches && !targets.contains(id) {
+                        targets.push(id.clone());
+                    }
+                }
+                for id in targets {
+                    if let Some(window) = self.contact_windows.get_mut(&id) {
+                        window.relationship_linked(edge.clone());
+                    }
+                }
+                self.relationship_form.pending = false;
+                self.relationship_form.error = None;
+                self.relationship_form.notes.clear();
+                self.notify(ctx, "Relationship linked.");
+            }
+            Err(error) => {
+                if let Some(window_id) = &window_id {
+                    if let Some(window) = self.contact_windows.get_mut(window_id) {
+                        window.relationship_failed(error);
+                    }
+                } else {
+                    self.relationship_form.error = Some(error);
+                    self.relationship_form.pending = false;
+                }
+            }
+        }
+    }
+
+    fn handle_relationship_deleted(
+        &mut self,
+        ctx: &egui::Context,
+        request_id: u64,
+        id: String,
+        result: Result<(), String>,
+    ) {
+        let Some(window_id) = self.relationship_delete_requests.remove(&request_id) else {
+            return;
+        };
+        match result {
+            Ok(()) => {
+                self.relationship_edges.retain(|edge| edge.id != id);
+                for window in self.contact_windows.values_mut() {
+                    window.relationship_removed(&id);
+                }
+                self.relationship_form.pending = false;
+                self.relationship_form.error = None;
+                self.notify(ctx, "Relationship removed.");
+            }
+            Err(error) => {
+                if let Some(window_id) = &window_id {
+                    if let Some(window) = self.contact_windows.get_mut(window_id) {
+                        window.relationship_failed(error);
+                    }
+                } else {
+                    self.relationship_form.error = Some(error);
+                    self.relationship_form.pending = false;
                 }
             }
         }
@@ -1215,6 +2105,32 @@ impl CareLibreApp {
         request_id: u64,
         result: Result<ApiContactDetail, String>,
     ) {
+        if let Some(pending) = self.relationship_contact_creates.remove(&request_id) {
+            match result {
+                Ok(detail) => {
+                    let contact_id = detail.contact.id.clone();
+                    let name = detail.contact.display_name.clone();
+                    self.remember_contact(&detail);
+                    self.create_relationship(
+                        ctx,
+                        &pending.window_id,
+                        pending.from_role,
+                        PartyKind::Contact,
+                        contact_id,
+                        pending.to_role,
+                        pending.notes,
+                    );
+                    self.notify(ctx, format!("{name} created; linking it now…"));
+                }
+                Err(error) => {
+                    if let Some(window) = self.contact_windows.get_mut(&pending.window_id) {
+                        window.relationship_failed(error);
+                    }
+                }
+            }
+            return;
+        }
+
         if self.intake.create_request != Some(request_id) {
             return;
         }
@@ -1222,6 +2138,7 @@ impl CareLibreApp {
         self.intake.saving = false;
         match result {
             Ok(detail) => {
+                self.remember_contact(&detail);
                 let name = detail.contact.display_name.clone();
                 let kind = kind_from_role(&detail.contact.role);
                 let contact_id = detail.contact.id.clone();
@@ -1434,6 +2351,19 @@ impl CareLibreApp {
                         Some("Start the desktop app to connect to a server.".to_owned());
                 }
             }
+            Action::SetTheme(mode) => {
+                self.config.theme = mode;
+                self.settings.theme = mode;
+                match self.config.save() {
+                    Ok(()) => {
+                        theme::sync(ctx, mode);
+                        self.settings.error = None;
+                        self.settings.notice = Some(format!("Appearance set to {}.", mode.label()));
+                        ctx.request_repaint();
+                    }
+                    Err(error) => self.settings.error = Some(error),
+                }
+            }
             Action::SetClientSideDecorations(enabled) => {
                 self.config.client_side_decorations = enabled;
                 match self.config.save() {
@@ -1551,51 +2481,59 @@ impl CareLibreApp {
             .show_separator_line(false)
             .frame(
                 Frame::new()
-                    .fill(theme::BG)
+                    .fill(theme::bg())
                     .inner_margin(Margin {
                         left: 20,
                         right: 20,
                         top: 0,
                         bottom: 0,
                     })
-                    .stroke(Stroke::new(1.0, theme::BORDER)),
+                    .stroke(Stroke::new(1.0, theme::border())),
             )
             .show(ui, |ui| {
                 ui.horizontal_centered(|ui| {
                     // Brand
                     let (logo, _) = ui.allocate_exact_size(vec2(34.0, 34.0), Sense::hover());
                     ui.painter()
-                        .rect_filled(logo, CornerRadius::same(9), theme::ACCENT);
+                        .rect_filled(logo, CornerRadius::same(9), theme::accent());
                     ui.painter().text(
                         logo.center(),
                         Align2::CENTER_CENTER,
                         "C",
                         FontId::proportional(19.0),
-                        theme::BG,
+                        theme::on_accent(),
                     );
                     ui.add_space(2.0);
                     ui.vertical(|ui| {
                         ui.label(RichText::new("CareLibre").font(theme::strong_font(16.0)));
-                        ui.label(RichText::new("CARE PLATFORM").color(theme::FAINT).size(8.5));
+                        ui.label(
+                            RichText::new("CARE PLATFORM")
+                                .color(theme::faint())
+                                .size(8.5),
+                        );
                     });
 
                     ui.add_space(14.0);
                     let (separator, _) = ui.allocate_exact_size(vec2(1.0, 26.0), Sense::hover());
                     ui.painter()
-                        .rect_filled(separator, CornerRadius::ZERO, theme::BORDER);
+                        .rect_filled(separator, CornerRadius::ZERO, theme::border());
                     ui.add_space(14.0);
 
                     ui.label(
                         RichText::new(format!("{}  {}", self.page.icon(), self.page.label()))
-                            .color(theme::MUTED)
+                            .color(theme::muted())
                             .size(13.0),
                     );
 
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         match &account {
                             Some(account) => {
-                                let response =
-                                    theme::avatar(ui, &account.initials, 32.0, theme::ACCENT_BLUE);
+                                let response = theme::avatar(
+                                    ui,
+                                    &account.initials,
+                                    32.0,
+                                    theme::accent_blue(),
+                                );
                                 if response.clicked() {
                                     self.page = Page::Settings;
                                 }
@@ -1626,10 +2564,10 @@ impl CareLibreApp {
                         let intake_button = ui.add(
                             egui::Button::new(
                                 RichText::new("+  Intake")
-                                    .color(theme::BG)
+                                    .color(theme::on_accent())
                                     .font(theme::strong_font(13.0)),
                             )
-                            .fill(theme::ACCENT)
+                            .fill(theme::accent())
                             .corner_radius(CornerRadius::same(8))
                             .min_size(vec2(92.0, 32.0)),
                         );
@@ -1673,9 +2611,9 @@ impl CareLibreApp {
             .show_separator_line(false)
             .frame(
                 Frame::new()
-                    .fill(theme::SIDEBAR)
+                    .fill(theme::sidebar())
                     .inner_margin(Margin::symmetric(12, 16))
-                    .stroke(Stroke::new(1.0, theme::BORDER)),
+                    .stroke(Stroke::new(1.0, theme::border())),
             )
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
@@ -1687,6 +2625,7 @@ impl CareLibreApp {
                     Page::Clients,
                     Page::Workers,
                     Page::Rostering,
+                    Page::Relationships,
                 ] {
                     if nav_item(ui, self.page == page, page).clicked() {
                         self.page = page;
@@ -1732,12 +2671,12 @@ impl CareLibreApp {
         let (server_label, server_colour, server_tooltip) = match &self.server.connection {
             ConnectionState::NotConnected => (
                 "Server not connected".to_owned(),
-                theme::FAINT,
+                theme::faint(),
                 format!("Server URL: {}", self.server.base_url),
             ),
             ConnectionState::Connecting => (
                 "Connecting to server…".to_owned(),
-                theme::WARNING,
+                theme::warning(),
                 format!("Contacting {}", self.server.base_url),
             ),
             ConnectionState::Online {
@@ -1746,7 +2685,7 @@ impl CareLibreApp {
                 ..
             } => (
                 format!("Server online · v{version}"),
-                theme::SUCCESS,
+                theme::success(),
                 format!("{} · database up", self.server.base_url),
             ),
             ConnectionState::Online {
@@ -1755,7 +2694,7 @@ impl CareLibreApp {
                 ..
             } => (
                 "Server online · database down".to_owned(),
-                theme::WARNING,
+                theme::warning(),
                 format!(
                     "{} · database down: {}",
                     self.server.base_url,
@@ -1764,7 +2703,7 @@ impl CareLibreApp {
             ),
             ConnectionState::Offline { error } => (
                 "Server offline".to_owned(),
-                theme::DANGER,
+                theme::danger(),
                 format!("{} · {error}", self.server.base_url),
             ),
         };
@@ -1774,32 +2713,32 @@ impl CareLibreApp {
             .show_separator_line(false)
             .frame(
                 Frame::new()
-                    .fill(theme::SIDEBAR)
+                    .fill(theme::sidebar())
                     .inner_margin(Margin::symmetric(20, 0))
-                    .stroke(Stroke::new(1.0, theme::BORDER)),
+                    .stroke(Stroke::new(1.0, theme::border())),
             )
             .show(ui, |ui| {
                 ui.horizontal_centered(|ui| {
                     ui.label(
                         RichText::new("CareLibre Desktop v0.1.0 · Prototype")
-                            .color(theme::FAINT)
+                            .color(theme::faint())
                             .size(10.5),
                     );
 
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         ui.label(
                             RichText::new("Community Edition")
-                                .color(theme::FAINT)
+                                .color(theme::faint())
                                 .size(10.5),
                         );
-                        dot(ui, theme::BORDER);
-                        status_segment(ui, "wgpu", theme::FAINT, None);
-                        dot(ui, theme::BORDER);
+                        dot(ui, theme::border());
+                        status_segment(ui, "wgpu", theme::faint(), None);
+                        dot(ui, theme::border());
                         status_segment(ui, &server_label, server_colour, Some(&server_tooltip));
-                        dot(ui, theme::BORDER);
+                        dot(ui, theme::border());
                         ui.label(
                             RichText::new("Rust · native")
-                                .color(theme::FAINT)
+                                .color(theme::faint())
                                 .size(10.5),
                         );
                     });
@@ -1819,22 +2758,28 @@ impl CareLibreApp {
 
         let text = notice.text.clone();
         let remaining = (notice.expires_at - now) as f32;
-        let alpha = remaining.min(0.5) / 0.5;
+        let exit = (remaining.min(0.45) / 0.45).clamp(0.0, 1.0);
+        let enter = (((now - notice.created_at) / 0.18) as f32).clamp(0.0, 1.0);
+        let alpha = enter * exit;
+        if enter < 1.0 {
+            ctx.request_repaint();
+        }
+        let slide = (1.0 - theme::ease_out(enter)) * 10.0;
 
         egui::Area::new(egui::Id::unique("notice_toast"))
-            .anchor(Align2::CENTER_BOTTOM, vec2(0.0, -46.0))
+            .anchor(Align2::CENTER_BOTTOM, vec2(0.0, -46.0 + slide))
             .order(egui::Order::Foreground)
             .interactable(false)
             .show(ctx, |ui| {
                 Frame::new()
-                    .fill(theme::SURFACE_RAISED.gamma_multiply(alpha))
-                    .stroke(Stroke::new(1.0, theme::ACCENT.gamma_multiply(alpha)))
+                    .fill(theme::surface_raised().gamma_multiply(alpha))
+                    .stroke(Stroke::new(1.0, theme::accent().gamma_multiply(alpha)))
                     .corner_radius(CornerRadius::same(10))
                     .inner_margin(Margin::symmetric(16, 10))
                     .show(ui, |ui| {
                         ui.label(
                             RichText::new(text)
-                                .color(theme::TEXT)
+                                .color(theme::text())
                                 .font(theme::strong_font(12.5)),
                         );
                     });
@@ -1858,7 +2803,7 @@ fn group_label(ui: &mut Ui, text: &str) {
     ui.add_space(4.0);
     ui.label(
         RichText::new(text)
-            .color(theme::FAINT)
+            .color(theme::faint())
             .font(theme::strong_font(9.5)),
     );
     ui.add_space(4.0);
@@ -1867,22 +2812,32 @@ fn group_label(ui: &mut Ui, text: &str) {
 fn nav_item(ui: &mut Ui, selected: bool, page: Page) -> egui::Response {
     let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), 38.0), Sense::click());
 
+    let hover =
+        ui.ctx()
+            .animate_bool_with_time(response.id.with("nav_hover"), response.hovered(), 0.14);
     if selected {
         ui.painter()
             .rect_filled(rect, CornerRadius::same(9), theme::accent_soft(24));
         let bar = egui::Rect::from_min_size(rect.left_center() + vec2(7.0, -9.0), vec2(3.0, 18.0));
         ui.painter()
-            .rect_filled(bar, CornerRadius::same(2), theme::ACCENT);
-    } else if response.hovered() {
-        ui.painter()
-            .rect_filled(rect, CornerRadius::same(9), theme::SURFACE_RAISED);
+            .rect_filled(bar, CornerRadius::same(2), theme::accent());
+    } else if hover > 0.0 {
+        ui.painter().rect_filled(
+            rect,
+            CornerRadius::same(9),
+            theme::lerp_color(Color32::TRANSPARENT, theme::surface_raised(), hover),
+        );
     }
 
-    let text_colour = if selected { theme::TEXT } else { theme::MUTED };
-    let icon_colour = if selected {
-        theme::ACCENT
+    let text_colour = if selected {
+        theme::text()
     } else {
-        theme::FAINT
+        theme::muted()
+    };
+    let icon_colour = if selected {
+        theme::accent()
+    } else {
+        theme::faint()
     };
 
     ui.painter().text(
@@ -1920,7 +2875,7 @@ fn user_row(ui: &mut Ui, account: Option<&AccountBadge>) -> bool {
 
     ui.horizontal(|ui| match account {
         Some(account) => {
-            let response = theme::avatar(ui, &account.initials, 28.0, theme::ACCENT_BLUE);
+            let response = theme::avatar(ui, &account.initials, 28.0, theme::accent_blue());
             if response.clicked() {
                 clicked = true;
             }
@@ -1936,24 +2891,24 @@ fn user_row(ui: &mut Ui, account: Option<&AccountBadge>) -> bool {
                         capitalize(&account.role),
                         account.organisation
                     ))
-                    .color(theme::FAINT)
+                    .color(theme::faint())
                     .size(10.0),
                 );
             });
         }
         None => {
-            theme::avatar(ui, "?", 28.0, theme::SURFACE_RAISED);
+            theme::avatar(ui, "?", 28.0, theme::surface_raised());
             ui.vertical(|ui| {
                 ui.label(
                     RichText::new("Not signed in")
-                        .color(theme::MUTED)
+                        .color(theme::muted())
                         .font(theme::strong_font(12.0)),
                 );
                 if ui
                     .add(
                         egui::Button::new(
                             RichText::new("Connect to server  →")
-                                .color(theme::ACCENT)
+                                .color(theme::accent())
                                 .size(10.0),
                         )
                         .frame(false),
@@ -1984,8 +2939,8 @@ fn edition_card(
     };
 
     Frame::new()
-        .fill(theme::BG)
-        .stroke(Stroke::new(1.0, theme::BORDER))
+        .fill(theme::bg())
+        .stroke(Stroke::new(1.0, theme::border()))
         .corner_radius(CornerRadius::same(10))
         .inner_margin(Margin::same(12))
         .show(ui, |ui| {
@@ -1995,26 +2950,26 @@ fn edition_card(
                 ui.horizontal(|ui| {
                     let (rect, _) = ui.allocate_exact_size(vec2(8.0, 8.0), Sense::hover());
                     ui.painter()
-                        .circle_filled(rect.center(), 4.0, theme::SUCCESS);
+                        .circle_filled(rect.center(), 4.0, theme::success());
                     ui.label(
                         RichText::new(title)
-                            .color(theme::MUTED)
+                            .color(theme::muted())
                             .font(theme::strong_font(9.5)),
                     );
                 });
                 ui.add_space(3.0);
                 ui.label(
                     RichText::new("Self-hosted · free forever")
-                        .color(theme::FAINT)
+                        .color(theme::faint())
                         .size(10.5),
                 );
                 ui.add_space(8.0);
 
                 let (colour, text) = if server_error {
-                    (theme::DANGER, "Server offline".to_owned())
+                    (theme::danger(), "Server offline".to_owned())
                 } else if server_ready {
                     (
-                        theme::SUCCESS,
+                        theme::success(),
                         if server_contacts == 0 {
                             "Server connected".to_owned()
                         } else {
@@ -2022,13 +2977,13 @@ fn edition_card(
                         },
                     )
                 } else {
-                    (theme::WARNING, "Sign in to load contacts".to_owned())
+                    (theme::warning(), "Sign in to load contacts".to_owned())
                 };
 
                 ui.horizontal(|ui| {
                     let (rect, _) = ui.allocate_exact_size(vec2(7.0, 7.0), Sense::hover());
                     ui.painter().circle_filled(rect.center(), 3.5, colour);
-                    ui.label(RichText::new(text).color(theme::MUTED).size(9.5));
+                    ui.label(RichText::new(text).color(theme::muted()).size(9.5));
                 });
             });
         });
@@ -2116,6 +3071,88 @@ fn intake_viewport_id() -> egui::ViewportId {
 
 fn contact_viewport_id(id: &str) -> egui::ViewportId {
     egui::ViewportId::from_hash_of(("carelibre-contact", id))
+}
+
+/// A draggable tab in the record dock. Returns the tab response and whether
+/// its close button was clicked.
+fn dock_tab(ui: &mut Ui, id: &str, name: &str, active: bool) -> (egui::Response, bool) {
+    let font = theme::strong_font(11.5);
+    let label = if name.chars().count() > 26 {
+        let mut short: String = name.chars().take(25).collect();
+        short.push('…');
+        short
+    } else {
+        name.to_owned()
+    };
+    let text_width = ui
+        .painter()
+        .layout_no_wrap(label.clone(), font.clone(), theme::text())
+        .size()
+        .x;
+    let width = (text_width + 44.0).clamp(96.0, 200.0);
+    let stable_id = ui.scope_id().with(("dock_tab", id));
+    let (rect, _) = ui.allocate_exact_size(vec2(width, 30.0), Sense::hover());
+    let response = ui.interact(rect, stable_id, Sense::click_and_drag());
+
+    let hover = ui
+        .ctx()
+        .animate_bool_with_time(stable_id.with("hover"), response.hovered(), 0.12);
+    let selected = ui
+        .ctx()
+        .animate_bool_with_time(stable_id.with("selected"), active, 0.16);
+
+    let base = if active {
+        theme::surface_raised()
+    } else {
+        theme::sidebar()
+    };
+    let fill = theme::lerp_color(base, theme::hover(), hover * 0.8);
+    ui.painter().rect_filled(rect, CornerRadius::same(8), fill);
+    if selected > 0.0 {
+        let underline = egui::Rect::from_min_size(
+            egui::pos2(rect.left() + 8.0, rect.bottom() - 2.0),
+            vec2((rect.width() - 16.0) * selected, 2.0),
+        );
+        ui.painter()
+            .rect_filled(underline, CornerRadius::same(1), theme::accent());
+    }
+
+    let ink = theme::lerp_color(theme::muted(), theme::text(), selected.max(hover * 0.5));
+    ui.painter().text(
+        egui::pos2(rect.left() + 10.0, rect.center().y),
+        Align2::LEFT_CENTER,
+        label,
+        font,
+        ink,
+    );
+
+    let close_rect = egui::Rect::from_center_size(
+        egui::pos2(rect.right() - 13.0, rect.center().y),
+        vec2(18.0, 18.0),
+    );
+    let close = ui.interact(close_rect, stable_id.with("close"), Sense::click());
+    if close.hovered() {
+        ui.painter()
+            .circle_filled(close_rect.center(), 8.0, theme::hover());
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    ui.painter().text(
+        close_rect.center(),
+        Align2::CENTER_CENTER,
+        "×",
+        FontId::proportional(13.0),
+        if close.hovered() {
+            theme::text()
+        } else {
+            theme::faint()
+        },
+    );
+
+    if response.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+
+    (response, close.clicked())
 }
 
 fn dot(ui: &mut Ui, colour: Color32) {

@@ -1,7 +1,8 @@
 //! Client-side window chrome: title bar, window buttons and resize handles.
 //!
-//! Native decorations remain the default. When enabled in Settings, CareLibre
-//! draws its own chrome and adapts the button placement to the host OS.
+//! New installs draw this chrome by default so the window matches the app on
+//! every compositor. It can be disabled in Settings to use the operating
+//! system's native decorations; existing configs keep their saved choice.
 
 use eframe::egui::{
     self, Align2, Color32, CornerRadius, CursorIcon, FontId, Id, Order, Rect, ResizeDirection,
@@ -16,11 +17,11 @@ const RESIZE_EDGE: f32 = 5.0;
 pub fn title_bar(ui: &mut Ui, ctx: &egui::Context, title: &str) {
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), HEIGHT), Sense::hover());
     let painter = ui.painter();
-    painter.rect_filled(rect, CornerRadius::ZERO, theme::SIDEBAR);
+    painter.rect_filled(rect, CornerRadius::ZERO, theme::sidebar());
     painter.hline(
         rect.x_range(),
         rect.bottom(),
-        Stroke::new(1.0, theme::BORDER),
+        Stroke::new(1.0, theme::border()),
     );
 
     let maximized = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
@@ -53,7 +54,7 @@ pub fn title_bar(ui: &mut Ui, ctx: &egui::Context, title: &str) {
                 ui.painter().circle_filled(
                     center,
                     6.0,
-                    if focused { colour } else { theme::BORDER },
+                    if focused { colour } else { theme::border() },
                 );
                 response.widget_info(|| {
                     egui::WidgetInfo::labeled(
@@ -77,7 +78,7 @@ pub fn title_bar(ui: &mut Ui, ctx: &egui::Context, title: &str) {
                 Align2::CENTER_CENTER,
                 title,
                 FontId::proportional(11.5),
-                theme::MUTED,
+                theme::muted(),
             );
             drag(ui, ctx, drag_rect);
         }
@@ -87,7 +88,7 @@ pub fn title_bar(ui: &mut Ui, ctx: &egui::Context, title: &str) {
                 Align2::LEFT_CENTER,
                 title,
                 FontId::proportional(11.5),
-                theme::MUTED,
+                theme::muted(),
             );
 
             let button_width = 46.0;
@@ -114,7 +115,7 @@ pub fn title_bar(ui: &mut Ui, ctx: &egui::Context, title: &str) {
                     let fill = if kind == ButtonKind::Close {
                         Color32::from_rgb(196, 43, 28)
                     } else {
-                        theme::SURFACE_RAISED
+                        theme::surface_raised()
                     };
                     ui.painter()
                         .rect_filled(button_rect, CornerRadius::ZERO, fill);
@@ -122,7 +123,7 @@ pub fn title_bar(ui: &mut Ui, ctx: &egui::Context, title: &str) {
                 let colour = if hover && kind == ButtonKind::Close {
                     Color32::WHITE
                 } else {
-                    theme::TEXT
+                    theme::text()
                 };
                 draw_icon(ui.painter(), button_rect, kind, maximized, colour);
                 response.widget_info(|| {
@@ -285,8 +286,12 @@ pub fn resize_handles(ctx: &egui::Context) {
         if zone.width() <= 0.0 || zone.height() <= 0.0 {
             continue;
         }
-        egui::Area::new(Id::unique(("carelibre-resize", name)))
+        egui::Area::new(Id::unique(("carelibre-resize", ctx.viewport_id(), name)))
             .fixed_pos(zone.min)
+            // Without this, egui's first sizing pass uses the default 600x400
+            // area size, inflating the bottom/right handles until they cover
+            // much of the window and steal every click.
+            .default_size(zone.size())
             .movable(false)
             .interactable(true)
             .order(Order::Foreground)

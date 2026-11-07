@@ -15,6 +15,7 @@ pub mod perf;
 pub mod remote;
 pub mod server;
 pub mod store;
+pub mod system_theme;
 pub mod theme;
 
 pub use app::CareLibreApp;

@@ -86,14 +86,14 @@ fn header(ui: &mut Ui, user_name: Option<&str>, organisation: Option<&str>, sign
                 None => "Here's what's happening across your care operation today.".to_owned(),
             };
             ui.label(RichText::new(greeting).font(theme::strong_font(28.0)));
-            ui.label(RichText::new(subtitle).color(theme::MUTED).size(13.5));
+            ui.label(RichText::new(subtitle).color(theme::muted()).size(13.5));
         });
 
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             if signed_in {
-                theme::pill(ui, "LIVE SERVER DATA", theme::ACCENT);
+                theme::pill(ui, "LIVE SERVER DATA", theme::accent());
             } else {
-                theme::pill(ui, "SIGN IN TO LOAD DATA", theme::WARNING);
+                theme::pill(ui, "SIGN IN TO LOAD DATA", theme::warning());
             }
         });
     });
@@ -105,15 +105,20 @@ fn stats(ui: &mut Ui, counts: ContactCounts) {
             "Contacts",
             counts.all,
             "Live from the server",
-            theme::ACCENT,
+            theme::accent(),
         ),
-        ("Clients", counts.clients, "Client role", theme::ACCENT_BLUE),
-        ("Workers", counts.workers, "Worker role", theme::ACCENT),
+        (
+            "Clients",
+            counts.clients,
+            "Client role",
+            theme::accent_blue(),
+        ),
+        ("Workers", counts.workers, "Worker role", theme::accent()),
         (
             "Other contacts",
             counts.other,
             "Support network",
-            theme::WARNING,
+            theme::warning(),
         ),
     ];
 
@@ -130,7 +135,7 @@ fn stat_card(ui: &mut Ui, label: &str, value: &str, note: &str, colour: Color32)
         ui.set_min_height(74.0);
 
         ui.horizontal(|ui| {
-            ui.label(RichText::new(label).color(theme::MUTED).size(12.0));
+            ui.label(RichText::new(label).color(theme::muted()).size(12.0));
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 let (rect, _) = ui.allocate_exact_size(vec2(8.0, 8.0), Sense::hover());
                 ui.painter().circle_filled(rect.center(), 4.0, colour);
@@ -195,16 +200,16 @@ fn action_tile(ui: &mut Ui, icon: &str, title: &str, description: &str) -> egui:
 
     let hovered = response.hovered();
     let fill = if hovered {
-        Color32::from_rgb(28, 42, 66)
+        theme::hover()
     } else {
-        theme::SURFACE
+        theme::surface()
     };
     let stroke = Stroke::new(
         1.0,
         if hovered {
-            theme::ACCENT.gamma_multiply(0.7)
+            theme::accent().gamma_multiply(0.7)
         } else {
-            theme::BORDER
+            theme::border()
         },
     );
 
@@ -224,7 +229,7 @@ fn action_tile(ui: &mut Ui, icon: &str, title: &str, description: &str) -> egui:
         if hovered {
             theme::accent_soft(40)
         } else {
-            theme::SURFACE_RAISED
+            theme::surface_raised()
         },
     );
     painter.text(
@@ -232,7 +237,7 @@ fn action_tile(ui: &mut Ui, icon: &str, title: &str, description: &str) -> egui:
         Align2::CENTER_CENTER,
         icon,
         FontId::proportional(17.0),
-        theme::TEXT,
+        theme::text(),
     );
 
     painter.text(
@@ -240,14 +245,14 @@ fn action_tile(ui: &mut Ui, icon: &str, title: &str, description: &str) -> egui:
         Align2::LEFT_CENTER,
         title,
         theme::strong_font(14.0),
-        theme::TEXT,
+        theme::text(),
     );
     painter.text(
         pos2(rect.left() + 66.0, rect.center().y + 10.0),
         Align2::LEFT_CENTER,
         description,
         FontId::proportional(11.5),
-        theme::MUTED,
+        theme::muted(),
     );
 
     if hovered {
@@ -285,28 +290,28 @@ fn getting_started(ui: &mut Ui) {
                     ui.painter()
                         .circle_filled(centre, 8.5, theme::accent_soft(60));
                     ui.painter()
-                        .circle_stroke(centre, 7.5, Stroke::new(1.0, theme::ACCENT));
-                    let tick = Stroke::new(1.5, theme::ACCENT);
+                        .circle_stroke(centre, 7.5, Stroke::new(1.0, theme::accent()));
+                    let tick = Stroke::new(1.5, theme::accent());
                     ui.painter()
                         .line_segment([centre + vec2(-3.5, 0.0), centre + vec2(-1.0, 2.5)], tick);
                     ui.painter()
                         .line_segment([centre + vec2(-1.0, 2.5), centre + vec2(4.0, -3.0)], tick);
                 } else {
                     ui.painter()
-                        .circle_stroke(centre, 7.5, Stroke::new(1.0, theme::BORDER));
+                        .circle_stroke(centre, 7.5, Stroke::new(1.0, theme::border()));
                 }
 
                 ui.add_space(2.0);
                 ui.label(
                     RichText::new(title)
-                        .color(if done { theme::TEXT } else { theme::MUTED })
+                        .color(if done { theme::text() } else { theme::muted() })
                         .font(theme::strong_font(12.5)),
                 );
-                ui.label(RichText::new(subtitle).color(theme::FAINT).size(11.0));
+                ui.label(RichText::new(subtitle).color(theme::faint()).size(11.0));
 
                 if !done {
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        theme::pill(ui, "PLANNED", theme::FAINT);
+                        theme::pill(ui, "PLANNED", theme::faint());
                     });
                 }
             });
@@ -331,7 +336,7 @@ fn data_source_card(
                 theme::pill(
                     ui,
                     if signed_in { "SERVER" } else { "OFFLINE" },
-                    if signed_in { theme::SUCCESS } else { theme::WARNING },
+                    if signed_in { theme::success() } else { theme::warning() },
                 );
             });
         });
@@ -351,7 +356,7 @@ fn data_source_card(
             RichText::new(
                 "Contacts, profile fields and custom fields are read from the CareLibre server. Edits are saved back to the server; nothing is mocked locally.",
             )
-            .color(theme::FAINT)
+            .color(theme::faint())
             .size(10.0),
         );
 
@@ -366,9 +371,9 @@ fn data_source_card(
 
 fn row(ui: &mut Ui, label: &str, value: &str) {
     ui.horizontal(|ui| {
-        ui.label(RichText::new(label).color(theme::MUTED).size(10.5));
+        ui.label(RichText::new(label).color(theme::muted()).size(10.5));
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            ui.label(RichText::new(value).color(theme::TEXT).size(10.5));
+            ui.label(RichText::new(value).color(theme::text()).size(10.5));
         });
     });
     ui.add_space(2.0);
@@ -378,7 +383,7 @@ fn section_header(ui: &mut Ui, title: &str, subtitle: &str) {
     ui.horizontal(|ui| {
         ui.label(RichText::new(title).font(theme::strong_font(15.0)));
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            ui.label(RichText::new(subtitle).color(theme::FAINT).size(11.0));
+            ui.label(RichText::new(subtitle).color(theme::faint()).size(11.0));
         });
     });
     ui.add_space(6.0);

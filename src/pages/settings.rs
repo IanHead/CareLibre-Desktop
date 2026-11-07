@@ -9,7 +9,7 @@ use eframe::egui::{
 use crate::{
     pages::{Action, Page},
     server::{ConnectionState, ServerState, Session},
-    theme,
+    theme::{self, ThemeMode},
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -31,10 +31,16 @@ pub struct SettingsForm {
     pub notice: Option<String>,
     pub client_side_decorations: bool,
     pub remember_login: bool,
+    pub theme: ThemeMode,
 }
 
 impl SettingsForm {
-    pub fn new(base_url: &str, client_side_decorations: bool, remember_login: bool) -> Self {
+    pub fn new(
+        base_url: &str,
+        theme: ThemeMode,
+        client_side_decorations: bool,
+        remember_login: bool,
+    ) -> Self {
         Self {
             base_url: base_url.to_owned(),
             mode: AuthMode::Login,
@@ -48,6 +54,7 @@ impl SettingsForm {
             notice: None,
             client_side_decorations,
             remember_login,
+            theme,
         }
     }
 
@@ -112,11 +119,30 @@ fn appearance_card(ui: &mut Ui, form: &mut SettingsForm, action: &mut Option<Act
         ui.label(RichText::new("Application").font(theme::strong_font(15.0)));
         ui.label(
             RichText::new("Appearance and sign-in preferences for this device.")
-                .color(theme::MUTED)
+                .color(theme::muted())
                 .size(11.0),
         );
         ui.add_space(10.0);
 
+        ui.label(RichText::new("Appearance").color(theme::muted()).size(11.0));
+        ui.horizontal(|ui| {
+            let before = form.theme;
+            for mode in ThemeMode::ALL {
+                ui.selectable_value(&mut form.theme, mode, mode.label());
+            }
+            if form.theme != before {
+                *action = Some(Action::SetTheme(form.theme));
+            }
+        });
+        ui.label(
+            RichText::new(
+                "Follow System uses your desktop's light or dark preference and updates when it changes.",
+            )
+            .color(theme::faint())
+            .size(10.0),
+        );
+
+        ui.add_space(12.0);
         let mut client_side = form.client_side_decorations;
         if ui
             .checkbox(
@@ -132,7 +158,7 @@ fn appearance_card(ui: &mut Ui, form: &mut SettingsForm, action: &mut Option<Act
             RichText::new(
                 "Draw CareLibre's own title bar. Turn this off to use the operating system's native window decorations.",
             )
-            .color(theme::FAINT)
+            .color(theme::faint())
             .size(10.0),
         );
 
@@ -152,7 +178,7 @@ fn appearance_card(ui: &mut Ui, form: &mut SettingsForm, action: &mut Option<Act
             RichText::new(
                 "Stores a refresh token in the OS keychain (or an encrypted local vault when no keychain is available). Your password is never stored.",
             )
-            .color(theme::FAINT)
+            .color(theme::faint())
             .size(10.0),
         );
     });
@@ -162,13 +188,13 @@ fn header(ui: &mut Ui, server: &ServerState) {
     ui.horizontal(|ui| {
         let (rect, _) = ui.allocate_exact_size(vec2(52.0, 52.0), Sense::hover());
         ui.painter()
-            .rect_filled(rect, CornerRadius::same(14), theme::SURFACE_RAISED);
+            .rect_filled(rect, CornerRadius::same(14), theme::surface_raised());
         ui.painter().text(
             rect.center(),
             egui::Align2::CENTER_CENTER,
             Page::Settings.icon(),
             egui::FontId::proportional(22.0),
-            theme::TEXT,
+            theme::text(),
         );
 
         ui.add_space(6.0);
@@ -176,7 +202,7 @@ fn header(ui: &mut Ui, server: &ServerState) {
             ui.label(RichText::new("Settings").font(theme::strong_font(26.0)));
             ui.label(
                 RichText::new("Server connection, account and organisation.")
-                    .color(theme::MUTED)
+                    .color(theme::muted())
                     .size(13.0),
             );
         });
@@ -203,7 +229,7 @@ fn server_card(
                 "The desktop client talks to the CareLibre REST API at this address. \
                  Use the local server for development, or your organisation's domain in production.",
             )
-            .color(theme::MUTED)
+            .color(theme::muted())
             .size(12.0),
         );
         ui.add_space(12.0);
@@ -237,19 +263,19 @@ fn server_card(
 
         if let Some(error) = &form.error {
             ui.add_space(10.0);
-            message_box(ui, error, theme::DANGER);
+            message_box(ui, error, theme::danger());
         }
         if let Some(notice) = &form.notice {
             ui.add_space(8.0);
-            ui.label(RichText::new(notice).color(theme::SUCCESS).size(11.5));
+            ui.label(RichText::new(notice).color(theme::success()).size(11.5));
         }
     });
 }
 
 fn connection_panel(ui: &mut Ui, server: &ServerState) {
     egui::Frame::new()
-        .fill(theme::BG)
-        .stroke(Stroke::new(1.0, theme::BORDER))
+        .fill(theme::bg())
+        .stroke(Stroke::new(1.0, theme::border()))
         .corner_radius(CornerRadius::same(10))
         .inner_margin(Margin::same(12))
         .show(ui, |ui| {
@@ -274,14 +300,14 @@ fn connection_panel(ui: &mut Ui, server: &ServerState) {
                             "Live connection checks are disabled in this preview. \
                              Start the desktop app to connect.",
                         )
-                        .color(theme::MUTED)
+                        .color(theme::muted())
                         .size(11.0),
                     );
                 }
                 ConnectionState::Connecting => {
                     ui.label(
                         RichText::new(format!("Contacting {}…", server.base_url))
-                            .color(theme::MUTED)
+                            .color(theme::muted())
                             .size(11.0)
                             .monospace(),
                     );
@@ -293,7 +319,7 @@ fn connection_panel(ui: &mut Ui, server: &ServerState) {
                 } => {
                     ui.label(
                         RichText::new(format!("CareLibre Server {version}"))
-                            .color(theme::TEXT)
+                            .color(theme::text())
                             .size(12.0),
                     );
                     ui.label(
@@ -306,26 +332,26 @@ fn connection_panel(ui: &mut Ui, server: &ServerState) {
                             )
                         })
                         .color(if *database_up {
-                            theme::SUCCESS
+                            theme::success()
                         } else {
-                            theme::WARNING
+                            theme::warning()
                         })
                         .size(11.0),
                     );
                     ui.add_space(3.0);
                     ui.label(
                         RichText::new(server.base_url.clone())
-                            .color(theme::FAINT)
+                            .color(theme::faint())
                             .size(10.5)
                             .monospace(),
                     );
                 }
                 ConnectionState::Offline { error } => {
-                    ui.label(RichText::new(error).color(theme::DANGER).size(11.0));
+                    ui.label(RichText::new(error).color(theme::danger()).size(11.0));
                     ui.add_space(3.0);
                     ui.label(
                         RichText::new(server.base_url.clone())
-                            .color(theme::FAINT)
+                            .color(theme::faint())
                             .size(10.5)
                             .monospace(),
                     );
@@ -336,7 +362,7 @@ fn connection_panel(ui: &mut Ui, server: &ServerState) {
                 ui.add_space(4.0);
                 ui.label(
                     RichText::new(format!("Checked {}", relative_time(checked)))
-                        .color(theme::FAINT)
+                        .color(theme::faint())
                         .size(10.0),
                 );
             }
@@ -365,12 +391,12 @@ fn account_card(
 
 fn signed_in(ui: &mut Ui, session: &Session, action: &mut Option<Action>) {
     ui.horizontal(|ui| {
-        theme::avatar(ui, &session.initials(), 40.0, theme::ACCENT_BLUE);
+        theme::avatar(ui, &session.initials(), 40.0, theme::accent_blue());
         ui.vertical(|ui| {
             ui.label(RichText::new(&session.auth.user.full_name).font(theme::strong_font(14.0)));
             ui.label(
                 RichText::new(&session.auth.user.email)
-                    .color(theme::MUTED)
+                    .color(theme::muted())
                     .size(11.0),
             );
         });
@@ -380,7 +406,11 @@ fn signed_in(ui: &mut Ui, session: &Session, action: &mut Option<Action>) {
     ui.separator();
     ui.add_space(12.0);
 
-    ui.label(RichText::new("ORGANISATION").color(theme::FAINT).size(9.5));
+    ui.label(
+        RichText::new("ORGANISATION")
+            .color(theme::faint())
+            .size(9.5),
+    );
     ui.label(RichText::new(&session.auth.organisation.name).font(theme::strong_font(13.0)));
     ui.label(
         RichText::new(format!(
@@ -389,7 +419,7 @@ fn signed_in(ui: &mut Ui, session: &Session, action: &mut Option<Action>) {
             session.auth.organisation.edition,
             session.role()
         ))
-        .color(theme::MUTED)
+        .color(theme::muted())
         .size(11.0),
     );
 
@@ -458,7 +488,7 @@ fn signed_out(
 
     if let Some(error) = &form.error {
         ui.add_space(4.0);
-        message_box(ui, error, theme::DANGER);
+        message_box(ui, error, theme::danger());
     }
 
     ui.add_space(10.0);
@@ -510,7 +540,7 @@ fn signed_out(
             "Accounts live on your CareLibre server. The first organisation is created \
              with \"Create organisation\".",
         )
-        .color(theme::FAINT)
+        .color(theme::faint())
         .size(10.5),
     );
 }
@@ -544,7 +574,7 @@ fn validate_registration(form: &SettingsForm) -> Option<String> {
 }
 
 fn field_label(ui: &mut Ui, label: &str) {
-    ui.label(RichText::new(label).color(theme::MUTED).size(11.0));
+    ui.label(RichText::new(label).color(theme::muted()).size(11.0));
     ui.add_space(3.0);
 }
 
@@ -564,9 +594,9 @@ fn mode_tab(ui: &mut Ui, label: &str, selected: bool) -> egui::Response {
     let button = egui::Button::new(
         RichText::new(label)
             .color(if selected {
-                theme::ACCENT
+                theme::accent()
             } else {
-                theme::MUTED
+                theme::muted()
             })
             .font(theme::strong_font(11.5)),
     )

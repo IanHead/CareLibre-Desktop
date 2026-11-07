@@ -6,10 +6,11 @@ open-source care management platform for disability and aged care providers.
 > **Status: prototype.** The native application shell, home dashboard and server
 > authentication are in place. Contacts, clients and workers are read live from the
 > CareLibre server through a background worker and displayed in virtualised, paged lists.
-> Every contact opens in a neat centred editor modal with a **Pop out** button for a native
-> free-floating window; edits and custom-field values are saved back to the server. Guided intake wizards persist drafts locally and
-> create onboarding contacts on the server. Rostering, services, documents and
-> communications are next.
+> Every contact opens in the right-hand record dock, where several records can stay open as
+> draggable tabs — each can be reordered, closed or popped out into a native free-floating
+> window. Edits, custom-field values and linked relationships are saved back to the server.
+> Guided intake wizards persist drafts locally and create onboarding contacts on the server.
+> Rostering, services, documents and communications are next.
 
 ![CareLibre home screen](docs/home.png)
 
@@ -23,6 +24,8 @@ open-source care management platform for disability and aged care providers.
 
 ![CareLibre contact editor with custom fields](docs/contact-editor.png)
 
+![CareLibre relationship network](docs/relationships.png)
+
 ![CareLibre client-side window chrome](docs/client-side.png)
 
 ## Design principles
@@ -33,15 +36,20 @@ open-source care management platform for disability and aged care providers.
   fetched directly from the server today; the local-first cache and delta-sync plan for
   large rosters is in [`docs/performance-architecture.md`](docs/performance-architecture.md).
 - **Native, not a web page in a trench coat.** Rust, [egui](https://github.com/emilk/egui)
-  and wgpu. No Electron, no embedded web view, no JavaScript. Native OS window
-  decorations are the default; a client-side title bar can be enabled in Settings.
+  and wgpu. No Electron, no embedded web view, no JavaScript. A client-side title bar is
+  the default for new installs; native OS window decorations can be selected in Settings.
 - **Cross-platform.** Windows, macOS and Linux from one codebase.
 - **GPU first, CPU fallback.** wgpu selects Vulkan, Metal, DX12 or OpenGL at runtime and
   can fall back to software adapters (for example lavapipe or llvmpipe) on machines
   without a usable GPU.
-- **Neat by default, multitasking on demand.** Contact records open as centred modals and
-  every wizard-style screen has a **Pop out** button. Either can become an independent
-  native OS window that can be moved, resized and kept open alongside the home screen.
+- **Neat by default, multitasking on demand.** Contact records open in a right-hand dock;
+  keep as many open as you need as reorderable tabs, and pop any record or wizard into an
+  independent native OS window that can be moved, resized and kept alongside the app.
+- **Delightful, GPU-rendered motion.** Page transitions, dock and tab states, navigation
+  hover and toast notifications animate on the wgpu-rendered UI at display refresh rate.
+- **Relationships are first class.** The server stores two-sided links with a role for
+  each endpoint, and any contact can be connected to any other contact or organisation.
+  The desktop reads the relationship graph so pickers search the whole network.
 - **Open source, self-hostable.** Community Edition is free forever. Business and
   Enterprise editions add support, consulting and managed deployment.
 
@@ -87,7 +95,8 @@ Open **Settings** in the sidebar to:
 - check liveness and database readiness (`/healthz` and `/readyz`)
 - sign in, or create the first organisation with an owner account
 - sign out and inspect the active organisation and edition
-- choose native or client-side window decorations
+- choose Light, Dark or Follow System appearance (Follow System by default)
+- choose client-side or native window decorations
 - remember your sign-in securely on this device
 
 The connection is checked every 15 seconds and the status is shown in the status bar.
@@ -135,10 +144,11 @@ contact columns; the rest of the intake data is stored in the contact's server-s
 
 ## Contact records and custom fields
 
-Click any row in Contacts, Clients or Workers to open the contact editor. It starts as a
-centred modal with a dimmed background. Press **Pop out** at the top right to detach the
-same form into an independent native OS window; use **Dock** to bring it back. Multiple
-popped-out records can stay open while you work elsewhere.
+Click any row in Contacts, Clients or Workers to open the contact editor in the right-hand
+record dock. Open as many records as you like: they appear as tabs above the editor and can
+be reordered by dragging, closed with **×**, or detached into an independent native OS
+window with **Pop out**; **Dock** brings a popped-out record back into the tab strip. Tabs
+stay in place while you navigate the rest of the app.
 
 The editor loads the contact, its extended `details` profile and every active custom-field
 definition from the server. Nothing is hardcoded in the UI:
@@ -153,14 +163,46 @@ definition from the server. Nothing is hardcoded in the UI:
 - Profile JSON from intake is rendered as editable fields alongside the stock record.
 - Saving sends a `PATCH /api/v1/contacts/{id}` request and refreshes the server-backed list.
 
-## Window decorations and sign-in
+### Relationships
 
-CareLibre uses the operating system's native window decorations by default. In
-**Settings → Application**, enable **Use client-side window decorations** for a custom
-title bar with drag, double-click maximise, minimise/maximise/close and edge resizing. The
-chrome adapts its button placement to Windows/Linux (right) and macOS (traffic lights left).
-The same setting applies to popped-out contact and intake windows. Changing it takes effect
-immediately and is persisted.
+The editor's **Relationships** card links records instead of retyping their details. Pick a
+relationship such as **Emergency Contact**, **Next of Kin** or **Support Coordinator**, then
+search the relationship graph by name and select the record — contacts and organisations are
+both listed. Linked records can be opened in their own dock tab with **Open**.
+
+If the person is not on file yet, choose **+ New contact**, enter their core details and
+press **Create & link**. The contact is created on the server and linked immediately — no
+reload is needed, and the new record is selectable from every relationship lookup straight
+away.
+
+Relationships are read and written through the server's graph API
+(`/api/v1/relationships`, `/api/v1/relationships/graph`). Every link is two-sided: the
+server stores a role for each endpoint (`person_supported` / `emergency_contact`,
+`patient` / `general_practitioner`, and so on), and the editor shows both sides. Pickers
+search the whole graph, so both contacts and organisations are selectable and links can be
+removed without touching either record.
+
+The **Relationships** workspace page manages the network directly. Choose any two records —
+contact or organisation — give each side a role, and link them. It lists and filters every
+link in the tenant and supports deleting them.
+
+## Appearance, window decorations and sign-in
+
+CareLibre adapts to the desktop's light or dark appearance by default. **Settings →
+Application** offers **Light**, **Dark** and **Follow System**; Follow System is the
+default and updates live when the desktop switches. On Linux the current preference comes
+from the freedesktop settings portal, with `GTK_THEME` and `gsettings` fallbacks; Windows
+and macOS use the native window theme. Both palettes are tuned to the same layout, so every
+screen, card, table and pop-out window switches cleanly.
+
+New installs draw CareLibre's own client-side title bar, with drag, double-click
+maximise, minimise/maximise/close and edge resizing. The chrome adapts its button placement
+to Windows/Linux (right) and macOS (traffic lights left), so the window looks consistent on
+compositors whose fallback decorations are basic or out of place. In
+**Settings → Application**, turn off **Use client-side window decorations** to use the
+operating system's native decorations instead. The same setting applies to popped-out
+contact and intake windows. Changing it takes effect immediately, is persisted, and
+existing installations keep their saved preference.
 
 **Remember me on this device** keeps the refresh token across launches. At startup the
 desktop exchanges it for a fresh access token and restores the session before loading
@@ -216,7 +258,7 @@ cargo run --example screenshot -- docs/contact-editor.png contacts --live --cont
 | `src/store/` | Local SQLite store for intake drafts and development tooling |
 | `src/perf.rs` | F12 performance HUD |
 | `src/theme.rs` | Palette, typography and shared card/pill widgets |
-| `src/pages/` | One module per area; `home.rs` dashboard, `contacts.rs` virtualised list, `contact_editor.rs` record editor, `intake/` wizards, `settings.rs` connection/account UI |
+| `src/pages/` | One module per area; `home.rs` dashboard, `contacts.rs` virtualised list, `contact_editor.rs` record editor, `relationships.rs` network page, `intake/` wizards, `settings.rs` connection/account UI |
 | `assets/fonts/` | Bundled Inter font (SIL OFL 1.1) and licence |
 | `examples/screenshot.rs` | Headless renderer used for snapshots |
 | `tests/ui.rs` | Headless rendering and sidebar navigation tests |
@@ -233,8 +275,12 @@ The desktop client tracks the wider CareLibre requirements:
 - [x] PostgreSQL-backed CareLibre server (via REST API)
 - [x] Server-backed contacts, background API worker and virtualised lists
 - [x] Guided intake wizards that create server contacts
-- [x] Modal contact editor and wizard screens with optional native pop-out windows
-- [x] Native window decorations by default with an optional client-side title bar
+- [x] Docked multi-record editor with drag-reorderable tabs and native pop-out windows
+- [x] Two-sided relationship graph with contact and organisation endpoints
+- [x] Relationships workspace page plus inline contact creation from a contact record
+- [x] Animated page, tab, navigation and notification transitions
+- [x] Client-side title bar by default on new installs, with optional native decorations
+- [x] Light, Dark and Follow System appearance with live desktop detection
 - [x] Encrypted remembered sign-in using the OS keychain or a local vault
 - [x] Contact editing with server-stored custom-field metadata
 - [x] Performance HUD
