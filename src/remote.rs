@@ -15,7 +15,8 @@ use crate::{
         ApiRelationshipList, ApiRelationshipWrite,
     },
     rostering::{
-        ApiAssignment, ApiAssignmentUpdate, ApiAssignmentWrite, ApiShift, ApiShiftDetail,
+        ApiAssignment, ApiAssignmentUpdate, ApiAssignmentWrite, ApiBatchShiftWrite,
+        ApiCopyShiftWrite, ApiCostCentre, ApiDivision, ApiService, ApiShift, ApiShiftDetail,
         ApiShiftList, ApiShiftUpdate, ApiShiftWrite, ApiSite, ApiSiteWrite, ApiSuitability,
     },
     store::{ContactCursor, ContactFilter},
@@ -95,6 +96,33 @@ pub enum RemoteCommand {
         to: Option<String>,
         status: Option<String>,
         site_id: Option<String>,
+        division_id: Option<String>,
+        service_id: Option<String>,
+        cost_centre_id: Option<String>,
+    },
+    RosterFilters {
+        request_id: u64,
+        base_url: String,
+        token: String,
+    },
+    CreateShifts {
+        request_id: u64,
+        base_url: String,
+        token: String,
+        payload: Box<ApiBatchShiftWrite>,
+    },
+    CopyShift {
+        request_id: u64,
+        base_url: String,
+        token: String,
+        id: String,
+        payload: Box<ApiCopyShiftWrite>,
+    },
+    DeleteShift {
+        request_id: u64,
+        base_url: String,
+        token: String,
+        id: String,
     },
     GetShift {
         request_id: u64,
@@ -142,6 +170,9 @@ pub enum RemoteCommand {
         shift_id: String,
     },
 }
+
+pub type RosterFiltersResult =
+    Result<(Vec<ApiDivision>, Vec<ApiService>, Vec<ApiCostCentre>), String>;
 
 pub enum RemoteEvent {
     ContactsListed {
@@ -194,6 +225,23 @@ pub enum RemoteEvent {
     ShiftsListed {
         request_id: u64,
         result: Result<ApiShiftList, String>,
+    },
+    RosterFiltersLoaded {
+        request_id: u64,
+        result: RosterFiltersResult,
+    },
+    ShiftsCreated {
+        request_id: u64,
+        result: Result<ApiShiftList, String>,
+    },
+    ShiftCopied {
+        request_id: u64,
+        result: Result<ApiShiftDetail, String>,
+    },
+    ShiftDeleted {
+        request_id: u64,
+        id: String,
+        result: Result<(), String>,
     },
     ShiftLoaded {
         request_id: u64,
@@ -395,6 +443,7 @@ impl RemoteHandle {
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     pub fn list_shifts(
         &self,
         request_id: u64,
@@ -404,6 +453,9 @@ impl RemoteHandle {
         to: Option<String>,
         status: Option<String>,
         site_id: Option<String>,
+        division_id: Option<String>,
+        service_id: Option<String>,
+        cost_centre_id: Option<String>,
     ) {
         let _ = self.commands.send(RemoteCommand::ListShifts {
             request_id,
@@ -413,6 +465,58 @@ impl RemoteHandle {
             to,
             status,
             site_id,
+            division_id,
+            service_id,
+            cost_centre_id,
+        });
+    }
+
+    pub fn roster_filters(&self, request_id: u64, base_url: String, token: String) {
+        let _ = self.commands.send(RemoteCommand::RosterFilters {
+            request_id,
+            base_url,
+            token,
+        });
+    }
+
+    pub fn create_shifts(
+        &self,
+        request_id: u64,
+        base_url: String,
+        token: String,
+        payload: ApiBatchShiftWrite,
+    ) {
+        let _ = self.commands.send(RemoteCommand::CreateShifts {
+            request_id,
+            base_url,
+            token,
+            payload: Box::new(payload),
+        });
+    }
+
+    pub fn copy_shift(
+        &self,
+        request_id: u64,
+        base_url: String,
+        token: String,
+        id: String,
+        payload: ApiCopyShiftWrite,
+    ) {
+        let _ = self.commands.send(RemoteCommand::CopyShift {
+            request_id,
+            base_url,
+            token,
+            id,
+            payload: Box::new(payload),
+        });
+    }
+
+    pub fn delete_shift(&self, request_id: u64, base_url: String, token: String, id: String) {
+        let _ = self.commands.send(RemoteCommand::DeleteShift {
+            request_id,
+            base_url,
+            token,
+            id,
         });
     }
 
@@ -681,6 +785,9 @@ fn run(ctx: egui::Context, commands: Receiver<RemoteCommand>, events: Sender<Rem
                 to,
                 status,
                 site_id,
+                division_id,
+                service_id,
+                cost_centre_id,
             } => {
                 let result = ApiClient::new(&base_url)
                     .and_then(|client| {
@@ -690,10 +797,66 @@ fn run(ctx: egui::Context, commands: Receiver<RemoteCommand>, events: Sender<Rem
                             to.as_deref(),
                             status.as_deref(),
                             site_id.as_deref(),
+                            division_id.as_deref(),
+                            service_id.as_deref(),
+                            cost_centre_id.as_deref(),
                         )
                     })
                     .map_err(|err| err.to_string());
                 let _ = events.send(RemoteEvent::ShiftsListed { request_id, result });
+            }
+            RemoteCommand::RosterFilters {
+                request_id,
+                base_url,
+                token,
+            } => {
+                let result = ApiClient::new(&base_url)
+                    .and_then(|client| {
+                        let divisions = client.list_divisions(&token)?;
+                        let services = client.list_services(&token)?;
+                        let cost_centres = client.list_cost_centres(&token)?;
+                        Ok((divisions, services, cost_centres))
+                    })
+                    .map_err(|err| err.to_string());
+                let _ = events.send(RemoteEvent::RosterFiltersLoaded { request_id, result });
+            }
+            RemoteCommand::CreateShifts {
+                request_id,
+                base_url,
+                token,
+                payload,
+            } => {
+                let result = ApiClient::new(&base_url)
+                    .and_then(|client| client.create_shifts(&token, &payload))
+                    .map_err(|err| err.to_string());
+                let _ = events.send(RemoteEvent::ShiftsCreated { request_id, result });
+            }
+            RemoteCommand::CopyShift {
+                request_id,
+                base_url,
+                token,
+                id,
+                payload,
+            } => {
+                let result = ApiClient::new(&base_url)
+                    .and_then(|client| client.copy_shift(&token, &id, &payload))
+                    .map_err(|err| err.to_string());
+                let _ = events.send(RemoteEvent::ShiftCopied { request_id, result });
+            }
+            RemoteCommand::DeleteShift {
+                request_id,
+                base_url,
+                token,
+                id,
+            } => {
+                let result = ApiClient::new(&base_url)
+                    .and_then(|client| client.delete_shift(&token, &id))
+                    .map_err(|err| err.to_string());
+                let _ = events.send(RemoteEvent::ShiftDeleted {
+                    request_id,
+                    id,
+                    result,
+                });
             }
             RemoteCommand::GetShift {
                 request_id,

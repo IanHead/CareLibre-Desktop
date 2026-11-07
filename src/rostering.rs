@@ -38,8 +38,15 @@ pub struct ApiShift {
     pub service_name: Option<String>,
     pub site_id: Option<String>,
     pub site_name: Option<String>,
+    pub cost_centre_id: Option<String>,
+    pub cost_centre_name: Option<String>,
+    pub cost_centre_code: Option<String>,
+    pub series_id: Option<String>,
+    pub recurrence: Option<String>,
     pub client_count: i64,
     pub worker_count: i64,
+    pub clients: Vec<ApiPartyRef>,
+    pub workers: Vec<ApiPartyRef>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -64,6 +71,34 @@ pub struct ApiAssignment {
 pub struct ApiShiftDetail {
     pub shift: ApiShift,
     pub assignments: Vec<ApiAssignment>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct ApiDivision {
+    pub id: String,
+    pub name: String,
+    pub code: Option<String>,
+    pub parent_id: Option<String>,
+    pub is_active: bool,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct ApiService {
+    pub id: String,
+    pub name: String,
+    pub code: Option<String>,
+    pub division_id: Option<String>,
+    pub division_name: Option<String>,
+    pub is_active: bool,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct ApiCostCentre {
+    pub id: String,
+    pub code: String,
+    pub name: String,
+    pub parent_id: Option<String>,
+    pub is_active: bool,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -134,6 +169,19 @@ pub struct ApiAssignmentWrite {
     pub session_id: Option<String>,
     pub status: Option<String>,
     pub notes: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct ApiBatchShiftWrite {
+    pub shifts: Vec<ApiShiftWrite>,
+    pub recurrence: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct ApiCopyShiftWrite {
+    pub starts_at: Option<String>,
+    pub ends_at: Option<String>,
+    pub include_assignments: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -240,6 +288,24 @@ pub fn shift_kind_label(kind: &str) -> String {
         "respite_program" => "Respite program".to_owned(),
         other => other.to_owned(),
     }
+}
+
+/// Monday of the week containing `date`.
+pub fn monday_of(date: chrono::NaiveDate) -> chrono::NaiveDate {
+    use chrono::Datelike;
+    date - chrono::Duration::days(date.weekday().num_days_from_monday() as i64)
+}
+
+/// Parse a local date input, or today.
+pub fn parse_local_date(value: &str) -> chrono::NaiveDate {
+    chrono::NaiveDate::parse_from_str(value.trim(), "%Y-%m-%d")
+        .unwrap_or_else(|_| Local::now().date_naive())
+}
+
+pub fn add_days(date: &str, days: i64) -> String {
+    (parse_local_date(date) + chrono::Duration::days(days))
+        .format("%Y-%m-%d")
+        .to_string()
 }
 
 #[cfg(test)]

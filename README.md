@@ -190,11 +190,18 @@ link in the tenant and supports deleting them.
 
 ## Rostering and worker suitability
 
-The **Rostering** workspace lists shifts by day with date, status and site filters.
-Create or edit a shift with its kind, local start/end time, site, location and status;
-assign any contact as a client or worker, update attendance (`assigned`, `attended`,
-`no_show`, `cancelled`), and record worker outcomes and 1–5 ratings. Sites can be added
-from the same page.
+The **Rostering** workspace draws the week as a **timeline grouped by worker or client**,
+with a resource column fixed on the left while the hours scroll. Filter by week, status,
+site, division, service and cost centre. Select a shift block for its assignments and
+suitability.
+
+Create or edit shifts with their kind, local start/end time, site, location and status.
+New shifts can repeat **daily, weekly or fortnightly** (a count or an until date); the client
+computes occurrences in local wall time and submits them as one atomic series. **Copy** a
+shift and **Paste** it on another date, optionally copying its client and worker assignments.
+Delete a shift with a confirmation, and update attendance (`assigned`, `attended`,
+`no_show`, `cancelled`), worker outcomes and 1–5 ratings. Sites can be added from the same
+page.
 
 **Worker suitability** is advisory and explainable. The server scores candidates from
 observed history and explicit constraints, then returns the evidence behind each score —
@@ -306,7 +313,7 @@ The desktop client tracks the wider CareLibre requirements:
 - [ ] Delta sync, optimistic local writes and offline cache
 - [ ] Server-side rostering, services and other care-domain modules
 - [ ] Services, rates and effective-dated rate versions
-- [x] Rostering with shifts, assignments and explainable worker suitability
+- [x] Timeline rostering grouped by worker/client with recurrence, copy/paste and explainable suitability
 - [ ] Natural-language quoting and document merge templates
 - [ ] Configurable forms, fields and cost-centre inheritance
 - [ ] Configurable SMS and email communications

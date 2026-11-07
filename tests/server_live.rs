@@ -11,6 +11,7 @@
 use carelibre_desktop::{
     api::{ApiClient, DEFAULT_BASE_URL},
     contact::{ApiRelationshipWrite, PartyKind},
+    rostering::{ApiBatchShiftWrite, ApiCopyShiftWrite, ApiShiftWrite},
     server::{ConnectionState, Event, ServerRuntime},
     theme::{self, ThemeMode},
 };
@@ -274,9 +275,8 @@ fn relationship_graph_round_trip() {
 #[test]
 #[ignore = "requires a running CareLibre server with the demo seed"]
 fn rostering_endpoints_round_trip() {
-    let base_url = std::env::var("CARELTIRE_TEST_SERVER")
-        .or_else(|_| std::env::var("CARELIBRE_TEST_SERVER"))
-        .unwrap_or_else(|_| DEFAULT_BASE_URL.to_owned());
+    let base_url =
+        std::env::var("CARELIBRE_TEST_SERVER").unwrap_or_else(|_| DEFAULT_BASE_URL.to_owned());
     let client = ApiClient::new(&base_url).expect("valid server URL");
     let session = client
         .login("owner@bluedreams.example", "BlueDreamsCare!2026", None)
@@ -288,7 +288,16 @@ fn rostering_endpoints_round_trip() {
     assert!(!sites.is_empty(), "demo data should include sites");
 
     let shifts = client
-        .list_shifts(&session.access_token, None, None, None, None)
+        .list_shifts(
+            &session.access_token,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
         .expect("shifts load");
     assert!(!shifts.items.is_empty(), "demo data should include shifts");
 
@@ -306,4 +315,104 @@ fn rostering_endpoints_round_trip() {
         .shift_suitability(&session.access_token, &first.id)
         .expect("suitability loads");
     assert_eq!(suitability.shift_id, first.id);
+
+    assert!(
+        !first.clients.is_empty() || !first.workers.is_empty(),
+        "shift list should include assignments"
+    );
+    assert!(
+        first.cost_centre_id.is_some(),
+        "demo shifts should resolve a cost centre"
+    );
+
+    let divisions = client
+        .list_divisions(&session.access_token)
+        .expect("divisions load");
+    let services = client
+        .list_services(&session.access_token)
+        .expect("services load");
+    let cost_centres = client
+        .list_cost_centres(&session.access_token)
+        .expect("cost centres load");
+    assert!(!divisions.is_empty());
+    assert!(!services.is_empty());
+    assert!(!cost_centres.is_empty());
+
+    let filtered = client
+        .list_shifts(
+            &session.access_token,
+            None,
+            None,
+            None,
+            None,
+            first.division_id.as_deref(),
+            None,
+            None,
+        )
+        .expect("division filter");
+    assert!(
+        filtered
+            .items
+            .iter()
+            .all(|shift| shift.division_id == first.division_id),
+        "division filter should be applied"
+    );
+
+    let batch = ApiBatchShiftWrite {
+        shifts: vec![
+            ApiShiftWrite {
+                title: Some("Desktop batch test".to_owned()),
+                kind: Some("service_delivery".to_owned()),
+                starts_at: "2027-04-01T02:00:00Z".to_owned(),
+                ends_at: "2027-04-01T03:00:00Z".to_owned(),
+                location: Some("Test".to_owned()),
+                status: Some("draft".to_owned()),
+                division_id: None,
+                service_id: None,
+                site_id: None,
+                notes: None,
+            },
+            ApiShiftWrite {
+                title: Some("Desktop batch test".to_owned()),
+                kind: Some("service_delivery".to_owned()),
+                starts_at: "2027-04-08T02:00:00Z".to_owned(),
+                ends_at: "2027-04-08T03:00:00Z".to_owned(),
+                location: Some("Test".to_owned()),
+                status: Some("draft".to_owned()),
+                division_id: None,
+                service_id: None,
+                site_id: None,
+                notes: None,
+            },
+        ],
+        recurrence: Some("weekly".to_owned()),
+    };
+    let created = client
+        .create_shifts(&session.access_token, &batch)
+        .expect("batch create");
+    assert_eq!(created.items.len(), 2);
+    assert_eq!(created.items[0].series_id, created.items[1].series_id);
+    assert_eq!(created.items[0].recurrence.as_deref(), Some("weekly"));
+
+    let copied = client
+        .copy_shift(
+            &session.access_token,
+            &created.items[0].id,
+            &ApiCopyShiftWrite {
+                starts_at: Some("2027-04-15T02:00:00Z".to_owned()),
+                ends_at: Some("2027-04-15T03:00:00Z".to_owned()),
+                include_assignments: false,
+            },
+        )
+        .expect("copy shift");
+    assert_eq!(copied.shift.status, "draft");
+
+    for shift in created.items.iter() {
+        client
+            .delete_shift(&session.access_token, &shift.id)
+            .expect("delete batch shift");
+    }
+    client
+        .delete_shift(&session.access_token, &copied.shift.id)
+        .expect("delete copied shift");
 }

@@ -93,8 +93,11 @@ enum RosterRequest {
     Shifts,
     Detail,
     Suitability,
-    CreateShift,
+    Filters,
+    CreateShifts,
     UpdateShift,
+    CopyShift,
+    DeleteShift,
     CreateSite,
     CreateAssignment,
     UpdateAssignment,
@@ -1450,6 +1453,7 @@ impl CareLibreApp {
         self.rostering.requested = true;
         self.rostering.loading_shifts = true;
         self.load_roster_sites();
+        self.load_roster_filters();
         self.load_roster_shifts();
     }
 
@@ -1468,6 +1472,21 @@ impl CareLibreApp {
         }
     }
 
+    fn load_roster_filters(&mut self) {
+        let Some(token) = self.access_token() else {
+            return;
+        };
+        if self.remote.is_none() {
+            return;
+        }
+        let request = self.next_rostering_request();
+        self.rostering_requests
+            .insert(request, RosterRequest::Filters);
+        if let Some(remote) = &self.remote {
+            remote.roster_filters(request, self.server.base_url.clone(), token);
+        }
+    }
+
     fn load_roster_shifts(&mut self) {
         let Some(token) = self.access_token() else {
             return;
@@ -1475,14 +1494,15 @@ impl CareLibreApp {
         if self.remote.is_none() {
             return;
         }
-        let from = match crate::rostering::local_day_start(&self.rostering.filter_from) {
+        let from = match crate::rostering::local_day_start(&self.rostering.week_start) {
             Ok(value) => value,
             Err(error) => {
                 self.rostering.error = Some(error);
                 return;
             }
         };
-        let to = match crate::rostering::local_day_end(&self.rostering.filter_to) {
+        let last_day = crate::rostering::add_days(&self.rostering.week_start, 6);
+        let to = match crate::rostering::local_day_end(&last_day) {
             Ok(value) => value,
             Err(error) => {
                 self.rostering.error = Some(error);
@@ -1502,6 +1522,9 @@ impl CareLibreApp {
                 Some(to),
                 Some(self.rostering.filter_status.clone()),
                 self.rostering.filter_site.clone(),
+                self.rostering.filter_division.clone(),
+                self.rostering.filter_service.clone(),
+                self.rostering.filter_cost_centre.clone(),
             );
         }
     }
@@ -1574,16 +1597,45 @@ impl CareLibreApp {
                 self.rostering.suitability_error = None;
                 self.load_roster_detail(id);
             }
-            RosteringAction::CreateShift(payload) => {
+            RosteringAction::CreateShifts { shifts, recurrence } => {
                 if let Some(editor) = &mut self.rostering.editor {
                     editor.saving = true;
                     editor.error = None;
                 }
                 let request = self.next_rostering_request();
                 self.rostering_requests
-                    .insert(request, RosterRequest::CreateShift);
+                    .insert(request, RosterRequest::CreateShifts);
                 if let Some(remote) = &self.remote {
-                    remote.create_shift(request, self.server.base_url.clone(), token, payload);
+                    remote.create_shifts(
+                        request,
+                        self.server.base_url.clone(),
+                        token,
+                        crate::rostering::ApiBatchShiftWrite {
+                            shifts,
+                            recurrence: (!recurrence.trim().is_empty())
+                                .then(|| recurrence.trim().to_owned()),
+                        },
+                    );
+                }
+            }
+            RosteringAction::CopyShift { id, payload } => {
+                if let Some(paste) = &mut self.rostering.paste {
+                    paste.saving = true;
+                    paste.error = None;
+                }
+                let request = self.next_rostering_request();
+                self.rostering_requests
+                    .insert(request, RosterRequest::CopyShift);
+                if let Some(remote) = &self.remote {
+                    remote.copy_shift(request, self.server.base_url.clone(), token, id, payload);
+                }
+            }
+            RosteringAction::DeleteShift(id) => {
+                let request = self.next_rostering_request();
+                self.rostering_requests
+                    .insert(request, RosterRequest::DeleteShift);
+                if let Some(remote) = &self.remote {
+                    remote.delete_shift(request, self.server.base_url.clone(), token, id);
                 }
             }
             RosteringAction::UpdateShift { id, payload } => {
@@ -2277,6 +2329,22 @@ impl CareLibreApp {
                 } => {
                     self.handle_shift_loaded(request_id, id, result);
                 }
+                RemoteEvent::RosterFiltersLoaded { request_id, result } => {
+                    self.handle_roster_filters(request_id, result);
+                }
+                RemoteEvent::ShiftsCreated { request_id, result } => {
+                    self.handle_shifts_created(ctx, request_id, result);
+                }
+                RemoteEvent::ShiftCopied { request_id, result } => {
+                    self.handle_shift_copied(ctx, request_id, result);
+                }
+                RemoteEvent::ShiftDeleted {
+                    request_id,
+                    id,
+                    result,
+                } => {
+                    self.handle_shift_deleted(ctx, request_id, id, result);
+                }
                 RemoteEvent::ShiftCreated { request_id, result } => {
                     self.handle_shift_created(ctx, request_id, result);
                 }
@@ -2384,6 +2452,113 @@ impl CareLibreApp {
                 self.rostering.selected = Some(detail.shift.id.clone());
                 self.rostering.detail = Some(detail);
                 self.rostering.error = None;
+            }
+            Err(error) => self.rostering.error = Some(error),
+        }
+    }
+
+    fn handle_roster_filters(
+        &mut self,
+        request_id: u64,
+        result: crate::remote::RosterFiltersResult,
+    ) {
+        self.rostering_requests.remove(&request_id);
+        match result {
+            Ok((divisions, services, cost_centres)) => {
+                self.rostering.divisions = divisions;
+                self.rostering.services = services;
+                self.rostering.cost_centres = cost_centres;
+            }
+            Err(error) => self.rostering.error = Some(error),
+        }
+    }
+
+    fn handle_shifts_created(
+        &mut self,
+        ctx: &egui::Context,
+        request_id: u64,
+        result: Result<crate::rostering::ApiShiftList, String>,
+    ) {
+        self.rostering_requests.remove(&request_id);
+        match result {
+            Ok(list) => {
+                self.rostering.editor = None;
+                self.rostering.suitability = None;
+                self.rostering.suitability_error = None;
+                let count = list.items.len();
+                if let Some(first) = list.items.first() {
+                    self.rostering.selected = Some(first.id.clone());
+                }
+                self.notify(
+                    ctx,
+                    if count == 1 {
+                        "Shift created.".to_owned()
+                    } else {
+                        format!("{count} shifts created.")
+                    },
+                );
+                self.load_roster_shifts();
+                if let Some(first) = list.items.first() {
+                    self.load_roster_detail(first.id.clone());
+                }
+            }
+            Err(error) => {
+                if let Some(editor) = &mut self.rostering.editor {
+                    editor.saving = false;
+                    editor.error = Some(error);
+                } else {
+                    self.rostering.error = Some(error);
+                }
+            }
+        }
+    }
+
+    fn handle_shift_copied(
+        &mut self,
+        ctx: &egui::Context,
+        request_id: u64,
+        result: Result<crate::rostering::ApiShiftDetail, String>,
+    ) {
+        self.rostering_requests.remove(&request_id);
+        match result {
+            Ok(detail) => {
+                let id = detail.shift.id.clone();
+                self.rostering.paste = None;
+                self.rostering.suitability = None;
+                self.rostering.suitability_error = None;
+                self.rostering.selected = Some(id);
+                self.rostering.detail = Some(detail);
+                self.notify(ctx, "Shift pasted.");
+                self.load_roster_shifts();
+            }
+            Err(error) => {
+                if let Some(paste) = &mut self.rostering.paste {
+                    paste.saving = false;
+                    paste.error = Some(error);
+                } else {
+                    self.rostering.error = Some(error);
+                }
+            }
+        }
+    }
+
+    fn handle_shift_deleted(
+        &mut self,
+        ctx: &egui::Context,
+        request_id: u64,
+        id: String,
+        result: Result<(), String>,
+    ) {
+        self.rostering_requests.remove(&request_id);
+        match result {
+            Ok(()) => {
+                if self.rostering.selected.as_deref() == Some(id.as_str()) {
+                    self.rostering.selected = None;
+                    self.rostering.detail = None;
+                    self.rostering.suitability = None;
+                }
+                self.notify(ctx, "Shift deleted.");
+                self.load_roster_shifts();
             }
             Err(error) => self.rostering.error = Some(error),
         }

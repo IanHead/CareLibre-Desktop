@@ -12,8 +12,9 @@ use crate::contact::{
     ApiRelationshipList, ApiRelationshipWrite,
 };
 use crate::rostering::{
-    ApiAssignment, ApiAssignmentUpdate, ApiAssignmentWrite, ApiShift, ApiShiftDetail, ApiShiftList,
-    ApiShiftUpdate, ApiShiftWrite, ApiSite, ApiSiteWrite, ApiSuitability,
+    ApiAssignment, ApiAssignmentUpdate, ApiAssignmentWrite, ApiBatchShiftWrite, ApiCopyShiftWrite,
+    ApiCostCentre, ApiDivision, ApiService, ApiShift, ApiShiftDetail, ApiShiftList, ApiShiftUpdate,
+    ApiShiftWrite, ApiSite, ApiSiteWrite, ApiSuitability,
 };
 
 pub const DEFAULT_BASE_URL: &str = "http://127.0.0.1:8484";
@@ -371,6 +372,7 @@ impl ApiClient {
         decode(status, &body)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn list_shifts(
         &self,
         access_token: &str,
@@ -378,6 +380,9 @@ impl ApiClient {
         to: Option<&str>,
         status: Option<&str>,
         site_id: Option<&str>,
+        division_id: Option<&str>,
+        service_id: Option<&str>,
+        cost_centre_id: Option<&str>,
     ) -> ApiResult<ApiShiftList> {
         let mut query = url::form_urlencoded::Serializer::new(String::new());
         if let Some(from) = from {
@@ -392,8 +397,58 @@ impl ApiClient {
         if let Some(site_id) = site_id {
             query.append_pair("site_id", site_id);
         }
-        query.append_pair("limit", "500");
+        if let Some(division_id) = division_id {
+            query.append_pair("division_id", division_id);
+        }
+        if let Some(service_id) = service_id {
+            query.append_pair("service_id", service_id);
+        }
+        if let Some(cost_centre_id) = cost_centre_id {
+            query.append_pair("cost_centre_id", cost_centre_id);
+        }
+        query.append_pair("limit", "1000");
         self.get_json_with_token(&format!("/api/v1/shifts?{}", query.finish()), access_token)
+    }
+
+    pub fn list_divisions(&self, access_token: &str) -> ApiResult<Vec<ApiDivision>> {
+        self.get_json_with_token("/api/v1/divisions", access_token)
+    }
+
+    pub fn list_services(&self, access_token: &str) -> ApiResult<Vec<ApiService>> {
+        self.get_json_with_token("/api/v1/services", access_token)
+    }
+
+    pub fn list_cost_centres(&self, access_token: &str) -> ApiResult<Vec<ApiCostCentre>> {
+        self.get_json_with_token("/api/v1/cost-centres", access_token)
+    }
+
+    pub fn create_shifts(
+        &self,
+        access_token: &str,
+        payload: &ApiBatchShiftWrite,
+    ) -> ApiResult<ApiShiftList> {
+        let (status, body) =
+            self.send_with_token("POST", "/api/v1/shifts/batch", access_token, payload)?;
+        decode(status, &body)
+    }
+
+    pub fn copy_shift(
+        &self,
+        access_token: &str,
+        id: &str,
+        payload: &ApiCopyShiftWrite,
+    ) -> ApiResult<ApiShiftDetail> {
+        let (status, body) = self.send_with_token(
+            "POST",
+            &format!("/api/v1/shifts/{id}/copy"),
+            access_token,
+            payload,
+        )?;
+        decode(status, &body)
+    }
+
+    pub fn delete_shift(&self, access_token: &str, id: &str) -> ApiResult<()> {
+        self.delete_with_token(&format!("/api/v1/shifts/{id}"), access_token)
     }
 
     pub fn get_shift(&self, access_token: &str, id: &str) -> ApiResult<ApiShiftDetail> {
