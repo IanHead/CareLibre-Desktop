@@ -14,7 +14,7 @@ use carelibre_desktop::{
     theme,
 };
 use eframe::egui;
-use egui_kittest::Harness;
+use egui_kittest::{Harness, kittest::Queryable};
 use std::time::{Duration, Instant};
 
 #[test]
@@ -145,6 +145,13 @@ fn server_contacts_load_and_editor_opens() {
     assert!(
         harness.state().contact_editor_custom_fields() > 0,
         "the seeded server custom fields should be loaded into the editor"
+    );
+
+    harness.get_by_label("Pop out").click();
+    harness.run_steps(2);
+    assert!(
+        harness.state().contact_editor_popped_out(),
+        "the modal should detach into a native window"
     );
 }
 

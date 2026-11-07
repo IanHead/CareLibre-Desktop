@@ -823,8 +823,13 @@ impl CareLibreApp {
     }
 
     fn close_contact_window(&mut self, id: &str) {
+        let popped_out = self
+            .contact_windows
+            .get(id)
+            .map(|window| window.popped_out)
+            .unwrap_or(false);
         self.contact_windows.remove(id);
-        if let Some(ctx) = &self.app_ctx {
+        if popped_out && let Some(ctx) = &self.app_ctx {
             ctx.send_viewport_cmd_to(contact_viewport_id(id), egui::ViewportCommand::Close);
         }
     }
@@ -837,10 +842,21 @@ impl CareLibreApp {
     }
 
     fn render_contact_windows(&mut self, ctx: &egui::Context) {
-        let ids: Vec<String> = self.contact_windows.keys().cloned().collect();
+        let popped: Vec<String> = self
+            .contact_windows
+            .iter()
+            .filter(|(_, window)| window.popped_out)
+            .map(|(id, _)| id.clone())
+            .collect();
+        let modals: Vec<String> = self
+            .contact_windows
+            .iter()
+            .filter(|(_, window)| !window.popped_out)
+            .map(|(id, _)| id.clone())
+            .collect();
         let mut actions: Vec<(String, ContactEditorAction)> = Vec::new();
 
-        for id in ids {
+        for id in popped {
             let Some(window) = self.contact_windows.get_mut(&id) else {
                 continue;
             };
@@ -863,10 +879,35 @@ impl CareLibreApp {
             }
         }
 
+        for id in modals {
+            let Some(window) = self.contact_windows.get_mut(&id) else {
+                continue;
+            };
+            if let Some(action) = pages::contact_editor::show_modal(ctx, window) {
+                actions.push((id.clone(), action));
+            }
+        }
+
         for (id, action) in actions {
             match action {
                 ContactEditorAction::Save => self.save_contact_window(&id),
                 ContactEditorAction::Cancel => self.close_contact_window(&id),
+                ContactEditorAction::PopOut => {
+                    if let Some(window) = self.contact_windows.get_mut(&id) {
+                        window.popped_out = true;
+                        window.close_requested = false;
+                    }
+                }
+                ContactEditorAction::Dock => {
+                    if let Some(window) = self.contact_windows.get_mut(&id) {
+                        window.popped_out = false;
+                        window.close_requested = false;
+                    }
+                    ctx.send_viewport_cmd_to(
+                        contact_viewport_id(&id),
+                        egui::ViewportCommand::Close,
+                    );
+                }
             }
         }
 
@@ -903,6 +944,13 @@ impl CareLibreApp {
             .map(|detail| detail.custom_fields.len())
             .max()
             .unwrap_or(0)
+    }
+
+    /// True while at least one contact editor is detached into a native window.
+    pub fn contact_editor_popped_out(&self) -> bool {
+        self.contact_windows
+            .values()
+            .any(|window| window.popped_out)
     }
 
     fn poll_remote(&mut self, ctx: &egui::Context) {

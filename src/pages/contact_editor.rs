@@ -15,6 +15,8 @@ use crate::theme;
 pub enum ContactEditorAction {
     Save,
     Cancel,
+    PopOut,
+    Dock,
 }
 
 pub struct ContactWindowState {
@@ -39,6 +41,7 @@ pub struct ContactWindowState {
     pub custom: BTreeMap<String, String>,
     pub error: Option<String>,
     pub close_requested: bool,
+    pub popped_out: bool,
 }
 
 impl ContactWindowState {
@@ -65,6 +68,7 @@ impl ContactWindowState {
             custom: BTreeMap::new(),
             error: None,
             close_requested: false,
+            popped_out: false,
         };
         state.request_seq = 1;
         state.request_id = Some(1);
@@ -187,84 +191,165 @@ pub fn show_viewport(ui: &mut Ui, state: &mut ContactWindowState) -> Option<Cont
                 .stroke(Stroke::new(1.0, theme::BORDER)),
         )
         .show(ui, |ui| {
-            ui.horizontal(|ui| {
-                if ui.add(theme::secondary_button("Cancel")).clicked() {
-                    state.close_requested = true;
-                    action = Some(ContactEditorAction::Cancel);
-                }
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    let label = if state.saving {
-                        "Saving…"
-                    } else {
-                        "Save contact"
-                    };
-                    if ui
-                        .add_enabled(!state.saving, theme::primary_button(label))
-                        .clicked()
-                    {
-                        action = Some(ContactEditorAction::Save);
-                    }
-                });
-            });
+            if let Some(next) = footer(ui, state) {
+                action = Some(next);
+            }
         });
 
     egui::CentralPanel::default()
         .frame(Frame::new().fill(theme::BG).inner_margin(Margin::same(16)))
         .show(ui, |ui| {
-            let mut close_clicked = false;
-            ui.horizontal(|ui| {
-                ui.label(RichText::new("Contact record").font(theme::strong_font(18.0)));
-                role_pill(ui, &state.role);
-                status_pill(ui, &state.status);
+            if let Some(next) = header(ui, state) {
+                action = Some(next);
+            }
+            ui.add_space(6.0);
+            ui.separator();
+            ui.add_space(8.0);
+            if let Some(next) = body(ui, state) {
+                action = Some(next);
+            }
+        });
 
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if ui
-                        .add(
-                            egui::Button::new(RichText::new("×").color(theme::MUTED).size(16.0))
-                                .frame(false)
-                                .min_size(vec2(28.0, 28.0)),
-                        )
-                        .clicked()
-                    {
-                        close_clicked = true;
-                    }
-                    if state.saving {
-                        ui.label(RichText::new("Saving…").color(theme::WARNING).size(10.5));
-                    }
-                });
-            });
+    action
+}
+
+pub fn show_modal(
+    ctx: &egui::Context,
+    state: &mut ContactWindowState,
+) -> Option<ContactEditorAction> {
+    let mut action = None;
+    egui::Modal::new(egui::Id::unique(("contact-modal", &state.contact_id)))
+        .backdrop_color(Color32::from_black_alpha(190))
+        .frame(
+            Frame::new()
+                .fill(theme::SURFACE)
+                .stroke(Stroke::new(1.0, theme::BORDER))
+                .corner_radius(CornerRadius::same(14))
+                .inner_margin(Margin::same(18)),
+        )
+        .show(ctx, |ui| {
+            ui.set_width(820.0);
+            ui.set_min_height(620.0);
+
+            if let Some(next) = header(ui, state) {
+                action = Some(next);
+            }
             ui.add_space(6.0);
             ui.separator();
             ui.add_space(8.0);
 
-            if close_clicked {
+            ScrollArea::vertical()
+                .auto_shrink([false, false])
+                .max_height(530.0)
+                .show(ui, |ui| {
+                    if let Some(next) = body(ui, state) {
+                        action = Some(next);
+                    }
+                });
+
+            ui.add_space(8.0);
+            ui.separator();
+            ui.add_space(8.0);
+            if let Some(next) = footer(ui, state) {
+                action = Some(next);
+            }
+        });
+
+    action
+}
+
+fn header(ui: &mut Ui, state: &mut ContactWindowState) -> Option<ContactEditorAction> {
+    let mut action = None;
+
+    ui.horizontal(|ui| {
+        let title = if state.display_name.is_empty() {
+            "Contact record".to_owned()
+        } else {
+            state.display_name.clone()
+        };
+        ui.label(RichText::new(title).font(theme::strong_font(18.0)));
+        role_pill(ui, &state.role);
+        status_pill(ui, &state.status);
+
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            if ui
+                .add(
+                    egui::Button::new(RichText::new("×").color(theme::MUTED).size(16.0))
+                        .frame(false)
+                        .min_size(vec2(28.0, 28.0)),
+                )
+                .clicked()
+            {
                 state.close_requested = true;
                 action = Some(ContactEditorAction::Cancel);
             }
 
-            if state.loading {
-                ui.label(
-                    RichText::new("Loading contact from the server…")
-                        .color(theme::MUTED)
-                        .size(12.0),
-                );
-                return;
+            let (label, next) = if state.popped_out {
+                ("Dock", ContactEditorAction::Dock)
+            } else {
+                ("Pop out", ContactEditorAction::PopOut)
+            };
+            if ui
+                .add(
+                    egui::Button::new(RichText::new(label).color(theme::ACCENT).size(11.0))
+                        .frame(false),
+                )
+                .clicked()
+            {
+                action = Some(next);
             }
 
-            if let Some(error) = &state.error {
-                error_box(ui, error);
-                ui.add_space(8.0);
+            if state.saving {
+                ui.label(RichText::new("Saving…").color(theme::WARNING).size(10.5));
             }
-
-            ScrollArea::vertical()
-                .auto_shrink([false, false])
-                .show(ui, |ui| {
-                    core_card(ui, state);
-                    ui.add_space(12.0);
-                    profile_card(ui, state);
-                });
         });
+    });
 
+    action
+}
+
+fn body(ui: &mut Ui, state: &mut ContactWindowState) -> Option<ContactEditorAction> {
+    if state.loading {
+        ui.label(
+            RichText::new("Loading contact from the server…")
+                .color(theme::MUTED)
+                .size(12.0),
+        );
+        return None;
+    }
+
+    if let Some(error) = &state.error {
+        error_box(ui, error);
+        ui.add_space(8.0);
+    }
+
+    core_card(ui, state);
+    ui.add_space(12.0);
+    profile_card(ui, state);
+    None
+}
+
+fn footer(ui: &mut Ui, state: &mut ContactWindowState) -> Option<ContactEditorAction> {
+    let mut action = None;
+    ui.horizontal(|ui| {
+        if ui.add(theme::secondary_button("Cancel")).clicked() {
+            state.close_requested = true;
+            action = Some(ContactEditorAction::Cancel);
+        }
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            let label = if state.saving {
+                "Saving…"
+            } else {
+                "Save contact"
+            };
+            if ui
+                .add_enabled(!state.saving, theme::primary_button(label))
+                .clicked()
+            {
+                action = Some(ContactEditorAction::Save);
+            }
+        });
+    });
     action
 }
 

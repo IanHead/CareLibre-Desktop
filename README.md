@@ -6,8 +6,8 @@ open-source care management platform for disability and aged care providers.
 > **Status: prototype.** The native application shell, home dashboard and server
 > authentication are in place. Contacts, clients and workers are read live from the
 > CareLibre server through a background worker and displayed in virtualised, paged lists.
-> Every contact opens in its own native, free-floating editor window; edits and custom-field
-> values are saved back to the server. Guided intake wizards persist drafts locally and
+> Every contact opens in a neat centred editor modal with a **Pop out** button for a native
+> free-floating window; edits and custom-field values are saved back to the server. Guided intake wizards persist drafts locally and
 > create onboarding contacts on the server. Rostering, services, documents and
 > communications are next.
 
@@ -36,8 +36,9 @@ open-source care management platform for disability and aged care providers.
 - **GPU first, CPU fallback.** wgpu selects Vulkan, Metal, DX12 or OpenGL at runtime and
   can fall back to software adapters (for example lavapipe or llvmpipe) on machines
   without a usable GPU.
-- **Multitasking by default.** Contact records open in independent native OS windows that
-  can be moved, resized and kept open alongside the home screen.
+- **Neat by default, multitasking on demand.** Contact records open as centred modals for
+  simplicity, with a **Pop out** button that turns the same form into an independent native
+  OS window that can be moved, resized and kept open alongside the home screen.
 - **Open source, self-hostable.** Community Edition is free forever. Business and
   Enterprise editions add support, consulting and managed deployment.
 
@@ -125,8 +126,10 @@ contact columns; the rest of the intake data is stored in the contact's server-s
 
 ## Contact records and custom fields
 
-Click any row in Contacts, Clients or Workers to open a native editor window. Each window is
-an independent OS window that can be moved and resized away from the main application.
+Click any row in Contacts, Clients or Workers to open the contact editor. It starts as a
+centred modal with a dimmed background. Press **Pop out** at the top right to detach the
+same form into an independent native OS window; use **Dock** to bring it back. Multiple
+popped-out records can stay open while you work elsewhere.
 
 The editor loads the contact, its extended `details` profile and every active custom-field
 definition from the server. Nothing is hardcoded in the UI:
@@ -205,7 +208,7 @@ The desktop client tracks the wider CareLibre requirements:
 - [x] PostgreSQL-backed CareLibre server (via REST API)
 - [x] Server-backed contacts, background API worker and virtualised lists
 - [x] Guided intake wizards that create server contacts
-- [x] Native free-floating contact editor windows
+- [x] Modal contact editor with optional native pop-out windows
 - [x] Contact editing with server-stored custom-field metadata
 - [x] Performance HUD
 - [ ] Delta sync, optimistic local writes and offline cache
