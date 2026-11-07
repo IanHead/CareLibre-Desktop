@@ -12,6 +12,7 @@ pub struct ContactCounts {
     pub clients: usize,
     pub workers: usize,
     pub dual: usize,
+    pub other: usize,
 }
 
 impl ContactCounts {
@@ -153,7 +154,8 @@ pub fn contact_counts(conn: &Connection, org_id: &str) -> rusqlite::Result<Conta
         "SELECT COUNT(*),
                 COALESCE(SUM(CASE WHEN kind = 'client' THEN 1 ELSE 0 END), 0),
                 COALESCE(SUM(CASE WHEN kind = 'worker' THEN 1 ELSE 0 END), 0),
-                COALESCE(SUM(CASE WHEN kind = 'dual' THEN 1 ELSE 0 END), 0)
+                COALESCE(SUM(CASE WHEN kind = 'dual' THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN kind = 'other' THEN 1 ELSE 0 END), 0)
          FROM contacts
          WHERE org_id = ?1",
         [org_id],
@@ -163,6 +165,7 @@ pub fn contact_counts(conn: &Connection, org_id: &str) -> rusqlite::Result<Conta
                 clients: row.get::<_, i64>(1)? as usize,
                 workers: row.get::<_, i64>(2)? as usize,
                 dual: row.get::<_, i64>(3)? as usize,
+                other: row.get::<_, i64>(4)? as usize,
             })
         },
     )

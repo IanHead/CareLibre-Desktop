@@ -16,7 +16,7 @@ fn counts_contacts_by_role() {
 
     assert_eq!(counts.all, 250);
     assert_eq!(
-        counts.clients + counts.workers + counts.dual,
+        counts.clients + counts.workers + counts.dual + counts.other,
         counts.all,
         "roles should partition the contact table"
     );
@@ -99,4 +99,70 @@ fn reseeding_replaces_the_previous_demo_data() {
 
     let counts = contact_counts(&conn, DEMO_ORG_ID).expect("counts");
     assert_eq!(counts.all, 10);
+}
+
+#[test]
+fn intake_drafts_round_trip_and_complete() {
+    use carelibre_desktop::intake::{IntakeDraft, IntakeKind};
+
+    let mut conn = open_in_memory().expect("in-memory database");
+
+    let mut draft = IntakeDraft::new(IntakeKind::Client);
+    draft.set("first_name", "Margaret".to_owned());
+    draft.set("last_name", "Chen".to_owned());
+    draft.set("email", "margaret@example.com".to_owned());
+    draft.set("phone", "0400 000 000".to_owned());
+    draft.set("suburb", "Newtown".to_owned());
+    draft.current_step = 2;
+
+    carelibre_desktop::store::save_intake(&conn, DEMO_ORG_ID, draft.clone()).expect("save draft");
+
+    let listed = carelibre_desktop::store::list_intakes(&conn, DEMO_ORG_ID).expect("list");
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].name, "Margaret Chen");
+    assert_eq!(listed[0].current_step, 2);
+
+    let loaded = carelibre_desktop::store::load_intake(&conn, DEMO_ORG_ID, &draft.id)
+        .expect("load")
+        .expect("draft");
+    assert_eq!(loaded.get("first_name"), "Margaret");
+
+    let completed = carelibre_desktop::store::complete_intake(&mut conn, DEMO_ORG_ID, loaded)
+        .expect("complete");
+    assert_eq!(completed.name, "Margaret Chen");
+
+    let listed = carelibre_desktop::store::list_intakes(&conn, DEMO_ORG_ID).expect("list after");
+    assert!(listed.is_empty(), "completed intakes leave the draft list");
+
+    let kind: String = conn
+        .query_row(
+            "SELECT kind FROM contacts WHERE id = ?1",
+            [&completed.contact_id],
+            |row| row.get(0),
+        )
+        .expect("contact exists");
+    assert_eq!(kind, "client");
+}
+
+#[test]
+fn other_contacts_complete_as_other_kind() {
+    use carelibre_desktop::intake::{IntakeDraft, IntakeKind};
+
+    let mut conn = open_in_memory().expect("in-memory database");
+    let mut draft = IntakeDraft::new(IntakeKind::Other);
+    draft.set("first_name", "Priya".to_owned());
+    draft.set("last_name", "Nair".to_owned());
+    draft.set("phone", "0400 111 222".to_owned());
+
+    let completed = carelibre_desktop::store::complete_intake(&mut conn, DEMO_ORG_ID, draft)
+        .expect("complete other intake");
+
+    let kind: String = conn
+        .query_row(
+            "SELECT kind FROM contacts WHERE id = ?1",
+            [&completed.contact_id],
+            |row| row.get(0),
+        )
+        .expect("contact exists");
+    assert_eq!(kind, "other");
 }

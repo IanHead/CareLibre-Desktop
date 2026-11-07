@@ -5,9 +5,11 @@ use std::{path::PathBuf, thread};
 use crossbeam_channel::{Receiver, Sender, unbounded};
 use eframe::egui;
 
+use crate::intake::{CompletedIntake, IntakeDraft, IntakeSummary};
+
 use super::{
-    ContactCounts, ContactCursor, ContactFilter, ContactPage, DEMO_ORG_ID, SeedReport, open, query,
-    seed,
+    ContactCounts, ContactCursor, ContactFilter, ContactPage, DEMO_ORG_ID, SeedReport, intake,
+    open, query, seed,
 };
 
 enum Command {
@@ -21,6 +23,23 @@ enum Command {
     SeedDemo {
         contacts: usize,
         shifts: usize,
+    },
+    ListIntakes {
+        request_id: u64,
+    },
+    LoadIntake {
+        request_id: u64,
+        id: String,
+    },
+    SaveIntake {
+        draft: Box<IntakeDraft>,
+    },
+    CompleteIntake {
+        draft: Box<IntakeDraft>,
+    },
+    DiscardIntake {
+        request_id: u64,
+        id: String,
     },
 }
 
@@ -43,6 +62,25 @@ pub enum StoreEvent {
         result: Result<SeedReport, String>,
         counts: ContactCounts,
         shifts: usize,
+    },
+    IntakesListed {
+        request_id: u64,
+        result: Result<Vec<IntakeSummary>, String>,
+    },
+    IntakeLoaded {
+        request_id: u64,
+        result: Result<Option<IntakeDraft>, String>,
+    },
+    IntakeSaved {
+        result: Result<(), String>,
+    },
+    IntakeCompleted {
+        result: Result<CompletedIntake, String>,
+    },
+    IntakeDiscarded {
+        request_id: u64,
+        id: String,
+        result: Result<(), String>,
     },
 }
 
@@ -84,6 +122,32 @@ impl StoreHandle {
 
     pub fn seed_demo(&self, contacts: usize, shifts: usize) {
         let _ = self.commands.send(Command::SeedDemo { contacts, shifts });
+    }
+
+    pub fn list_intakes(&self, request_id: u64) {
+        let _ = self.commands.send(Command::ListIntakes { request_id });
+    }
+
+    pub fn load_intake(&self, request_id: u64, id: String) {
+        let _ = self.commands.send(Command::LoadIntake { request_id, id });
+    }
+
+    pub fn save_intake(&self, draft: IntakeDraft) {
+        let _ = self.commands.send(Command::SaveIntake {
+            draft: Box::new(draft),
+        });
+    }
+
+    pub fn complete_intake(&self, draft: IntakeDraft) {
+        let _ = self.commands.send(Command::CompleteIntake {
+            draft: Box::new(draft),
+        });
+    }
+
+    pub fn discard_intake(&self, request_id: u64, id: String) {
+        let _ = self
+            .commands
+            .send(Command::DiscardIntake { request_id, id });
     }
 
     pub fn try_recv(&self) -> Option<StoreEvent> {
@@ -162,6 +226,30 @@ fn run(path: PathBuf, ctx: egui::Context, commands: Receiver<Command>, events: S
                     page,
                 });
                 ctx.request_repaint();
+            }
+            Command::ListIntakes { request_id } => {
+                let result = intake::list_intakes(&conn, DEMO_ORG_ID);
+                let _ = events.send(StoreEvent::IntakesListed { request_id, result });
+            }
+            Command::LoadIntake { request_id, id } => {
+                let result = intake::load_intake(&conn, DEMO_ORG_ID, &id);
+                let _ = events.send(StoreEvent::IntakeLoaded { request_id, result });
+            }
+            Command::SaveIntake { draft } => {
+                let result = intake::save_intake(&conn, DEMO_ORG_ID, *draft);
+                let _ = events.send(StoreEvent::IntakeSaved { result });
+            }
+            Command::CompleteIntake { draft } => {
+                let result = intake::complete_intake(&mut conn, DEMO_ORG_ID, *draft);
+                let _ = events.send(StoreEvent::IntakeCompleted { result });
+            }
+            Command::DiscardIntake { request_id, id } => {
+                let result = intake::delete_intake(&conn, DEMO_ORG_ID, &id);
+                let _ = events.send(StoreEvent::IntakeDiscarded {
+                    request_id,
+                    id,
+                    result,
+                });
             }
             Command::SeedDemo { contacts, shifts } => {
                 let result = seed::seed_demo(&mut conn, DEMO_ORG_ID, contacts, shifts)

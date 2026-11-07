@@ -1,5 +1,6 @@
 pub mod contacts;
 pub mod home;
+pub mod intake;
 pub mod placeholder;
 pub mod settings;
 
@@ -29,6 +30,8 @@ pub enum Action {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Page {
     Home,
+    Intake,
+    Contacts,
     Clients,
     Workers,
     Rostering,
@@ -43,6 +46,8 @@ impl Page {
     pub fn label(self) -> &'static str {
         match self {
             Self::Home => "Home",
+            Self::Intake => "Intake",
+            Self::Contacts => "Contacts",
             Self::Clients => "Clients",
             Self::Workers => "Workers",
             Self::Rostering => "Rostering",
@@ -57,7 +62,9 @@ impl Page {
     pub fn icon(self) -> &'static str {
         match self {
             Self::Home => "🏠",
-            Self::Clients => "👥",
+            Self::Intake => "📝",
+            Self::Contacts => "👥",
+            Self::Clients => "👤",
             Self::Workers => "👷",
             Self::Rostering => "📅",
             Self::Services => "🏷",
@@ -71,6 +78,8 @@ impl Page {
     pub fn blurb(self) -> &'static str {
         match self {
             Self::Home => "Your care operation at a glance.",
+            Self::Intake => "Guided onboarding for clients, workers and other contacts.",
+            Self::Contacts => "All contacts across clients, workers and support networks.",
             Self::Clients => "Participant and client records, contacts and care plans.",
             Self::Workers => "Support worker records, availability, skills and compliance.",
             Self::Rostering => "Shifts, client and worker assignments, and sessions.",
@@ -85,6 +94,17 @@ impl Page {
     pub fn features(self) -> &'static [&'static str] {
         match self {
             Self::Home => &[],
+            Self::Intake => &[
+                "Scenario picker with persisted drafts",
+                "Client intake with health, support network and behaviours",
+                "Worker intake with position, employment terms and award details",
+                "Other contacts such as coordinators, family and health professionals",
+            ],
+            Self::Contacts => &[
+                "One directory for clients, workers and dual-role participants",
+                "Support contacts, coordinators, family and health professionals",
+                "Instant local search across names, email and phone",
+            ],
             Self::Clients => &[
                 "Unified contact records for clients, workers and dual-role participants",
                 "Next-of-kin, representatives and consent management",

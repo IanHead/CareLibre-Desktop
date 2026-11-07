@@ -6,7 +6,9 @@
 
 use std::time::{Duration, Instant};
 
-use carelibre_desktop::{CareLibreApp, pages::Page, server::ConnectionState, theme};
+use carelibre_desktop::{
+    CareLibreApp, intake::IntakeKind, pages::Page, server::ConnectionState, theme,
+};
 use eframe::egui;
 
 fn main() {
@@ -16,6 +18,7 @@ fn main() {
         .cloned()
         .unwrap_or_else(|| "screenshot.png".to_owned());
     let page = match args.get(1).map(String::as_str) {
+        Some("contacts") => Page::Contacts,
         Some("clients") => Page::Clients,
         Some("workers") => Page::Workers,
         Some("rostering") => Page::Rostering,
@@ -24,13 +27,23 @@ fn main() {
         Some("communications") => Page::Communications,
         Some("reports") => Page::Reports,
         Some("settings") => Page::Settings,
+        Some("intake") => Page::Intake,
         _ => Page::Home,
     };
     let live = args.iter().any(|arg| arg == "--live");
     let perf = args.iter().any(|arg| arg == "--perf");
+    let intake = args.iter().find_map(|arg| match arg.as_str() {
+        "--intake=client" => Some(IntakeKind::Client),
+        "--intake=worker" => Some(IntakeKind::Worker),
+        "--intake=other" => Some(IntakeKind::Other),
+        _ => None,
+    });
 
     let mut app = CareLibreApp::new();
     app.set_page(page);
+    if let Some(kind) = intake {
+        app.start_intake(kind);
+    }
 
     let mut harness = egui_kittest::Harness::builder()
         .with_size(egui::vec2(1360.0, 860.0))

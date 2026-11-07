@@ -4,6 +4,7 @@
 //! served from SQLite by a background worker; the UI thread never touches the
 //! database.
 
+mod intake;
 mod query;
 mod schema;
 mod seed;
@@ -11,6 +12,7 @@ mod worker;
 
 use std::path::PathBuf;
 
+pub use intake::{complete_intake, delete_intake, list_intakes, load_intake, save_intake};
 pub use query::{
     ContactCounts, ContactPage, ShiftRow, contact_counts, count_shifts_in_range, query_contacts,
     shifts_in_range,
@@ -33,7 +35,7 @@ pub enum ContactFilter {
 impl ContactFilter {
     pub fn label(self) -> &'static str {
         match self {
-            Self::All => "All contacts",
+            Self::All => "Contacts",
             Self::Clients => "Clients",
             Self::Workers => "Workers",
         }
@@ -41,7 +43,7 @@ impl ContactFilter {
 
     pub(crate) fn kinds_sql(self) -> &'static str {
         match self {
-            Self::All => "'client','worker','dual'",
+            Self::All => "'client','worker','dual','other'",
             Self::Clients => "'client','dual'",
             Self::Workers => "'worker','dual'",
         }
@@ -70,6 +72,7 @@ pub enum ContactKind {
     Client,
     Worker,
     Dual,
+    Other,
 }
 
 impl ContactKind {
@@ -78,6 +81,7 @@ impl ContactKind {
             Self::Client => "Client",
             Self::Worker => "Worker",
             Self::Dual => "Dual role",
+            Self::Other => "Other",
         }
     }
 
@@ -86,6 +90,7 @@ impl ContactKind {
             Self::Client => "client",
             Self::Worker => "worker",
             Self::Dual => "dual",
+            Self::Other => "other",
         }
     }
 
@@ -93,6 +98,7 @@ impl ContactKind {
         match value {
             "worker" => Self::Worker,
             "dual" => Self::Dual,
+            "other" => Self::Other,
             _ => Self::Client,
         }
     }

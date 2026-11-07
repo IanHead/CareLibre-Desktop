@@ -132,7 +132,7 @@ fn quick_actions(ui: &mut Ui, action: &mut Option<Action>) {
             "Add to the roster",
             Some(Page::Rostering),
         ),
-        ("📝", "Start intake", "Wizard intake", Some(Page::Clients)),
+        ("📝", "Start intake", "Wizard intake", Some(Page::Intake)),
         ("✨", "Quote with AI", "Natural language", None),
         (
             "📄",

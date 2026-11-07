@@ -13,9 +13,11 @@ use eframe::egui::{
 use crate::{
     api,
     config::Config,
+    intake::IntakeKind,
     pages::{
         self, Action, Page,
         contacts::{ContactsAction, ContactsState, LOAD_MORE_SIZE, PAGE_SIZE},
+        intake::{IntakeAction, IntakeState, IntakeView},
         settings::SettingsForm,
     },
     perf::{PerfHud, PerfInfo},
@@ -32,8 +34,10 @@ pub struct CareLibreApp {
     settings: SettingsForm,
     server: ServerState,
     runtime: Option<ServerRuntime>,
+    contacts_all: ContactsState,
     contacts_clients: ContactsState,
     contacts_workers: ContactsState,
+    intake: IntakeState,
     store: Option<StoreHandle>,
     store_ready: bool,
     store_error: Option<String>,
@@ -72,8 +76,10 @@ impl CareLibreApp {
             settings,
             server,
             runtime: None,
+            contacts_all: ContactsState::new(ContactFilter::All),
             contacts_clients: ContactsState::new(ContactFilter::Clients),
             contacts_workers: ContactsState::new(ContactFilter::Workers),
+            intake: IntakeState::new(),
             store: None,
             store_ready: false,
             store_error: None,
@@ -135,12 +141,29 @@ impl CareLibreApp {
         self.store_ready
     }
 
+    /// Open the intake picker (or the current draft, if one is in progress).
+    pub fn open_intake(&mut self) {
+        self.page = Page::Intake;
+        if self.intake.view == IntakeView::Completed {
+            self.intake.open_picker();
+        }
+        if self.intake.view == IntakeView::Picker {
+            self.intake.list_requested = false;
+        }
+    }
+
+    /// Begin a scenario directly. Useful for deep links and previews.
+    pub fn start_intake(&mut self, kind: IntakeKind) {
+        self.page = Page::Intake;
+        self.intake.start(kind);
+    }
+
     /// Number of contacts currently materialised in the active list.
     pub fn contacts_loaded(&self) -> usize {
-        if self.page == Page::Workers {
-            self.contacts_workers.loaded()
-        } else {
-            self.contacts_clients.loaded()
+        match self.page {
+            Page::Workers => self.contacts_workers.loaded(),
+            Page::Contacts => self.contacts_all.loaded(),
+            _ => self.contacts_clients.loaded(),
         }
     }
 
@@ -151,7 +174,9 @@ impl CareLibreApp {
         self.poll_server(ui.ctx());
         self.poll_store(ui.ctx());
         self.tick_contact_search();
+        self.tick_intake_autosave();
         self.ensure_contacts_loaded();
+        self.ensure_intake_list();
         self.refresh_session_if_needed();
 
         self.top_bar(ui);
@@ -159,23 +184,29 @@ impl CareLibreApp {
         self.status_bar(ui);
 
         let mut contacts_action: Option<(ContactFilter, ContactsAction)> = None;
+        let mut intake_action: Option<IntakeAction> = None;
         let action = egui::CentralPanel::default()
             .frame(Frame::new().fill(theme::BG).inner_margin(Margin::same(24)))
-            .show(ui, |ui| self.page_contents(ui, &mut contacts_action))
+            .show(ui, |ui| {
+                self.page_contents(ui, &mut contacts_action, &mut intake_action)
+            })
             .inner;
 
         if let Some((filter, contacts_action)) = contacts_action {
             self.handle_contacts_action(filter, contacts_action);
+        }
+        if let Some(intake_action) = intake_action {
+            self.handle_intake_action(ui.ctx(), intake_action);
         }
 
         if let Some(action) = action {
             self.handle_action(ui.ctx(), action);
         }
 
-        let perf_state = if self.page == Page::Workers {
-            &self.contacts_workers
-        } else {
-            &self.contacts_clients
+        let perf_state = match self.page {
+            Page::Workers => &self.contacts_workers,
+            Page::Contacts => &self.contacts_all,
+            _ => &self.contacts_clients,
         };
         let perf_info = PerfInfo {
             cache_ready: self.store_ready,
@@ -196,6 +227,7 @@ impl CareLibreApp {
         &mut self,
         ui: &mut Ui,
         contacts_action: &mut Option<(ContactFilter, ContactsAction)>,
+        intake_action: &mut Option<IntakeAction>,
     ) -> Option<Action> {
         match self.page {
             Page::Settings => pages::settings::show(ui, &mut self.settings, &self.server),
@@ -206,6 +238,23 @@ impl CareLibreApp {
                     account.as_ref().map(|a| a.first_name.as_str()),
                     account.as_ref().map(|a| a.organisation.as_str()),
                 )
+            }
+            Page::Intake => {
+                if let Some(action) = pages::intake::show(ui, &mut self.intake, self.store_ready) {
+                    *intake_action = Some(action);
+                }
+                None
+            }
+            Page::Contacts => {
+                if let Some(action) = pages::contacts::show(
+                    ui,
+                    &mut self.contacts_all,
+                    self.store_ready,
+                    self.store_error.as_deref(),
+                ) {
+                    *contacts_action = Some((ContactFilter::All, action));
+                }
+                None
             }
             Page::Clients => {
                 if let Some(action) = pages::contacts::show(
@@ -268,15 +317,17 @@ impl CareLibreApp {
 
     fn contact_state(&self, filter: ContactFilter) -> &ContactsState {
         match filter {
+            ContactFilter::All => &self.contacts_all,
             ContactFilter::Workers => &self.contacts_workers,
-            ContactFilter::Clients | ContactFilter::All => &self.contacts_clients,
+            ContactFilter::Clients => &self.contacts_clients,
         }
     }
 
     fn contact_state_mut(&mut self, filter: ContactFilter) -> &mut ContactsState {
         match filter {
+            ContactFilter::All => &mut self.contacts_all,
             ContactFilter::Workers => &mut self.contacts_workers,
-            ContactFilter::Clients | ContactFilter::All => &mut self.contacts_clients,
+            ContactFilter::Clients => &mut self.contacts_clients,
         }
     }
 
@@ -298,6 +349,8 @@ impl CareLibreApp {
                     self.store_path = path;
                     self.cache_counts = counts;
                     self.cache_shifts = Some(shifts);
+                    self.contacts_all.counts = counts;
+                    self.contacts_all.total = counts.for_filter(ContactFilter::All);
                     self.contacts_clients.counts = counts;
                     self.contacts_clients.total = counts.for_filter(ContactFilter::Clients);
                     self.contacts_workers.counts = counts;
@@ -338,6 +391,93 @@ impl CareLibreApp {
                         Err(error) => state.error = Some(error),
                     }
                 }
+                StoreEvent::IntakesListed { request_id, result } => {
+                    if self.intake.list_request != Some(request_id) {
+                        continue;
+                    }
+                    self.intake.list_loading = false;
+                    self.intake.list_requested = true;
+                    match result {
+                        Ok(drafts) => {
+                            self.intake.drafts = drafts;
+                            self.intake.error = None;
+                        }
+                        Err(error) => self.intake.error = Some(error),
+                    }
+                }
+                StoreEvent::IntakeLoaded { request_id, result } => {
+                    if self.intake.load_request != Some(request_id) {
+                        continue;
+                    }
+                    self.intake.loading_draft = false;
+                    match result {
+                        Ok(Some(draft)) => {
+                            self.intake.draft = Some(draft);
+                            self.intake.view = IntakeView::Wizard;
+                            self.intake.dirty = false;
+                            self.intake.saving = false;
+                            self.intake.error = None;
+                        }
+                        Ok(None) => {
+                            self.intake.error = Some("That draft no longer exists.".to_owned());
+                            self.intake.open_picker();
+                        }
+                        Err(error) => self.intake.error = Some(error),
+                    }
+                }
+                StoreEvent::IntakeSaved { result } => {
+                    self.intake.saving = false;
+                    match result {
+                        Ok(()) => {
+                            self.intake.error = None;
+                            if self.intake.view == IntakeView::Picker {
+                                self.intake.list_requested = false;
+                            }
+                        }
+                        Err(error) => {
+                            self.intake.dirty = true;
+                            self.intake.error = Some(error);
+                        }
+                    }
+                }
+                StoreEvent::IntakeCompleted { result } => {
+                    self.intake.saving = false;
+                    match result {
+                        Ok(completed) => {
+                            self.invalidate_contacts(completed.kind);
+                            self.intake.completed = Some(completed.clone());
+                            self.intake.view = IntakeView::Completed;
+                            self.intake.dirty = false;
+                            self.intake.error = None;
+                            self.notify(
+                                ctx,
+                                format!("{} has been added to the local cache.", completed.name),
+                            );
+                        }
+                        Err(error) => {
+                            self.intake.dirty = true;
+                            self.intake.error = Some(error);
+                        }
+                    }
+                }
+                StoreEvent::IntakeDiscarded {
+                    request_id,
+                    id: _,
+                    result,
+                } => {
+                    if self.intake.discard_request != Some(request_id) {
+                        continue;
+                    }
+                    self.intake.list_loading = false;
+                    self.intake.list_requested = false;
+                    match result {
+                        Ok(()) => {
+                            self.intake.error = None;
+                            self.intake.list_requested = false;
+                        }
+                        Err(error) => self.intake.error = Some(error),
+                    }
+                }
                 StoreEvent::Seeded {
                     result,
                     counts,
@@ -345,12 +485,17 @@ impl CareLibreApp {
                 } => {
                     self.cache_counts = counts;
                     self.cache_shifts = Some(shifts);
+                    self.contacts_all.seed_in_flight = false;
                     self.contacts_clients.seed_in_flight = false;
                     self.contacts_workers.seed_in_flight = false;
 
                     match result {
                         Ok(report) => {
-                            for state in [&mut self.contacts_clients, &mut self.contacts_workers] {
+                            for state in [
+                                &mut self.contacts_all,
+                                &mut self.contacts_clients,
+                                &mut self.contacts_workers,
+                            ] {
                                 state.reset();
                                 state.total = counts.for_filter(state.filter);
                                 state.counts = counts;
@@ -398,6 +543,7 @@ impl CareLibreApp {
         }
 
         let filter = match self.page {
+            Page::Contacts => ContactFilter::All,
             Page::Clients => ContactFilter::Clients,
             Page::Workers => ContactFilter::Workers,
             _ => return,
@@ -468,6 +614,143 @@ impl CareLibreApp {
                     state.error = Some("The local cache is not running.".to_owned());
                 }
             }
+        }
+    }
+
+    fn ensure_intake_list(&mut self) {
+        if self.page != Page::Intake
+            || !self.store_ready
+            || self.intake.view != IntakeView::Picker
+            || self.intake.list_requested
+            || self.intake.list_loading
+        {
+            return;
+        }
+
+        self.request_intake_list();
+    }
+
+    fn request_intake_list(&mut self) {
+        let request_id = self.intake.next_request();
+        self.intake.list_request = Some(request_id);
+        self.intake.list_loading = true;
+        self.intake.list_requested = true;
+
+        if let Some(store) = &self.store {
+            store.list_intakes(request_id);
+        } else {
+            self.intake.list_loading = false;
+            self.intake.list_requested = false;
+            self.intake.error = Some("The local cache is not running.".to_owned());
+        }
+    }
+
+    fn tick_intake_autosave(&mut self) {
+        if self.intake.view != IntakeView::Wizard || self.intake.saving || !self.intake.dirty {
+            return;
+        }
+
+        let due = self.intake.save_due.unwrap_or_else(Instant::now);
+        if Instant::now() >= due {
+            self.save_intake_now();
+        }
+    }
+
+    fn save_intake_now(&mut self) {
+        let Some(draft) = &self.intake.draft else {
+            return;
+        };
+
+        if let Some(store) = &self.store {
+            store.save_intake(draft.clone());
+            self.intake.saving = true;
+            self.intake.dirty = false;
+            self.intake.save_due = None;
+        } else {
+            self.intake.error = Some("The local cache is not running.".to_owned());
+        }
+    }
+
+    fn handle_intake_action(&mut self, ctx: &egui::Context, action: IntakeAction) {
+        match action {
+            IntakeAction::Start(kind) => {
+                self.intake.start(kind);
+                self.save_intake_now();
+            }
+            IntakeAction::Resume(id) => {
+                let request_id = self.intake.next_request();
+                self.intake.load_request = Some(request_id);
+                self.intake.loading_draft = true;
+                self.intake.error = None;
+                if let Some(store) = &self.store {
+                    store.load_intake(request_id, id);
+                }
+            }
+            IntakeAction::Discard(id) => {
+                let request_id = self.intake.next_request();
+                self.intake.discard_request = Some(request_id);
+                self.intake.list_loading = true;
+                if let Some(store) = &self.store {
+                    store.discard_intake(request_id, id);
+                }
+            }
+            IntakeAction::Edited => {}
+            IntakeAction::SaveNow => self.save_intake_now(),
+            IntakeAction::BackToPicker => {
+                if self.intake.dirty {
+                    self.save_intake_now();
+                }
+                self.intake.open_picker();
+                self.intake.list_requested = false;
+            }
+            IntakeAction::Complete => {
+                if let Some(draft) = &self.intake.draft {
+                    self.intake.saving = true;
+                    self.intake.dirty = false;
+                    if let Some(store) = &self.store {
+                        store.complete_intake(draft.clone());
+                    }
+                }
+            }
+            IntakeAction::ViewContact { page, name } => {
+                self.page = page;
+                let filter = match page {
+                    Page::Workers => ContactFilter::Workers,
+                    Page::Contacts => ContactFilter::All,
+                    _ => ContactFilter::Clients,
+                };
+                let state = self.contact_state_mut(filter);
+                state.search = name;
+                state.generation += 1;
+                state.search_due = Some(Instant::now());
+                state.loading = true;
+                state.next_cursor = None;
+                state.selected = None;
+                let _ = ctx;
+            }
+        }
+    }
+
+    fn invalidate_contacts(&mut self, kind: IntakeKind) {
+        self.cache_counts.all += 1;
+        match kind {
+            IntakeKind::Client => self.cache_counts.clients += 1,
+            IntakeKind::Worker => self.cache_counts.workers += 1,
+            IntakeKind::Other => self.cache_counts.other += 1,
+        }
+
+        for state in [
+            &mut self.contacts_all,
+            &mut self.contacts_clients,
+            &mut self.contacts_workers,
+        ] {
+            state.reset();
+            state.generation = 0;
+            state.total = self.cache_counts.for_filter(state.filter);
+            state.counts = self.cache_counts;
+            state.next_cursor = None;
+            state.loading = false;
+            state.selected = None;
         }
     }
 
@@ -752,21 +1035,18 @@ impl CareLibreApp {
 
                         ui.add_space(4.0);
 
-                        let new_button = ui.add(
+                        let intake_button = ui.add(
                             egui::Button::new(
-                                RichText::new("+  New")
+                                RichText::new("+  Intake")
                                     .color(theme::BG)
                                     .font(theme::strong_font(13.0)),
                             )
                             .fill(theme::ACCENT)
                             .corner_radius(CornerRadius::same(8))
-                            .min_size(vec2(78.0, 32.0)),
+                            .min_size(vec2(92.0, 32.0)),
                         );
-                        if new_button.clicked() {
-                            self.notify(
-                                ui.ctx(),
-                                "Quick-create actions arrive with the contacts module.",
-                            );
+                        if intake_button.clicked() {
+                            self.open_intake();
                         }
 
                         ui.add_space(6.0);
@@ -782,8 +1062,8 @@ impl CareLibreApp {
                             && !self.search.trim().is_empty()
                         {
                             let query = self.search.trim().to_owned();
-                            self.page = Page::Clients;
-                            let state = &mut self.contacts_clients;
+                            self.page = Page::Contacts;
+                            let state = &mut self.contacts_all;
                             state.search = query;
                             state.generation += 1;
                             state.search_due = Some(Instant::now());
@@ -813,7 +1093,13 @@ impl CareLibreApp {
                 ui.set_width(ui.available_width());
 
                 group_label(ui, "WORKSPACE");
-                for page in [Page::Home, Page::Clients, Page::Workers, Page::Rostering] {
+                for page in [
+                    Page::Home,
+                    Page::Contacts,
+                    Page::Clients,
+                    Page::Workers,
+                    Page::Rostering,
+                ] {
                     if nav_item(ui, self.page == page, page).clicked() {
                         self.page = page;
                     }

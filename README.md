@@ -4,16 +4,20 @@ A fast, native desktop client for [CareLibre](https://github.com/IanHead/CareLib
 open-source care management platform for disability and aged care providers.
 
 > **Status: prototype.** The native application shell, home dashboard, live server
-> connection, account authentication and organisation onboarding are in place. Clients
-> and workers now render from a local SQLite cache with virtualised 50,000-row lists.
-> Rostering, services, documents and communications are navigable placeholders waiting on
-> the care-domain APIs.
+> connection and account authentication are in place. Contacts, clients and workers render
+> from a local SQLite cache with virtualised 50,000-row lists. Guided intake wizards for
+> clients, workers and other contacts persist drafts locally and create onboarding records.
+> Rostering, services, documents and communications are the next verticals.
 
 ![CareLibre home screen](docs/home.png)
 
 ![CareLibre virtualised contacts](docs/contacts.png)
 
 ![CareLibre server settings](docs/settings.png)
+
+![CareLibre intake picker](docs/intake.png)
+
+![CareLibre client intake wizard](docs/intake-client.png)
 
 ## Design principles
 
@@ -86,6 +90,21 @@ cargo test --test server_live -- --ignored
 
 Set `CARELIBRE_TEST_SERVER=https://care.example.com` to target another instance.
 
+## Intake and onboarding
+
+The **Intake** button in the top bar opens a scenario picker for:
+
+- **Client intake** — identity, contact and address, health and support needs, emergency
+  and professional contacts, behaviours and risk, funding and consent.
+- **Worker intake** — identity and contact details, position and division, employment
+  terms, award classification, compliance checks and expiry dates.
+- **Other contact intake** — coordinators, family, GPs and other support-network contacts.
+
+Wizards save automatically to the local SQLite cache, can be closed and resumed from the
+picker, and create a contact with status **Onboarding** when completed. Completed records
+appear immediately in the virtualised Contacts list. The captured intake data is stored as
+JSON alongside the contact summary ready for the sync API.
+
 ## Local cache and performance
 
 Rostering and contact screens read from a bundled SQLite cache; the UI thread never
@@ -133,10 +152,11 @@ cargo run --example screenshot -- docs/settings.png settings --live
 | `src/api.rs` | Blocking HTTP client for the CareLibre REST API |
 | `src/server.rs` | Connection state and the background API worker |
 | `src/config.rs` | Persisted desktop preferences |
-| `src/store/` | SQLite schema, queries, demo seeding and the cache worker |
+| `src/intake.rs` | Intake draft model and shared types |
+| `src/store/` | SQLite schema, queries, intake persistence, demo seeding and the cache worker |
 | `src/perf.rs` | F12 performance HUD |
 | `src/theme.rs` | Palette, typography and shared card/pill widgets |
-| `src/pages/` | One module per area; `home.rs` dashboard, `contacts.rs` virtualised list, `settings.rs` connection/account UI |
+| `src/pages/` | One module per area; `home.rs` dashboard, `contacts.rs` virtualised list, `intake/` wizards, `settings.rs` connection/account UI |
 | `assets/fonts/` | Bundled Inter font (SIL OFL 1.1) and licence |
 | `examples/screenshot.rs` | Headless renderer used for snapshots |
 | `examples/seed_cache.rs` | Deterministic cache fixture generator |
@@ -154,10 +174,11 @@ The desktop client tracks the wider CareLibre requirements:
 - [x] Live server connection, account authentication and organisation onboarding
 - [x] PostgreSQL-backed CareLibre server (via REST API)
 - [x] Local SQLite cache, background query worker and virtualised contacts
+- [x] Guided intake wizards with persisted drafts
 - [x] Performance HUD and 1M-shift synthetic fixture
 - [ ] Delta sync and optimistic local writes
 - [ ] Care-domain API integration for the screens below
-- [ ] Contacts, clients, workers and divisions
+- [ ] Contacts, clients, workers and divisions syncing to the server
 - [ ] Services, rates and effective-dated rate versions
 - [ ] Rostering with shifts, assignments and sessions
 - [ ] Natural-language quoting and document merge templates

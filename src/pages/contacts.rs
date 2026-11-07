@@ -152,6 +152,7 @@ fn stat_chips(ui: &mut Ui, state: &ContactsState) {
         chip(ui, "Clients", state.counts.clients, theme::ACCENT_BLUE);
         chip(ui, "Workers", state.counts.workers, theme::ACCENT);
         chip(ui, "Dual role", state.counts.dual, theme::WARNING);
+        chip(ui, "Other", state.counts.other, theme::FAINT);
     });
 }
 
@@ -534,6 +535,7 @@ fn kind_colour(kind: ContactKind) -> Color32 {
         ContactKind::Client => theme::ACCENT_BLUE,
         ContactKind::Worker => theme::ACCENT,
         ContactKind::Dual => theme::WARNING,
+        ContactKind::Other => theme::FAINT,
     }
 }
 
