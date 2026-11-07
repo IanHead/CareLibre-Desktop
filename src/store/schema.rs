@@ -4,7 +4,7 @@ use std::path::Path;
 
 use rusqlite::Connection;
 
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 3;
 
 const CONTACTS_SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS contacts (
@@ -166,6 +166,110 @@ PRAGMA user_version = 2;
 COMMIT;
 "#;
 
+const CUSTOM_FIELDS_SCHEMA: &str = r#"
+CREATE TABLE IF NOT EXISTS contact_profiles (
+    contact_id TEXT PRIMARY KEY,
+    data       TEXT NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS custom_fields (
+    id          TEXT PRIMARY KEY,
+    org_id      TEXT NOT NULL,
+    entity      TEXT NOT NULL DEFAULT 'contact',
+    key         TEXT NOT NULL,
+    label       TEXT NOT NULL,
+    field_type  TEXT NOT NULL,
+    options     TEXT NOT NULL DEFAULT '[]',
+    section     TEXT,
+    required    INTEGER NOT NULL DEFAULT 0,
+    enabled     INTEGER NOT NULL DEFAULT 1,
+    sort_order  INTEGER NOT NULL DEFAULT 0,
+    created_at  INTEGER NOT NULL,
+    updated_at  INTEGER NOT NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS custom_fields_org_key
+    ON custom_fields(org_id, entity, key);
+CREATE INDEX IF NOT EXISTS custom_fields_org_order
+    ON custom_fields(org_id, entity, enabled, sort_order, id);
+
+CREATE TABLE IF NOT EXISTS contact_custom_values (
+    contact_id TEXT NOT NULL,
+    field_id   TEXT NOT NULL,
+    value      TEXT NOT NULL,
+    PRIMARY KEY (contact_id, field_id),
+    FOREIGN KEY (contact_id) REFERENCES contacts(id) ON DELETE CASCADE,
+    FOREIGN KEY (field_id) REFERENCES custom_fields(id) ON DELETE CASCADE
+);
+
+INSERT OR IGNORE INTO custom_fields
+    (id, org_id, entity, key, label, field_type, options, section, required, enabled, sort_order, created_at, updated_at)
+VALUES
+    ('demo-cf-medicare', 'demo', 'contact', 'medicare_number', 'Medicare number', 'text', '[]', 'Identifiers', 0, 1, 10, 0, 0),
+    ('demo-cf-cultural', 'demo', 'contact', 'cultural_support', 'Cultural support needs', 'multiline', '[]', 'Support needs', 0, 1, 20, 0, 0),
+    ('demo-cf-comms', 'demo', 'contact', 'preferred_communication', 'Preferred communication', 'select', '["Phone","SMS","Email","In person"]', 'Contact preferences', 0, 1, 30, 0, 0),
+    ('demo-cf-shirt', 'demo', 'contact', 'shirt_size', 'Shirt size', 'select', '["XS","S","M","L","XL","2XL","3XL"]', 'Worker details', 0, 1, 40, 0, 0);
+"#;
+
+const MIGRATE_V2_TO_V3: &str = r#"
+BEGIN;
+
+CREATE TABLE IF NOT EXISTS contact_profiles (
+    contact_id TEXT PRIMARY KEY,
+    data       TEXT NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS custom_fields (
+    id          TEXT PRIMARY KEY,
+    org_id      TEXT NOT NULL,
+    entity      TEXT NOT NULL DEFAULT 'contact',
+    key         TEXT NOT NULL,
+    label       TEXT NOT NULL,
+    field_type  TEXT NOT NULL,
+    options     TEXT NOT NULL DEFAULT '[]',
+    section     TEXT,
+    required    INTEGER NOT NULL DEFAULT 0,
+    enabled     INTEGER NOT NULL DEFAULT 1,
+    sort_order  INTEGER NOT NULL DEFAULT 0,
+    created_at  INTEGER NOT NULL,
+    updated_at  INTEGER NOT NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS custom_fields_org_key
+    ON custom_fields(org_id, entity, key);
+CREATE INDEX IF NOT EXISTS custom_fields_org_order
+    ON custom_fields(org_id, entity, enabled, sort_order, id);
+
+CREATE TABLE IF NOT EXISTS contact_custom_values (
+    contact_id TEXT NOT NULL,
+    field_id   TEXT NOT NULL,
+    value      TEXT NOT NULL,
+    PRIMARY KEY (contact_id, field_id),
+    FOREIGN KEY (contact_id) REFERENCES contacts(id) ON DELETE CASCADE,
+    FOREIGN KEY (field_id) REFERENCES custom_fields(id) ON DELETE CASCADE
+);
+
+INSERT OR IGNORE INTO custom_fields
+    (id, org_id, entity, key, label, field_type, options, section, required, enabled, sort_order, created_at, updated_at)
+VALUES
+    ('demo-cf-medicare', 'demo', 'contact', 'medicare_number', 'Medicare number', 'text', '[]', 'Identifiers', 0, 1, 10, 0, 0),
+    ('demo-cf-cultural', 'demo', 'contact', 'cultural_support', 'Cultural support needs', 'multiline', '[]', 'Support needs', 0, 1, 20, 0, 0),
+    ('demo-cf-comms', 'demo', 'contact', 'preferred_communication', 'Preferred communication', 'select', '["Phone","SMS","Email","In person"]', 'Contact preferences', 0, 1, 30, 0, 0),
+    ('demo-cf-shirt', 'demo', 'contact', 'shirt_size', 'Shirt size', 'select', '["XS","S","M","L","XL","2XL","3XL"]', 'Worker details', 0, 1, 40, 0, 0);
+
+INSERT OR IGNORE INTO contact_profiles (contact_id, data, updated_at)
+SELECT contact_id, json_extract(data, '$.fields'), updated_at
+FROM intakes
+WHERE status = 'completed'
+  AND contact_id IS NOT NULL
+  AND json_extract(data, '$.fields') IS NOT NULL;
+
+PRAGMA user_version = 3;
+COMMIT;
+"#;
+
 pub fn open(path: &Path) -> rusqlite::Result<Connection> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|err| {
@@ -210,13 +314,16 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
 
     if version == 0 {
         conn.execute_batch(&format!(
-            "BEGIN; {CONTACTS_SCHEMA} PRAGMA user_version = {SCHEMA_VERSION}; COMMIT;"
+            "BEGIN; {CONTACTS_SCHEMA} {CUSTOM_FIELDS_SCHEMA} PRAGMA user_version = {SCHEMA_VERSION}; COMMIT;"
         ))?;
         return Ok(());
     }
 
-    if version == 1 {
+    if version < 2 {
         conn.execute_batch(MIGRATE_V1_TO_V2)?;
+    }
+    if version < 3 {
+        conn.execute_batch(MIGRATE_V2_TO_V3)?;
     }
 
     Ok(())

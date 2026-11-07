@@ -166,3 +166,68 @@ fn other_contacts_complete_as_other_kind() {
         .expect("contact exists");
     assert_eq!(kind, "other");
 }
+
+#[test]
+fn loads_and_saves_full_contact_with_custom_fields() {
+    use std::collections::BTreeMap;
+
+    use carelibre_desktop::contact::ContactUpdate;
+    use carelibre_desktop::store::{ContactKind, list_custom_fields, load_contact, save_contact};
+
+    let mut conn = open_in_memory().expect("in-memory database");
+    seed_demo(&mut conn, DEMO_ORG_ID, 5, 0).expect("seed contacts");
+
+    let fields = list_custom_fields(&conn, DEMO_ORG_ID).expect("custom metadata");
+    assert!(
+        fields.iter().any(|field| field.label == "Medicare number"),
+        "demo custom fields should be seeded as metadata"
+    );
+
+    let id = "demo-contact-0000000";
+    let record = load_contact(&conn, DEMO_ORG_ID, id)
+        .expect("load contact")
+        .expect("contact exists");
+    assert!(record.profile.is_empty());
+
+    let mut profile = BTreeMap::new();
+    profile.insert("address_line1".to_owned(), "12 Test Street".to_owned());
+    profile.insert("primary_disability".to_owned(), "Autism".to_owned());
+
+    let field_id = fields
+        .iter()
+        .find(|field| field.key == "medicare_number")
+        .expect("medicare field")
+        .id
+        .clone();
+    let mut custom_values = BTreeMap::new();
+    custom_values.insert(field_id.clone(), "1234 56789 1".to_owned());
+
+    let update = ContactUpdate {
+        id: id.to_owned(),
+        name: "Edited Contact".to_owned(),
+        kind: ContactKind::Client,
+        email: Some("edited@example.com".to_owned()),
+        phone: Some("0400 123 456".to_owned()),
+        division: Some("Community Care".to_owned()),
+        status: "Active".to_owned(),
+        profile,
+        custom_values,
+    };
+
+    save_contact(&mut conn, DEMO_ORG_ID, &update).expect("save contact");
+
+    let loaded = load_contact(&conn, DEMO_ORG_ID, id)
+        .expect("reload")
+        .expect("contact");
+    assert_eq!(loaded.summary.name, "Edited Contact");
+    assert_eq!(loaded.summary.kind, ContactKind::Client);
+    assert_eq!(loaded.value("address_line1"), "12 Test Street");
+    assert_eq!(loaded.custom_value(&field_id), "1234 56789 1");
+
+    let results = query_contacts(&conn, DEMO_ORG_ID, ContactFilter::All, "Edited", None, 10)
+        .expect("search edited contact");
+    assert_eq!(
+        results.total, 1,
+        "FTS index should be updated by the trigger"
+    );
+}

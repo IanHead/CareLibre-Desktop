@@ -32,6 +32,7 @@ fn main() {
     };
     let live = args.iter().any(|arg| arg == "--live");
     let perf = args.iter().any(|arg| arg == "--perf");
+    let contact = args.iter().any(|arg| arg == "--contact");
     let intake = args.iter().find_map(|arg| match arg.as_str() {
         "--intake=client" => Some(IntakeKind::Client),
         "--intake=worker" => Some(IntakeKind::Worker),
@@ -74,9 +75,18 @@ fn main() {
             std::thread::sleep(Duration::from_millis(25));
         }
 
-        if matches!(page, Page::Clients | Page::Workers) {
+        if matches!(page, Page::Clients | Page::Workers | Page::Contacts) {
             let deadline = Instant::now() + Duration::from_secs(5);
             while harness.state().contacts_loaded() == 0 && Instant::now() < deadline {
+                harness.run();
+                std::thread::sleep(Duration::from_millis(25));
+            }
+        }
+
+        if contact {
+            harness.state_mut().open_first_contact();
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while !harness.state().contact_editor_ready() && Instant::now() < deadline {
                 harness.run();
                 std::thread::sleep(Duration::from_millis(25));
             }

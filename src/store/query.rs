@@ -208,7 +208,7 @@ fn fts_match_query(input: &str) -> String {
         .join(" ")
 }
 
-fn map_contact(row: &Row<'_>) -> rusqlite::Result<ContactRow> {
+pub(crate) fn map_contact(row: &Row<'_>) -> rusqlite::Result<ContactRow> {
     Ok(ContactRow {
         id: row.get(0)?,
         name: row.get(1)?,

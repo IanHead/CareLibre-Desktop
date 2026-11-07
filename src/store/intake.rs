@@ -129,6 +129,7 @@ pub fn complete_intake(
     draft.contact_id = Some(contact_id.clone());
     draft.updated_at = now;
     let data = serde_json::to_string(&draft).map_err(|error| error.to_string())?;
+    let profile = serde_json::to_string(&draft.fields).map_err(|error| error.to_string())?;
 
     let tx = conn.transaction().map_err(|error| error.to_string())?;
 
@@ -154,6 +155,14 @@ pub fn complete_intake(
             division,
             now,
         ],
+    )
+    .map_err(|error| error.to_string())?;
+
+    tx.execute(
+        "INSERT INTO contact_profiles (contact_id, data, updated_at)
+         VALUES (?1, ?2, ?3)
+         ON CONFLICT(contact_id) DO UPDATE SET data = excluded.data, updated_at = excluded.updated_at",
+        params![contact_id, profile, now],
     )
     .map_err(|error| error.to_string())?;
 

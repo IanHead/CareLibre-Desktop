@@ -4,6 +4,7 @@
 //! served from SQLite by a background worker; the UI thread never touches the
 //! database.
 
+mod contact;
 mod intake;
 mod query;
 mod schema;
@@ -12,6 +13,7 @@ mod worker;
 
 use std::path::PathBuf;
 
+pub use contact::{list_custom_fields, load_contact, save_contact};
 pub use intake::{complete_intake, delete_intake, list_intakes, load_intake, save_intake};
 pub use query::{
     ContactCounts, ContactPage, ShiftRow, contact_counts, count_shifts_in_range, query_contacts,

@@ -6,6 +6,7 @@
 pub mod api;
 pub mod app;
 pub mod config;
+pub mod contact;
 pub mod intake;
 pub mod pages;
 pub mod perf;

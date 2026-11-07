@@ -5,9 +5,10 @@ open-source care management platform for disability and aged care providers.
 
 > **Status: prototype.** The native application shell, home dashboard, live server
 > connection and account authentication are in place. Contacts, clients and workers render
-> from a local SQLite cache with virtualised 50,000-row lists. Guided intake wizards for
-> clients, workers and other contacts persist drafts locally and create onboarding records.
-> Rostering, services, documents and communications are the next verticals.
+> from a local SQLite cache with virtualised 50,000-row lists, and every contact can be
+> opened and edited against the database. Guided intake wizards persist drafts locally and
+> create onboarding records. Custom fields are database-backed metadata and render
+> dynamically in the editor. Rostering, services, documents and communications are next.
 
 ![CareLibre home screen](docs/home.png)
 
@@ -19,8 +20,15 @@ open-source care management platform for disability and aged care providers.
 
 ![CareLibre client intake wizard](docs/intake-client.png)
 
+![CareLibre contact editor with custom fields](docs/contact-editor.png)
+
 ## Design principles
 
+- **Performance is the feature.** The desktop client is designed to be as fast as
+  possible: every list is virtualised, reads come from a local SQLite cache, the UI thread
+  never touches SQLite or the network, writes are local-first, and no screen waits on a
+  spinner. Performance budgets and the local-first sync plan are documented in
+  [`docs/performance-architecture.md`](docs/performance-architecture.md).
 - **Native, not a web page in a trench coat.** Rust, [egui](https://github.com/emilk/egui)
   and wgpu. No Electron, no embedded web view, no JavaScript.
 - **Cross-platform.** Windows, macOS and Linux from one codebase.
@@ -105,6 +113,20 @@ picker, and create a contact with status **Onboarding** when completed. Complete
 appear immediately in the virtualised Contacts list. The captured intake data is stored as
 JSON alongside the contact summary ready for the sync API.
 
+## Contact records and custom fields
+
+Click any row in Contacts, Clients or Workers to open the record editor. The editor loads
+the core record, its extended profile and all custom-field values from SQLite; nothing is
+hardcoded in the UI.
+
+- Core fields: display name, contact type, status, division, email and phone.
+- Profile fields are grouped into sections appropriate to the contact type, with client,
+  worker and other-contact variants.
+- **Custom fields are metadata.** Definitions live in the `custom_fields` table (label,
+  type, options, section, order, required flag) and values in `contact_custom_values`.
+  The editor renders them dynamically, then saves everything in one transaction.
+- Saving updates the full-text index and refreshes the virtualised lists without a restart.
+
 ## Local cache and performance
 
 Rostering and contact screens read from a bundled SQLite cache; the UI thread never
@@ -152,11 +174,12 @@ cargo run --example screenshot -- docs/settings.png settings --live
 | `src/api.rs` | Blocking HTTP client for the CareLibre REST API |
 | `src/server.rs` | Connection state and the background API worker |
 | `src/config.rs` | Persisted desktop preferences |
+| `src/contact.rs` | Full contact, custom-field and update models |
 | `src/intake.rs` | Intake draft model and shared types |
 | `src/store/` | SQLite schema, queries, intake persistence, demo seeding and the cache worker |
 | `src/perf.rs` | F12 performance HUD |
 | `src/theme.rs` | Palette, typography and shared card/pill widgets |
-| `src/pages/` | One module per area; `home.rs` dashboard, `contacts.rs` virtualised list, `intake/` wizards, `settings.rs` connection/account UI |
+| `src/pages/` | One module per area; `home.rs` dashboard, `contacts.rs` virtualised list, `contact_editor.rs` record editor, `intake/` wizards, `settings.rs` connection/account UI |
 | `assets/fonts/` | Bundled Inter font (SIL OFL 1.1) and licence |
 | `examples/screenshot.rs` | Headless renderer used for snapshots |
 | `examples/seed_cache.rs` | Deterministic cache fixture generator |
@@ -175,6 +198,7 @@ The desktop client tracks the wider CareLibre requirements:
 - [x] PostgreSQL-backed CareLibre server (via REST API)
 - [x] Local SQLite cache, background query worker and virtualised contacts
 - [x] Guided intake wizards with persisted drafts
+- [x] Contact editing backed by SQLite, including custom-field metadata
 - [x] Performance HUD and 1M-shift synthetic fixture
 - [ ] Delta sync and optimistic local writes
 - [ ] Care-domain API integration for the screens below

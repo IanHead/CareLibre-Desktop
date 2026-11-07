@@ -1,3 +1,4 @@
+pub mod contact_editor;
 pub mod contacts;
 pub mod home;
 pub mod intake;

@@ -16,13 +16,14 @@ use crate::{
     intake::IntakeKind,
     pages::{
         self, Action, Page,
+        contact_editor::{ContactEditorAction, ContactEditorState},
         contacts::{ContactsAction, ContactsState, LOAD_MORE_SIZE, PAGE_SIZE},
         intake::{IntakeAction, IntakeState, IntakeView},
         settings::SettingsForm,
     },
     perf::{PerfHud, PerfInfo},
     server::{ConnectionState, Event, ServerRuntime, ServerState},
-    store::{self, ContactCounts, ContactFilter, StoreEvent, StoreHandle},
+    store::{self, ContactCounts, ContactFilter, ContactKind, StoreEvent, StoreHandle},
     theme,
 };
 
@@ -38,6 +39,7 @@ pub struct CareLibreApp {
     contacts_clients: ContactsState,
     contacts_workers: ContactsState,
     intake: IntakeState,
+    contact_editor: ContactEditorState,
     store: Option<StoreHandle>,
     store_ready: bool,
     store_error: Option<String>,
@@ -80,6 +82,7 @@ impl CareLibreApp {
             contacts_clients: ContactsState::new(ContactFilter::Clients),
             contacts_workers: ContactsState::new(ContactFilter::Workers),
             intake: IntakeState::new(),
+            contact_editor: ContactEditorState::new(),
             store: None,
             store_ready: false,
             store_error: None,
@@ -201,6 +204,11 @@ impl CareLibreApp {
 
         if let Some(action) = action {
             self.handle_action(ui.ctx(), action);
+        }
+
+        let editor_action = pages::contact_editor::show(ui.ctx(), &mut self.contact_editor);
+        if editor_action == Some(ContactEditorAction::Save) {
+            self.save_contact_editor();
         }
 
         let perf_state = match self.page {
@@ -478,6 +486,37 @@ impl CareLibreApp {
                         Err(error) => self.intake.error = Some(error),
                     }
                 }
+                StoreEvent::ContactLoaded { request_id, result } => {
+                    if self.contact_editor.request_id != Some(request_id) {
+                        continue;
+                    }
+                    self.contact_editor.loading = false;
+                    match result {
+                        Ok(Some(record)) => self.contact_editor.apply(record),
+                        Ok(None) => {
+                            self.contact_editor.error =
+                                Some("That contact no longer exists.".to_owned());
+                        }
+                        Err(error) => self.contact_editor.error = Some(error),
+                    }
+                }
+                StoreEvent::ContactSaved { result } => {
+                    self.contact_editor.saving = false;
+                    match result {
+                        Ok(()) => {
+                            if let Some(record) = &self.contact_editor.record {
+                                self.adjust_contact_counts(
+                                    record.summary.kind,
+                                    self.contact_editor.kind,
+                                );
+                            }
+                            self.contact_editor.close();
+                            self.refresh_contact_lists();
+                            self.notify(ctx, "Contact saved to the local database.");
+                        }
+                        Err(error) => self.contact_editor.error = Some(error),
+                    }
+                }
                 StoreEvent::Seeded {
                     result,
                     counts,
@@ -600,6 +639,7 @@ impl CareLibreApp {
                 state.next_cursor = None;
                 state.needs_more = false;
             }
+            ContactsAction::OpenContact(id) => self.open_contact(&id),
             ContactsAction::LoadMore => self.send_contacts_query(filter, true),
             ContactsAction::SeedDemo => {
                 let state = self.contact_state_mut(filter);
@@ -751,6 +791,100 @@ impl CareLibreApp {
             state.next_cursor = None;
             state.loading = false;
             state.selected = None;
+        }
+    }
+
+    pub fn open_contact(&mut self, id: &str) {
+        let request_id = self.contact_editor.begin(id.to_owned());
+        if let Some(store) = &self.store {
+            store.load_contact(request_id, id.to_owned());
+        } else {
+            self.contact_editor.loading = false;
+            self.contact_editor.error = Some("The local cache is not running.".to_owned());
+        }
+    }
+
+    /// Open the first loaded contact. Used by screenshot previews.
+    pub fn open_first_contact(&mut self) -> bool {
+        let filter = match self.page {
+            Page::Contacts => ContactFilter::All,
+            Page::Workers => ContactFilter::Workers,
+            _ => ContactFilter::Clients,
+        };
+        let rows = self.contact_state(filter).rows.load_full();
+        if let Some(row) = rows.first() {
+            let id = row.id.clone();
+            self.open_contact(&id);
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn contact_editor_ready(&self) -> bool {
+        self.contact_editor.open && !self.contact_editor.loading
+    }
+
+    fn save_contact_editor(&mut self) {
+        match self.contact_editor.update() {
+            Ok(update) => {
+                if let Some(store) = &self.store {
+                    store.save_contact(update);
+                    self.contact_editor.saving = true;
+                    self.contact_editor.error = None;
+                } else {
+                    self.contact_editor.error = Some("The local cache is not running.".to_owned());
+                }
+            }
+            Err(error) => self.contact_editor.error = Some(error),
+        }
+    }
+
+    fn refresh_contact_lists(&mut self) {
+        for state in [
+            &mut self.contacts_all,
+            &mut self.contacts_clients,
+            &mut self.contacts_workers,
+        ] {
+            state.reset();
+            state.generation = 0;
+            state.next_cursor = None;
+            state.loading = false;
+        }
+    }
+
+    fn adjust_contact_counts(&mut self, old: ContactKind, new: ContactKind) {
+        if old == new {
+            return;
+        }
+
+        fn decrement(counts: &mut ContactCounts, kind: ContactKind) {
+            match kind {
+                ContactKind::Client => counts.clients = counts.clients.saturating_sub(1),
+                ContactKind::Worker => counts.workers = counts.workers.saturating_sub(1),
+                ContactKind::Dual => counts.dual = counts.dual.saturating_sub(1),
+                ContactKind::Other => counts.other = counts.other.saturating_sub(1),
+            }
+        }
+
+        fn increment(counts: &mut ContactCounts, kind: ContactKind) {
+            match kind {
+                ContactKind::Client => counts.clients += 1,
+                ContactKind::Worker => counts.workers += 1,
+                ContactKind::Dual => counts.dual += 1,
+                ContactKind::Other => counts.other += 1,
+            }
+        }
+
+        decrement(&mut self.cache_counts, old);
+        increment(&mut self.cache_counts, new);
+        for state in [
+            &mut self.contacts_all,
+            &mut self.contacts_clients,
+            &mut self.contacts_workers,
+        ] {
+            state.counts = self.cache_counts;
+            state.total = self.cache_counts.for_filter(state.filter);
         }
     }
 

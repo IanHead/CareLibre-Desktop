@@ -1,6 +1,6 @@
 //! Intake picker and guided onboarding wizards.
 
-mod fields;
+pub(crate) mod fields;
 
 use std::time::{Duration, Instant};
 

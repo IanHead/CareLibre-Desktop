@@ -5,11 +5,12 @@ use std::{path::PathBuf, thread};
 use crossbeam_channel::{Receiver, Sender, unbounded};
 use eframe::egui;
 
+use crate::contact::{ContactRecord, ContactUpdate};
 use crate::intake::{CompletedIntake, IntakeDraft, IntakeSummary};
 
 use super::{
-    ContactCounts, ContactCursor, ContactFilter, ContactPage, DEMO_ORG_ID, SeedReport, intake,
-    open, query, seed,
+    ContactCounts, ContactCursor, ContactFilter, ContactPage, DEMO_ORG_ID, SeedReport, contact,
+    intake, open, query, seed,
 };
 
 enum Command {
@@ -40,6 +41,13 @@ enum Command {
     DiscardIntake {
         request_id: u64,
         id: String,
+    },
+    LoadContact {
+        request_id: u64,
+        id: String,
+    },
+    SaveContact {
+        update: Box<ContactUpdate>,
     },
 }
 
@@ -80,6 +88,13 @@ pub enum StoreEvent {
     IntakeDiscarded {
         request_id: u64,
         id: String,
+        result: Result<(), String>,
+    },
+    ContactLoaded {
+        request_id: u64,
+        result: Result<Option<ContactRecord>, String>,
+    },
+    ContactSaved {
         result: Result<(), String>,
     },
 }
@@ -148,6 +163,16 @@ impl StoreHandle {
         let _ = self
             .commands
             .send(Command::DiscardIntake { request_id, id });
+    }
+
+    pub fn load_contact(&self, request_id: u64, id: String) {
+        let _ = self.commands.send(Command::LoadContact { request_id, id });
+    }
+
+    pub fn save_contact(&self, update: ContactUpdate) {
+        let _ = self.commands.send(Command::SaveContact {
+            update: Box::new(update),
+        });
     }
 
     pub fn try_recv(&self) -> Option<StoreEvent> {
@@ -250,6 +275,14 @@ fn run(path: PathBuf, ctx: egui::Context, commands: Receiver<Command>, events: S
                     id,
                     result,
                 });
+            }
+            Command::LoadContact { request_id, id } => {
+                let result = contact::load_contact(&conn, DEMO_ORG_ID, &id);
+                let _ = events.send(StoreEvent::ContactLoaded { request_id, result });
+            }
+            Command::SaveContact { update } => {
+                let result = contact::save_contact(&mut conn, DEMO_ORG_ID, &update);
+                let _ = events.send(StoreEvent::ContactSaved { result });
             }
             Command::SeedDemo { contacts, shifts } => {
                 let result = seed::seed_demo(&mut conn, DEMO_ORG_ID, contacts, shifts)

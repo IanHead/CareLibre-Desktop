@@ -21,11 +21,12 @@ pub const LOAD_MORE_SIZE: usize = 500;
 const PREFETCH_ROWS: usize = 40;
 const SEARCH_DEBOUNCE: Duration = Duration::from_millis(120);
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ContactsAction {
     SearchChanged,
     LoadMore,
     SeedDemo,
+    OpenContact(String),
 }
 
 pub struct ContactsState {
@@ -259,7 +260,10 @@ fn contacts_table(ui: &mut Ui, state: &mut ContactsState, action: &mut Option<Co
         });
 
     if let Some(id) = clicked_id {
-        state.selected = Some(id);
+        state.selected = Some(id.clone());
+        if action.is_none() {
+            *action = Some(ContactsAction::OpenContact(id));
+        }
     }
 
     if action.is_none()
