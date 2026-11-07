@@ -1,17 +1,28 @@
 //! Application shell: top bar, navigation, status bar and routing.
 
+use std::time::{Duration, Instant};
+
 use eframe::egui::{
     self, Align, Align2, Color32, CornerRadius, FontId, Frame, Layout, Margin, RichText, Sense,
     Stroke, Ui, vec2,
 };
 
-use crate::pages::{self, HomeAction, Page};
-use crate::theme;
+use crate::{
+    api,
+    config::Config,
+    pages::{self, Action, Page, settings::SettingsForm},
+    server::{ConnectionState, Event, ServerRuntime, ServerState},
+    theme,
+};
 
 pub struct CareLibreApp {
     page: Page,
     search: String,
     notice: Option<Notice>,
+    config: Config,
+    settings: SettingsForm,
+    server: ServerState,
+    runtime: Option<ServerRuntime>,
 }
 
 struct Notice {
@@ -19,12 +30,49 @@ struct Notice {
     expires_at: f64,
 }
 
+struct AccountBadge {
+    initials: String,
+    name: String,
+    first_name: String,
+    organisation: String,
+    role: String,
+    edition: String,
+}
+
 impl CareLibreApp {
+    /// Build the app without a live server connection (used by previews/tests).
     pub fn new() -> Self {
+        let config = Config::load();
+        let server = ServerState::new(config.server_url.clone());
+        let settings = SettingsForm::new(&config.server_url);
+
         Self {
             page: Page::Home,
             search: String::new(),
             notice: None,
+            config,
+            settings,
+            server,
+            runtime: None,
+        }
+    }
+
+    /// Build the app and start the background server worker.
+    pub fn with_server(ctx: &egui::Context) -> Self {
+        let mut app = Self::new();
+        app.connect(ctx);
+        app
+    }
+
+    /// Start the server worker if it is not already running.
+    pub fn connect(&mut self, ctx: &egui::Context) {
+        if self.runtime.is_none() {
+            self.runtime = Some(ServerRuntime::spawn(
+                ctx.clone(),
+                self.server.base_url.clone(),
+            ));
+            self.server.connection = ConnectionState::Connecting;
+            self.server.last_checked = None;
         }
     }
 
@@ -37,16 +85,24 @@ impl CareLibreApp {
         self.page
     }
 
+    /// Current server connection state (for previews and integration checks).
+    pub fn connection(&self) -> &ConnectionState {
+        &self.server.connection
+    }
+
     /// The whole application UI. Kept separate from [`eframe::App`] so it can be
     /// rendered by tooling (headless screenshot tests) as well.
     pub fn show(&mut self, ui: &mut Ui) {
+        self.poll_server(ui.ctx());
+        self.refresh_session_if_needed();
+
         self.top_bar(ui);
         self.sidebar(ui);
         self.status_bar(ui);
 
         let action = egui::CentralPanel::default()
             .frame(Frame::new().fill(theme::BG).inner_margin(Margin::same(24)))
-            .show(ui, |ui| pages::show(ui, self.page, &self.search))
+            .show(ui, |ui| self.page_contents(ui))
             .inner;
 
         if let Some(action) = action {
@@ -54,6 +110,33 @@ impl CareLibreApp {
         }
 
         self.show_notice(ui.ctx());
+    }
+
+    fn page_contents(&mut self, ui: &mut Ui) -> Option<Action> {
+        match self.page {
+            Page::Settings => pages::settings::show(ui, &mut self.settings, &self.server),
+            Page::Home => {
+                let account = self.account_badge();
+                pages::home::show(
+                    ui,
+                    account.as_ref().map(|a| a.first_name.as_str()),
+                    account.as_ref().map(|a| a.organisation.as_str()),
+                )
+            }
+            other => pages::placeholder::show(ui, other),
+        }
+    }
+
+    fn account_badge(&self) -> Option<AccountBadge> {
+        let session = self.server.session.as_ref()?;
+        Some(AccountBadge {
+            initials: session.initials(),
+            name: session.auth.user.full_name.clone(),
+            first_name: session.first_name().to_owned(),
+            organisation: session.auth.organisation.name.clone(),
+            role: session.role().to_owned(),
+            edition: session.auth.organisation.edition.clone(),
+        })
     }
 
     fn notify(&mut self, ctx: &egui::Context, text: impl Into<String>) {
@@ -64,30 +147,223 @@ impl CareLibreApp {
         });
     }
 
-    fn handle_action(&mut self, ctx: &egui::Context, action: HomeAction) {
-        if let Some(page) = action.navigate {
-            self.page = page;
+    // Server events -------------------------------------------------------
+
+    fn poll_server(&mut self, ctx: &egui::Context) {
+        let events: Vec<Event> = match &self.runtime {
+            Some(runtime) => std::iter::from_fn(|| runtime.try_recv()).collect(),
+            None => Vec::new(),
+        };
+
+        for event in events {
+            self.handle_server_event(ctx, event);
         }
-        if let Some(notice) = action.notice {
-            self.notify(ctx, notice);
+    }
+
+    fn handle_server_event(&mut self, ctx: &egui::Context, event: Event) {
+        match event {
+            Event::Status { base_url, result } => {
+                if base_url != self.server.base_url {
+                    return;
+                }
+
+                self.server.last_checked = Some(Instant::now());
+                self.server.connection = match result {
+                    Ok(info) => ConnectionState::Online {
+                        version: info.version,
+                        database_up: info.database_up,
+                        ready_error: info.ready_error,
+                    },
+                    Err(error) => ConnectionState::Offline { error },
+                };
+            }
+            Event::Authenticated { base_url, result } => {
+                if base_url != self.server.base_url {
+                    return;
+                }
+                self.server.auth_in_flight = false;
+                match result {
+                    Ok(auth) => {
+                        let organisation = auth.organisation.name.clone();
+                        self.server.session = Some(crate::server::Session {
+                            expires_at: Instant::now()
+                                + Duration::from_secs(auth.expires_in.max(60)),
+                            auth,
+                        });
+                        self.server.refresh_in_flight = false;
+                        self.settings.on_signed_in();
+                        self.notify(ctx, format!("Signed in to {organisation}."));
+                    }
+                    Err(error) => {
+                        self.settings.notice = None;
+                        self.settings.error = Some(error);
+                    }
+                }
+            }
+            Event::Refreshed { base_url, result } => {
+                if base_url != self.server.base_url {
+                    return;
+                }
+                self.server.refresh_in_flight = false;
+                match result {
+                    Ok(auth) => {
+                        self.server.session = Some(crate::server::Session {
+                            expires_at: Instant::now()
+                                + Duration::from_secs(auth.expires_in.max(60)),
+                            auth,
+                        });
+                    }
+                    Err(_) => {
+                        self.server.session = None;
+                        self.settings.error =
+                            Some("Your session expired. Please sign in again.".to_owned());
+                        self.notify(ctx, "Session expired. Please sign in again.");
+                    }
+                }
+            }
+            Event::LoggedOut { result } => {
+                if let Err(error) = result {
+                    self.notify(ctx, format!("Signed out locally. Server error: {error}"));
+                }
+            }
         }
     }
-}
 
-impl Default for CareLibreApp {
-    fn default() -> Self {
-        Self::new()
+    fn refresh_session_if_needed(&mut self) {
+        if self.server.refresh_in_flight {
+            return;
+        }
+
+        let Some(token) = self
+            .server
+            .session
+            .as_ref()
+            .filter(|session| session.needs_refresh())
+            .map(|session| session.auth.refresh_token.clone())
+        else {
+            return;
+        };
+
+        if let Some(runtime) = &self.runtime {
+            runtime.refresh(token);
+            self.server.refresh_in_flight = true;
+        }
     }
-}
 
-impl eframe::App for CareLibreApp {
-    fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
-        self.show(ui);
+    fn handle_action(&mut self, ctx: &egui::Context, action: Action) {
+        match action {
+            Action::Navigate(page) => self.page = page,
+            Action::Notice(message) => self.notify(ctx, message),
+            Action::SaveServer { base_url } => self.save_server(ctx, &base_url),
+            Action::TestServer => self.test_server(),
+            Action::Login {
+                email,
+                password,
+                organisation_slug,
+            } => {
+                if let Some(runtime) = &self.runtime {
+                    runtime.login(email, password, organisation_slug);
+                    self.server.auth_in_flight = true;
+                    self.settings.error = None;
+                    self.settings.notice = None;
+                } else {
+                    self.settings.error =
+                        Some("Start the desktop app to connect to a server.".to_owned());
+                }
+            }
+            Action::Register {
+                organisation_name,
+                organisation_slug,
+                full_name,
+                email,
+                password,
+            } => {
+                if let Some(runtime) = &self.runtime {
+                    runtime.register(
+                        organisation_name,
+                        organisation_slug,
+                        full_name,
+                        email,
+                        password,
+                    );
+                    self.server.auth_in_flight = true;
+                    self.settings.error = None;
+                    self.settings.notice = None;
+                } else {
+                    self.settings.error =
+                        Some("Start the desktop app to connect to a server.".to_owned());
+                }
+            }
+            Action::Logout => {
+                if let Some(session) = self.server.session.take() {
+                    if let Some(runtime) = &self.runtime {
+                        runtime.logout(session.auth.refresh_token.clone());
+                    }
+                    self.server.refresh_in_flight = false;
+                    self.settings.on_signed_out();
+                    self.settings.notice = None;
+                    self.notify(ctx, "Signed out.");
+                }
+            }
+        }
     }
-}
 
-impl CareLibreApp {
+    fn save_server(&mut self, ctx: &egui::Context, base_url: &str) {
+        let url = match api::normalize_base_url(base_url) {
+            Ok(url) => url,
+            Err(message) => {
+                self.settings.error = Some(message);
+                return;
+            }
+        };
+
+        let server_changed = self.server.base_url != url;
+        if server_changed && self.server.session.is_some() {
+            self.server.session = None;
+            self.server.refresh_in_flight = false;
+            self.server.auth_in_flight = false;
+            self.settings.on_signed_out();
+            self.notify(ctx, "Server changed. Please sign in again.");
+        }
+
+        self.settings.base_url = url.clone();
+        self.server.base_url = url.clone();
+        self.server.last_checked = None;
+        self.server.connection = ConnectionState::Connecting;
+        self.config.server_url = url.clone();
+
+        if let Err(error) = self.config.save() {
+            self.settings.error = Some(error);
+        }
+
+        if let Some(runtime) = &self.runtime {
+            runtime.set_base_url(url);
+            self.settings.notice = Some("Server address saved. Checking connection…".to_owned());
+            self.notify(ctx, "Checking server connection…");
+        } else {
+            self.server.connection = ConnectionState::NotConnected;
+            self.settings.notice = Some("Server address saved.".to_owned());
+        }
+    }
+
+    fn test_server(&mut self) {
+        if let Some(runtime) = &self.runtime {
+            runtime.check();
+            self.server.connection = ConnectionState::Connecting;
+            self.server.last_checked = None;
+            self.settings.error = None;
+            self.settings.notice = Some("Checking connection…".to_owned());
+        } else {
+            self.settings.error =
+                Some("Live connection checks are unavailable in this preview.".to_owned());
+        }
+    }
+
+    // Shell ---------------------------------------------------------------
+
     fn top_bar(&mut self, ui: &mut Ui) {
+        let account = self.account_badge();
+
         egui::Panel::top("top_bar")
             .exact_size(64.0)
             .show_separator_line(false)
@@ -134,7 +410,24 @@ impl CareLibreApp {
                     );
 
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        theme::avatar(ui, "IH", 32.0, theme::ACCENT_BLUE);
+                        match &account {
+                            Some(account) => {
+                                let response =
+                                    theme::avatar(ui, &account.initials, 32.0, theme::ACCENT_BLUE);
+                                if response.clicked() {
+                                    self.page = Page::Settings;
+                                }
+                                response.on_hover_text(format!(
+                                    "{}\n{} · {}",
+                                    account.name, account.organisation, account.role
+                                ));
+                            }
+                            None => {
+                                if ui.add(theme::secondary_button("Sign in")).clicked() {
+                                    self.page = Page::Settings;
+                                }
+                            }
+                        }
                         ui.add_space(4.0);
 
                         let bell = ui.add(
@@ -186,6 +479,8 @@ impl CareLibreApp {
     }
 
     fn sidebar(&mut self, ui: &mut Ui) {
+        let account = self.account_badge();
+
         egui::Panel::left("sidebar")
             .exact_size(232.0)
             .resizable(false)
@@ -220,7 +515,9 @@ impl CareLibreApp {
                 }
 
                 ui.with_layout(Layout::bottom_up(Align::Min), |ui| {
-                    user_row(ui);
+                    if user_row(ui, account.as_ref()) {
+                        self.page = Page::Settings;
+                    }
                     ui.add_space(8.0);
                     ui.separator();
                     ui.add_space(8.0);
@@ -228,12 +525,52 @@ impl CareLibreApp {
                         self.page = Page::Settings;
                     }
                     ui.add_space(10.0);
-                    edition_card(ui);
+                    edition_card(ui, account.as_ref().map(|a| a.edition.as_str()));
                 });
             });
     }
 
     fn status_bar(&mut self, ui: &mut Ui) {
+        let (server_label, server_colour, server_tooltip) = match &self.server.connection {
+            ConnectionState::NotConnected => (
+                "Server not connected".to_owned(),
+                theme::FAINT,
+                format!("Server URL: {}", self.server.base_url),
+            ),
+            ConnectionState::Connecting => (
+                "Connecting to server…".to_owned(),
+                theme::WARNING,
+                format!("Contacting {}", self.server.base_url),
+            ),
+            ConnectionState::Online {
+                version,
+                database_up: true,
+                ..
+            } => (
+                format!("Server online · v{version}"),
+                theme::SUCCESS,
+                format!("{} · database up", self.server.base_url),
+            ),
+            ConnectionState::Online {
+                database_up: false,
+                ready_error,
+                ..
+            } => (
+                "Server online · database down".to_owned(),
+                theme::WARNING,
+                format!(
+                    "{} · database down: {}",
+                    self.server.base_url,
+                    ready_error.as_deref().unwrap_or("readiness check failed")
+                ),
+            ),
+            ConnectionState::Offline { error } => (
+                "Server offline".to_owned(),
+                theme::DANGER,
+                format!("{} · {error}", self.server.base_url),
+            ),
+        };
+
         egui::Panel::bottom("status_bar")
             .exact_size(30.0)
             .show_separator_line(false)
@@ -258,13 +595,9 @@ impl CareLibreApp {
                                 .size(10.5),
                         );
                         dot(ui, theme::BORDER);
-                        ui.label(RichText::new("wgpu").color(theme::FAINT).size(10.5));
+                        status_segment(ui, "wgpu", theme::FAINT, None);
                         dot(ui, theme::BORDER);
-                        ui.label(
-                            RichText::new("Database not connected")
-                                .color(theme::WARNING)
-                                .size(10.5),
-                        );
+                        status_segment(ui, &server_label, server_colour, Some(&server_tooltip));
                         dot(ui, theme::BORDER);
                         ui.label(
                             RichText::new("Rust · native")
@@ -308,6 +641,18 @@ impl CareLibreApp {
                         );
                     });
             });
+    }
+}
+
+impl Default for CareLibreApp {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl eframe::App for CareLibreApp {
+    fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
+        self.show(ui);
     }
 }
 
@@ -372,21 +717,68 @@ fn nav_item(ui: &mut Ui, selected: bool, page: Page) -> egui::Response {
     response.on_hover_text(page.blurb())
 }
 
-fn user_row(ui: &mut Ui) {
-    ui.horizontal(|ui| {
-        theme::avatar(ui, "IH", 28.0, theme::ACCENT_BLUE.gamma_multiply(0.85));
-        ui.vertical(|ui| {
-            ui.label(RichText::new("Ian Head").font(theme::strong_font(12.0)));
-            ui.label(
-                RichText::new("Administrator")
+fn user_row(ui: &mut Ui, account: Option<&AccountBadge>) -> bool {
+    let mut clicked = false;
+
+    ui.horizontal(|ui| match account {
+        Some(account) => {
+            let response = theme::avatar(ui, &account.initials, 28.0, theme::ACCENT_BLUE);
+            if response.clicked() {
+                clicked = true;
+            }
+            response.on_hover_text(format!(
+                "{}\n{} · {}",
+                account.name, account.organisation, account.role
+            ));
+            ui.vertical(|ui| {
+                ui.label(RichText::new(&account.name).font(theme::strong_font(12.0)));
+                ui.label(
+                    RichText::new(format!(
+                        "{} · {}",
+                        capitalize(&account.role),
+                        account.organisation
+                    ))
                     .color(theme::FAINT)
                     .size(10.0),
-            );
-        });
+                );
+            });
+        }
+        None => {
+            theme::avatar(ui, "?", 28.0, theme::SURFACE_RAISED);
+            ui.vertical(|ui| {
+                ui.label(
+                    RichText::new("Not signed in")
+                        .color(theme::MUTED)
+                        .font(theme::strong_font(12.0)),
+                );
+                if ui
+                    .add(
+                        egui::Button::new(
+                            RichText::new("Connect to server  →")
+                                .color(theme::ACCENT)
+                                .size(10.0),
+                        )
+                        .frame(false),
+                    )
+                    .clicked()
+                {
+                    clicked = true;
+                }
+            });
+        }
     });
+
+    clicked
 }
 
-fn edition_card(ui: &mut Ui) {
+fn edition_card(ui: &mut Ui, edition: Option<&str>) {
+    let title = match edition {
+        Some(edition) if !edition.eq_ignore_ascii_case("community") => {
+            format!("{} EDITION", edition.to_uppercase())
+        }
+        _ => "COMMUNITY EDITION".to_owned(),
+    };
+
     Frame::new()
         .fill(theme::BG)
         .stroke(Stroke::new(1.0, theme::BORDER))
@@ -401,7 +793,7 @@ fn edition_card(ui: &mut Ui) {
                     ui.painter()
                         .circle_filled(rect.center(), 4.0, theme::SUCCESS);
                     ui.label(
-                        RichText::new("COMMUNITY EDITION")
+                        RichText::new(title)
                             .color(theme::MUTED)
                             .font(theme::strong_font(9.5)),
                     );
@@ -430,6 +822,21 @@ fn edition_card(ui: &mut Ui) {
                 );
             });
         });
+}
+
+fn status_segment(ui: &mut Ui, text: &str, colour: Color32, tooltip: Option<&str>) {
+    let response = ui.label(RichText::new(text).color(colour).size(10.5));
+    if let Some(tooltip) = tooltip {
+        response.on_hover_text(tooltip);
+    }
+}
+
+fn capitalize(value: &str) -> String {
+    let mut chars = value.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+        None => String::new(),
+    }
 }
 
 fn dot(ui: &mut Ui, colour: Color32) {

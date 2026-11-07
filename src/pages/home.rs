@@ -5,24 +5,18 @@ use eframe::egui::{
     StrokeKind, Ui, pos2, vec2,
 };
 
-use crate::pages::Page;
+use crate::pages::{Action, Page};
 use crate::theme;
 
-#[derive(Default)]
-pub struct HomeAction {
-    pub navigate: Option<Page>,
-    pub notice: Option<&'static str>,
-}
-
-pub fn show(ui: &mut Ui, _search: &str) -> Option<HomeAction> {
-    let mut action = HomeAction::default();
+pub fn show(ui: &mut Ui, user_name: Option<&str>, organisation: Option<&str>) -> Option<Action> {
+    let mut action: Option<Action> = None;
 
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
 
-            header(ui);
+            header(ui, user_name, organisation);
             ui.add_space(16.0);
             stats(ui);
             ui.add_space(14.0);
@@ -59,23 +53,27 @@ pub fn show(ui: &mut Ui, _search: &str) -> Option<HomeAction> {
             ui.add_space(24.0);
         });
 
-    (action.navigate.is_some() || action.notice.is_some()).then_some(action)
+    action
 }
 
-fn header(ui: &mut Ui) {
+fn header(ui: &mut Ui, user_name: Option<&str>, organisation: Option<&str>) {
     ui.horizontal(|ui| {
         ui.vertical(|ui| {
-            let greeting = match greeting_hour() {
-                5..=11 => "Good morning, Ian",
-                12..=17 => "Good afternoon, Ian",
-                _ => "Good evening, Ian",
+            let salutation = match greeting_hour() {
+                5..=11 => "Good morning",
+                12..=17 => "Good afternoon",
+                _ => "Good evening",
+            };
+            let greeting = match user_name.filter(|name| !name.is_empty()) {
+                Some(name) => format!("{salutation}, {name}"),
+                None => salutation.to_owned(),
+            };
+            let subtitle = match organisation {
+                Some(org) => format!("Here's what's happening at {org} today."),
+                None => "Here's what's happening across your care operation today.".to_owned(),
             };
             ui.label(RichText::new(greeting).font(theme::strong_font(28.0)));
-            ui.label(
-                RichText::new("Here's what's happening across your care operation today.")
-                    .color(theme::MUTED)
-                    .size(13.5),
-            );
+            ui.label(RichText::new(subtitle).color(theme::MUTED).size(13.5));
         });
 
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -118,7 +116,7 @@ fn stat_card(ui: &mut Ui, label: &str, value: &str, note: &str, colour: Color32)
     });
 }
 
-fn quick_actions(ui: &mut Ui, action: &mut HomeAction) {
+fn quick_actions(ui: &mut Ui, action: &mut Option<Action>) {
     section_header(ui, "Quick actions", "Common jobs, one click away");
 
     let items: [(&str, &str, &str, Option<Page>); 6] = [
@@ -153,11 +151,12 @@ fn quick_actions(ui: &mut Ui, action: &mut HomeAction) {
     ui.columns(3, |cols| {
         for (i, (icon, title, description, target)) in items.into_iter().enumerate() {
             if action_tile(&mut cols[i % 3], icon, title, description).clicked() {
-                if let Some(page) = target {
-                    action.navigate = Some(page);
-                } else {
-                    action.notice = Some("Natural-language quoting arrives in a future build.");
-                }
+                *action = Some(match target {
+                    Some(page) => Action::Navigate(page),
+                    None => Action::Notice(
+                        "Natural-language quoting arrives in a future build.".to_owned(),
+                    ),
+                });
             }
         }
     });
@@ -288,7 +287,7 @@ fn getting_started(ui: &mut Ui) {
     });
 }
 
-fn todays_roster(ui: &mut Ui, action: &mut HomeAction) {
+fn todays_roster(ui: &mut Ui, action: &mut Option<Action>) {
     section_header(ui, "Today's roster", "Sample data");
 
     theme::card().show(ui, |ui| {
@@ -358,7 +357,7 @@ fn todays_roster(ui: &mut Ui, action: &mut HomeAction) {
             )
             .clicked()
         {
-            action.navigate = Some(Page::Rostering);
+            *action = Some(Action::Navigate(Page::Rostering));
         }
     });
 }

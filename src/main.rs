@@ -20,7 +20,7 @@ fn main() -> eframe::Result {
         options,
         Box::new(|cc| {
             theme::apply(&cc.egui_ctx);
-            Ok(Box::new(CareLibreApp::new()))
+            Ok(Box::new(CareLibreApp::with_server(&cc.egui_ctx)))
         }),
     )
 }

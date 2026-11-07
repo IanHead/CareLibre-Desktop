@@ -3,11 +3,14 @@
 A fast, native desktop client for [CareLibre](https://github.com/IanHead/CareLibre), the
 open-source care management platform for disability and aged care providers.
 
-> **Status: prototype.** The native application shell and home dashboard are in place.
+> **Status: prototype.** The native application shell, home dashboard, live server
+> connection, account authentication and organisation onboarding are in place.
 > Clients, workers, rostering, services, documents and communications are navigable
-> placeholders waiting on the core database and API.
+> placeholders waiting on the care-domain APIs.
 
 ![CareLibre home screen](docs/home.png)
+
+![CareLibre server settings](docs/settings.png)
 
 ## Design principles
 
@@ -53,6 +56,33 @@ For development builds with fast incremental compiles:
 cargo run
 ```
 
+## Connecting to the server
+
+The client talks to the CareLibre Server REST API. A local development server listens
+on `http://127.0.0.1:8484` by default.
+
+Open **Settings** in the sidebar to:
+
+- change the server URL (saved to the platform config directory)
+- check liveness and database readiness (`/healthz` and `/readyz`)
+- sign in, or create the first organisation with an owner account
+- sign out and inspect the active organisation and edition
+
+The connection is checked every 15 seconds and the status is shown in the status bar.
+Access tokens are refreshed automatically; the refresh token is kept in memory only
+for now. Persisting it in the OS keychain is on the roadmap, together with offline
+support and domain data.
+
+### Live integration tests
+
+With a server running, exercise the real connection path:
+
+```sh
+cargo test --test server_live -- --ignored
+```
+
+Set `CARELIBRE_TEST_SERVER=https://care.example.com` to target another instance.
+
 ## Development
 
 ```sh
@@ -68,6 +98,7 @@ The UI can be rendered without a display, which is handy for design review and C
 ```sh
 cargo run --example screenshot -- docs/home.png
 cargo run --example screenshot -- docs/rostering.png rostering
+cargo run --example screenshot -- docs/settings.png settings --live
 ```
 
 ### Layout
@@ -76,11 +107,15 @@ cargo run --example screenshot -- docs/rostering.png rostering
 | --- | --- |
 | `src/main.rs` | Native entry point and window configuration |
 | `src/app.rs` | Application shell: top bar, sidebar, status bar, routing |
+| `src/api.rs` | Blocking HTTP client for the CareLibre REST API |
+| `src/server.rs` | Connection state and the background API worker |
+| `src/config.rs` | Persisted desktop preferences |
 | `src/theme.rs` | Palette, typography and shared card/pill widgets |
-| `src/pages/` | One module per area; `home.rs` is the dashboard |
+| `src/pages/` | One module per area; `home.rs` is the dashboard, `settings.rs` the connection/account UI |
 | `assets/fonts/` | Bundled Inter font (SIL OFL 1.1) and licence |
 | `examples/screenshot.rs` | Headless renderer used for snapshots |
 | `tests/ui.rs` | Headless rendering and sidebar navigation tests |
+| `tests/server_live.rs` | Live server connection tests (`--ignored`) |
 
 ## Roadmap
 
@@ -88,13 +123,16 @@ The desktop client tracks the wider CareLibre requirements:
 
 - [x] Native egui/wgpu application shell
 - [x] Home dashboard and navigation
-- [ ] PostgreSQL / MariaDB / MySQL persistence
+- [x] Live server connection, account authentication and organisation onboarding
+- [x] PostgreSQL-backed CareLibre server (via REST API)
+- [ ] Care-domain API integration for the screens below
 - [ ] Contacts, clients, workers and divisions
 - [ ] Services, rates and effective-dated rate versions
 - [ ] Rostering with shifts, assignments and sessions
 - [ ] Natural-language quoting and document merge templates
 - [ ] Configurable forms, fields and cost-centre inheritance
 - [ ] Configurable SMS and email communications
+- [ ] Offline cache and OS keychain-backed sessions
 - [ ] Android and iOS companions
 
 ## Licence

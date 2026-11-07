@@ -1,9 +1,29 @@
-mod home;
-mod placeholder;
+pub mod home;
+pub mod placeholder;
+pub mod settings;
 
-pub use home::HomeAction;
-
-use eframe::egui;
+/// A user intent raised by a page, handled by the application shell.
+pub enum Action {
+    Navigate(Page),
+    Notice(String),
+    SaveServer {
+        base_url: String,
+    },
+    TestServer,
+    Login {
+        email: String,
+        password: String,
+        organisation_slug: Option<String>,
+    },
+    Register {
+        organisation_name: String,
+        organisation_slug: String,
+        full_name: String,
+        email: String,
+        password: String,
+    },
+    Logout,
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Page {
@@ -108,16 +128,6 @@ impl Page {
                 "Database connection and backup settings",
                 "Role-based access and audit logging",
             ],
-        }
-    }
-}
-
-pub fn show(ui: &mut egui::Ui, page: Page, search: &str) -> Option<HomeAction> {
-    match page {
-        Page::Home => home::show(ui, search),
-        other => {
-            placeholder::show(ui, other);
-            None
         }
     }
 }

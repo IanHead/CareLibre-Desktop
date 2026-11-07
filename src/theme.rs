@@ -3,9 +3,11 @@
 use std::sync::Arc;
 
 use eframe::egui::{
-    self, Color32, CornerRadius, FontData, FontDefinitions, FontFamily, FontId, Margin, Stroke,
-    TextStyle, Visuals,
+    self, Color32, CornerRadius, FontData, FontDefinitions, FontFamily, FontId, Margin, RichText,
+    Stroke, TextStyle, Visuals,
 };
+
+use crate::server::ConnectionState;
 
 // Core palette -------------------------------------------------------------
 
@@ -131,6 +133,46 @@ pub fn apply(ctx: &egui::Context) {
     });
 }
 
+/// Shared primary action button.
+pub fn primary_button(text: &str) -> egui::Button<'static> {
+    egui::Button::new(
+        RichText::new(text.to_owned())
+            .color(BG)
+            .font(strong_font(13.0)),
+    )
+    .fill(ACCENT)
+    .corner_radius(CornerRadius::same(8))
+    .min_size(egui::vec2(0.0, 34.0))
+}
+
+/// Shared secondary action button.
+pub fn secondary_button(text: &str) -> egui::Button<'static> {
+    egui::Button::new(
+        RichText::new(text.to_owned())
+            .color(TEXT)
+            .font(strong_font(13.0)),
+    )
+    .fill(SURFACE_RAISED)
+    .stroke(Stroke::new(1.0, BORDER))
+    .corner_radius(CornerRadius::same(8))
+    .min_size(egui::vec2(0.0, 34.0))
+}
+
+/// Human-readable label and colour for a connection state.
+pub fn connection_style(state: &ConnectionState) -> (&'static str, Color32) {
+    match state {
+        ConnectionState::NotConnected => ("Not connected", FAINT),
+        ConnectionState::Connecting => ("Connecting", WARNING),
+        ConnectionState::Online {
+            database_up: true, ..
+        } => ("Server online", SUCCESS),
+        ConnectionState::Online {
+            database_up: false, ..
+        } => ("Database unavailable", WARNING),
+        ConnectionState::Offline { .. } => ("Server offline", DANGER),
+    }
+}
+
 pub fn card() -> egui::Frame {
     egui::Frame::new()
         .fill(SURFACE)
@@ -154,8 +196,8 @@ pub fn pill(ui: &mut egui::Ui, text: &str, color: Color32) {
         .galley(rect.center() - galley.size() / 2.0, galley, color);
 }
 
-pub fn avatar(ui: &mut egui::Ui, initials: &str, size: f32, fill: Color32) {
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::hover());
+pub fn avatar(ui: &mut egui::Ui, initials: &str, size: f32, fill: Color32) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::click());
     ui.painter().circle_filled(rect.center(), size / 2.0, fill);
     ui.painter().text(
         rect.center(),
@@ -164,4 +206,5 @@ pub fn avatar(ui: &mut egui::Ui, initials: &str, size: f32, fill: Color32) {
         strong_font(size * 0.38),
         BG,
     );
+    response
 }

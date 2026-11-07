@@ -1,0 +1,367 @@
+//! Blocking HTTP client for the CareLibre REST API.
+//!
+//! The client is deliberately small and transport-only. Higher-level state
+//! (connection health, session lifecycle) lives in [`crate::server`].
+
+use std::time::Duration;
+
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
+
+pub const DEFAULT_BASE_URL: &str = "http://127.0.0.1:8484";
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(6);
+
+pub type ApiResult<T> = Result<T, ApiError>;
+
+#[derive(Debug, Clone)]
+pub enum ApiError {
+    InvalidUrl(String),
+    Network(String),
+    Http {
+        status: u16,
+        code: String,
+        message: String,
+    },
+    Decode(String),
+}
+
+impl std::fmt::Display for ApiError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidUrl(message) => write!(f, "{message}"),
+            Self::Network(message) => write!(f, "Could not reach the server: {message}"),
+            Self::Http { message, .. } => write!(f, "{message}"),
+            Self::Decode(message) => write!(f, "Unexpected response from the server: {message}"),
+        }
+    }
+}
+
+impl std::error::Error for ApiError {}
+
+/// Normalise a user-entered server address into a base URL without a trailing slash.
+pub fn normalize_base_url(input: &str) -> Result<String, String> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return Err("Enter the address of your CareLibre server.".to_owned());
+    }
+
+    let candidate = if trimmed.contains("://") {
+        trimmed.to_owned()
+    } else {
+        format!("http://{trimmed}")
+    };
+
+    let parsed = url::Url::parse(&candidate)
+        .map_err(|err| format!("That doesn't look like a valid URL: {err}"))?;
+
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return Err("The server address must start with http:// or https://.".to_owned());
+    }
+    if parsed.host_str().is_none() {
+        return Err(
+            "The server address needs a host, for example http://127.0.0.1:8484.".to_owned(),
+        );
+    }
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err("The server address must not contain credentials.".to_owned());
+    }
+
+    Ok(candidate.trim_end_matches('/').to_owned())
+}
+
+#[derive(Debug, Clone)]
+pub struct ServerInfo {
+    pub version: String,
+    pub database_up: bool,
+    pub ready_error: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct UserProfile {
+    pub id: String,
+    pub email: String,
+    pub full_name: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct OrganisationProfile {
+    pub id: String,
+    pub slug: String,
+    pub name: String,
+    pub edition: String,
+    pub role: String,
+}
+
+/// Token pair plus the profile returned by the authentication endpoints.
+///
+/// Deliberately does not implement `Debug` so tokens cannot leak into logs.
+#[derive(Clone, Deserialize)]
+pub struct AuthSession {
+    pub access_token: String,
+    pub refresh_token: String,
+    pub token_type: String,
+    pub expires_in: u64,
+    pub user: UserProfile,
+    pub organisation: OrganisationProfile,
+}
+
+#[derive(Deserialize)]
+struct Liveness {
+    version: String,
+}
+
+#[derive(Deserialize)]
+struct Readiness {
+    database: String,
+}
+
+#[derive(Deserialize)]
+struct ErrorEnvelope {
+    error: ErrorDetail,
+}
+
+#[derive(Deserialize)]
+struct ErrorDetail {
+    code: String,
+    message: String,
+}
+
+#[derive(Serialize)]
+struct LoginRequest<'a> {
+    email: &'a str,
+    password: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    organisation_slug: Option<&'a str>,
+}
+
+#[derive(Serialize)]
+struct RegisterRequest<'a> {
+    organisation_name: &'a str,
+    organisation_slug: &'a str,
+    full_name: &'a str,
+    email: &'a str,
+    password: &'a str,
+}
+
+#[derive(Serialize)]
+struct RefreshRequest<'a> {
+    refresh_token: &'a str,
+}
+
+#[derive(Serialize)]
+struct LogoutRequest<'a> {
+    refresh_token: &'a str,
+}
+
+pub struct ApiClient {
+    base_url: String,
+    agent: ureq::Agent,
+}
+
+impl ApiClient {
+    pub fn new(base_url: &str) -> ApiResult<Self> {
+        let base_url = normalize_base_url(base_url).map_err(ApiError::InvalidUrl)?;
+
+        let agent: ureq::Agent = ureq::Agent::config_builder()
+            .timeout_global(Some(REQUEST_TIMEOUT))
+            .http_status_as_error(false)
+            .user_agent(concat!("CareLibre-Desktop/", env!("CARGO_PKG_VERSION")))
+            .build()
+            .into();
+
+        Ok(Self { base_url, agent })
+    }
+
+    pub fn base_url(&self) -> &str {
+        &self.base_url
+    }
+
+    /// Check liveness and database readiness in one operation.
+    pub fn health(&self) -> ApiResult<ServerInfo> {
+        let health: Liveness = self.get_json("/healthz")?;
+
+        let (database_up, ready_error) = match self.get_json::<Readiness>("/readyz") {
+            Ok(readiness) => (readiness.database == "up", None),
+            Err(ApiError::Http { message, .. }) => (false, Some(message)),
+            Err(err) => (false, Some(err.to_string())),
+        };
+
+        Ok(ServerInfo {
+            version: health.version,
+            database_up,
+            ready_error,
+        })
+    }
+
+    pub fn login(
+        &self,
+        email: &str,
+        password: &str,
+        organisation_slug: Option<&str>,
+    ) -> ApiResult<AuthSession> {
+        self.post_json(
+            "/api/v1/auth/login",
+            &LoginRequest {
+                email,
+                password,
+                organisation_slug,
+            },
+        )
+    }
+
+    pub fn register(
+        &self,
+        organisation_name: &str,
+        organisation_slug: &str,
+        full_name: &str,
+        email: &str,
+        password: &str,
+    ) -> ApiResult<AuthSession> {
+        self.post_json(
+            "/api/v1/auth/register",
+            &RegisterRequest {
+                organisation_name,
+                organisation_slug,
+                full_name,
+                email,
+                password,
+            },
+        )
+    }
+
+    /// Rotate a refresh token. The old token becomes invalid.
+    pub fn refresh(&self, refresh_token: &str) -> ApiResult<AuthSession> {
+        self.post_json("/api/v1/auth/refresh", &RefreshRequest { refresh_token })
+    }
+
+    pub fn logout(&self, refresh_token: &str) -> ApiResult<()> {
+        let (status, body) = self.post("/api/v1/auth/logout", &LogoutRequest { refresh_token })?;
+        if (200..300).contains(&status) {
+            Ok(())
+        } else {
+            Err(error_from_body(status, &body))
+        }
+    }
+
+    fn endpoint(&self, path: &str) -> String {
+        format!("{}{path}", self.base_url)
+    }
+
+    fn get_json<T: DeserializeOwned>(&self, path: &str) -> ApiResult<T> {
+        let mut response = self
+            .agent
+            .get(self.endpoint(path))
+            .call()
+            .map_err(map_transport_error)?;
+        let status = response.status().as_u16();
+        let body = response
+            .body_mut()
+            .read_to_string()
+            .map_err(|err| ApiError::Network(err.to_string()))?;
+        decode(status, &body)
+    }
+
+    fn post_json<B: Serialize, T: DeserializeOwned>(&self, path: &str, body: &B) -> ApiResult<T> {
+        let (status, body) = self.post(path, body)?;
+        decode(status, &body)
+    }
+
+    fn post<B: Serialize>(&self, path: &str, body: &B) -> ApiResult<(u16, String)> {
+        let payload =
+            serde_json::to_string(body).map_err(|err| ApiError::Decode(err.to_string()))?;
+        let mut response = self
+            .agent
+            .post(self.endpoint(path))
+            .header("content-type", "application/json")
+            .send(payload)
+            .map_err(map_transport_error)?;
+        let status = response.status().as_u16();
+        let body = response
+            .body_mut()
+            .read_to_string()
+            .map_err(|err| ApiError::Network(err.to_string()))?;
+        Ok((status, body))
+    }
+}
+
+fn decode<T: DeserializeOwned>(status: u16, body: &str) -> ApiResult<T> {
+    if (200..300).contains(&status) {
+        serde_json::from_str(body).map_err(|err| ApiError::Decode(err.to_string()))
+    } else {
+        Err(error_from_body(status, body))
+    }
+}
+
+fn error_from_body(status: u16, body: &str) -> ApiError {
+    if let Ok(envelope) = serde_json::from_str::<ErrorEnvelope>(body) {
+        ApiError::Http {
+            status,
+            code: envelope.error.code,
+            message: envelope.error.message,
+        }
+    } else {
+        ApiError::Http {
+            status,
+            code: format!("http_{status}"),
+            message: format!("The server returned HTTP {status}."),
+        }
+    }
+}
+
+fn map_transport_error(err: ureq::Error) -> ApiError {
+    match err {
+        ureq::Error::Timeout(_) => {
+            ApiError::Network("the server did not respond in time.".to_owned())
+        }
+        ureq::Error::HostNotFound => ApiError::Network("the host could not be found.".to_owned()),
+        other => ApiError::Network(other.to_string()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalises_urls() {
+        assert_eq!(
+            normalize_base_url(" 127.0.0.1:8484/ ").unwrap(),
+            "http://127.0.0.1:8484"
+        );
+        assert_eq!(
+            normalize_base_url("https://care.example.com/").unwrap(),
+            "https://care.example.com"
+        );
+        assert_eq!(
+            normalize_base_url("http://localhost:8484/api").unwrap(),
+            "http://localhost:8484/api"
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_urls() {
+        assert!(normalize_base_url("").is_err());
+        assert!(normalize_base_url("ftp://care.example.com").is_err());
+        assert!(normalize_base_url("http://user:pass@care.example.com").is_err());
+    }
+
+    #[test]
+    fn parses_the_standard_error_envelope() {
+        let err = error_from_body(
+            401,
+            r#"{"error":{"code":"invalid_credentials","message":"Email or password is incorrect"}}"#,
+        );
+
+        match err {
+            ApiError::Http {
+                status,
+                code,
+                message,
+            } => {
+                assert_eq!(status, 401);
+                assert_eq!(code, "invalid_credentials");
+                assert_eq!(message, "Email or password is incorrect");
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+}

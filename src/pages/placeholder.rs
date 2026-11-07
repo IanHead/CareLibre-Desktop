@@ -2,11 +2,11 @@
 
 use eframe::egui::{self, Align, Align2, CornerRadius, FontId, Layout, RichText, Sense, Ui, vec2};
 
-use crate::pages::{HomeAction, Page};
+use crate::pages::{Action, Page};
 use crate::theme;
 
-pub fn show(ui: &mut Ui, page: Page) -> Option<HomeAction> {
-    let mut action = HomeAction::default();
+pub fn show(ui: &mut Ui, page: Page) -> Option<Action> {
+    let mut action = None;
 
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
@@ -109,7 +109,7 @@ pub fn show(ui: &mut Ui, page: Page) -> Option<HomeAction> {
                             )
                             .clicked()
                         {
-                            action.navigate = Some(Page::Home);
+                            action = Some(Action::Navigate(Page::Home));
                         }
                     },
                 );
@@ -118,8 +118,5 @@ pub fn show(ui: &mut Ui, page: Page) -> Option<HomeAction> {
             ui.add_space(24.0);
         });
 
-    action.navigate.map(|page| HomeAction {
-        navigate: Some(page),
-        notice: None,
-    })
+    action
 }
