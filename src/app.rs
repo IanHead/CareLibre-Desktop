@@ -1,6 +1,7 @@
 //! Application shell: top bar, navigation, status bar and routing.
 
 use std::{
+    collections::BTreeMap,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -13,15 +14,17 @@ use eframe::egui::{
 use crate::{
     api,
     config::Config,
+    contact::{ApiContactDetail, ApiContactWrite, kind_from_role, row_from_api},
     intake::IntakeKind,
     pages::{
         self, Action, Page,
-        contact_editor::{ContactEditorAction, ContactEditorState},
+        contact_editor::{ContactEditorAction, ContactWindowState},
         contacts::{ContactsAction, ContactsState, LOAD_MORE_SIZE, PAGE_SIZE},
         intake::{IntakeAction, IntakeState, IntakeView},
         settings::SettingsForm,
     },
     perf::{PerfHud, PerfInfo},
+    remote::{RemoteEvent, RemoteHandle},
     server::{ConnectionState, Event, ServerRuntime, ServerState},
     store::{self, ContactCounts, ContactFilter, ContactKind, StoreEvent, StoreHandle},
     theme,
@@ -39,7 +42,9 @@ pub struct CareLibreApp {
     contacts_clients: ContactsState,
     contacts_workers: ContactsState,
     intake: IntakeState,
-    contact_editor: ContactEditorState,
+    contact_windows: BTreeMap<String, ContactWindowState>,
+    remote: Option<RemoteHandle>,
+    app_ctx: Option<egui::Context>,
     store: Option<StoreHandle>,
     store_ready: bool,
     store_error: Option<String>,
@@ -82,7 +87,9 @@ impl CareLibreApp {
             contacts_clients: ContactsState::new(ContactFilter::Clients),
             contacts_workers: ContactsState::new(ContactFilter::Workers),
             intake: IntakeState::new(),
-            contact_editor: ContactEditorState::new(),
+            contact_windows: BTreeMap::new(),
+            remote: None,
+            app_ctx: None,
             store: None,
             store_ready: false,
             store_error: None,
@@ -102,6 +109,10 @@ impl CareLibreApp {
 
     /// Start the server worker if it is not already running.
     pub fn connect(&mut self, ctx: &egui::Context) {
+        self.app_ctx = Some(ctx.clone());
+        if self.remote.is_none() {
+            self.remote = Some(RemoteHandle::spawn(ctx.clone()));
+        }
         if self.runtime.is_none() {
             self.runtime = Some(ServerRuntime::spawn(
                 ctx.clone(),
@@ -132,6 +143,18 @@ impl CareLibreApp {
 
     pub fn page(&self) -> Page {
         self.page
+    }
+
+    /// Sign in programmatically. Used by headless previews and live tests.
+    pub fn sign_in(&mut self, email: &str, password: &str) {
+        if let Some(runtime) = &self.runtime {
+            runtime.login(email.to_owned(), password.to_owned(), None);
+            self.server.auth_in_flight = true;
+        }
+    }
+
+    pub fn signed_in(&self) -> bool {
+        self.server.session.is_some()
     }
 
     /// Current server connection state (for previews and integration checks).
@@ -170,12 +193,18 @@ impl CareLibreApp {
         }
     }
 
+    /// Contacts loaded for the global list; also proves server counts are ready.
+    pub fn server_contacts_loaded(&self) -> usize {
+        self.contacts_all.loaded()
+    }
+
     /// The whole application UI. Kept separate from [`eframe::App`] so it can be
     /// rendered by tooling (headless screenshot tests) as well.
     pub fn show(&mut self, ui: &mut Ui) {
         self.perf.begin_frame(ui.ctx());
         self.poll_server(ui.ctx());
         self.poll_store(ui.ctx());
+        self.poll_remote(ui.ctx());
         self.tick_contact_search();
         self.tick_intake_autosave();
         self.ensure_contacts_loaded();
@@ -206,10 +235,7 @@ impl CareLibreApp {
             self.handle_action(ui.ctx(), action);
         }
 
-        let editor_action = pages::contact_editor::show(ui.ctx(), &mut self.contact_editor);
-        if editor_action == Some(ContactEditorAction::Save) {
-            self.save_contact_editor();
-        }
+        self.render_contact_windows(ui.ctx());
 
         let perf_state = match self.page {
             Page::Workers => &self.contacts_workers,
@@ -241,46 +267,78 @@ impl CareLibreApp {
             Page::Settings => pages::settings::show(ui, &mut self.settings, &self.server),
             Page::Home => {
                 let account = self.account_badge();
+                let counts = self.cache_counts;
+                let signed_in = self.access_token().is_some();
+                let server_label = match &self.server.connection {
+                    ConnectionState::Online { version, .. } => {
+                        format!("Online · v{version}")
+                    }
+                    ConnectionState::Connecting => "Connecting…".to_owned(),
+                    ConnectionState::Offline { .. } => "Offline".to_owned(),
+                    ConnectionState::NotConnected => "Not connected".to_owned(),
+                };
                 pages::home::show(
                     ui,
                     account.as_ref().map(|a| a.first_name.as_str()),
                     account.as_ref().map(|a| a.organisation.as_str()),
+                    counts,
+                    signed_in,
+                    &server_label,
                 )
             }
             Page::Intake => {
-                if let Some(action) = pages::intake::show(ui, &mut self.intake, self.store_ready) {
+                let signed_in = self.access_token().is_some();
+                let store_ready = self.store_ready;
+                if let Some(action) =
+                    pages::intake::show(ui, &mut self.intake, store_ready, signed_in)
+                {
                     *intake_action = Some(action);
                 }
                 None
             }
             Page::Contacts => {
+                let signed_in = self.access_token().is_some();
+                let server_error = match &self.server.connection {
+                    ConnectionState::Offline { error } => Some(error.clone()),
+                    _ => None,
+                };
                 if let Some(action) = pages::contacts::show(
                     ui,
                     &mut self.contacts_all,
-                    self.store_ready,
-                    self.store_error.as_deref(),
+                    signed_in,
+                    server_error.as_deref(),
                 ) {
                     *contacts_action = Some((ContactFilter::All, action));
                 }
                 None
             }
             Page::Clients => {
+                let signed_in = self.access_token().is_some();
+                let server_error = match &self.server.connection {
+                    ConnectionState::Offline { error } => Some(error.clone()),
+                    _ => None,
+                };
                 if let Some(action) = pages::contacts::show(
                     ui,
                     &mut self.contacts_clients,
-                    self.store_ready,
-                    self.store_error.as_deref(),
+                    signed_in,
+                    server_error.as_deref(),
                 ) {
                     *contacts_action = Some((ContactFilter::Clients, action));
                 }
                 None
             }
             Page::Workers => {
+                let signed_in = self.access_token().is_some();
+                let server_error = match &self.server.connection {
+                    ConnectionState::Offline { error } => Some(error.clone()),
+                    _ => None,
+                };
                 if let Some(action) = pages::contacts::show(
                     ui,
                     &mut self.contacts_workers,
-                    self.store_ready,
-                    self.store_error.as_deref(),
+                    signed_in,
+                    server_error.as_deref(),
                 ) {
                     *contacts_action = Some((ContactFilter::Workers, action));
                 }
@@ -347,57 +405,15 @@ impl CareLibreApp {
 
         for event in events {
             match event {
-                StoreEvent::Ready {
-                    path,
-                    counts,
-                    shifts,
-                } => {
+                StoreEvent::Ready { path, shifts, .. } => {
                     self.store_ready = true;
                     self.store_error = None;
                     self.store_path = path;
-                    self.cache_counts = counts;
                     self.cache_shifts = Some(shifts);
-                    self.contacts_all.counts = counts;
-                    self.contacts_all.total = counts.for_filter(ContactFilter::All);
-                    self.contacts_clients.counts = counts;
-                    self.contacts_clients.total = counts.for_filter(ContactFilter::Clients);
-                    self.contacts_workers.counts = counts;
-                    self.contacts_workers.total = counts.for_filter(ContactFilter::Workers);
                 }
                 StoreEvent::Failed { error } => {
                     self.store_ready = false;
                     self.store_error = Some(error);
-                }
-                StoreEvent::Contacts {
-                    generation,
-                    filter,
-                    append,
-                    page,
-                } => {
-                    let state = self.contact_state_mut(filter);
-                    if generation != state.generation {
-                        continue;
-                    }
-
-                    state.loading = false;
-                    match page {
-                        Ok(page) => {
-                            state.total = page.total;
-                            state.counts = page.counts;
-                            state.last_query_ms = Some(page.query_ms);
-                            state.next_cursor = page.next_cursor;
-                            state.error = None;
-
-                            if append {
-                                let mut rows = (*state.rows.load_full()).clone();
-                                rows.extend(page.rows);
-                                state.rows.store(Arc::new(rows));
-                            } else {
-                                state.rows.store(Arc::new(page.rows));
-                            }
-                        }
-                        Err(error) => state.error = Some(error),
-                    }
                 }
                 StoreEvent::IntakesListed { request_id, result } => {
                     if self.intake.list_request != Some(request_id) {
@@ -448,26 +464,6 @@ impl CareLibreApp {
                         }
                     }
                 }
-                StoreEvent::IntakeCompleted { result } => {
-                    self.intake.saving = false;
-                    match result {
-                        Ok(completed) => {
-                            self.invalidate_contacts(completed.kind);
-                            self.intake.completed = Some(completed.clone());
-                            self.intake.view = IntakeView::Completed;
-                            self.intake.dirty = false;
-                            self.intake.error = None;
-                            self.notify(
-                                ctx,
-                                format!("{} has been added to the local cache.", completed.name),
-                            );
-                        }
-                        Err(error) => {
-                            self.intake.dirty = true;
-                            self.intake.error = Some(error);
-                        }
-                    }
-                }
                 StoreEvent::IntakeDiscarded {
                     request_id,
                     id: _,
@@ -486,80 +482,14 @@ impl CareLibreApp {
                         Err(error) => self.intake.error = Some(error),
                     }
                 }
-                StoreEvent::ContactLoaded { request_id, result } => {
-                    if self.contact_editor.request_id != Some(request_id) {
-                        continue;
-                    }
-                    self.contact_editor.loading = false;
-                    match result {
-                        Ok(Some(record)) => self.contact_editor.apply(record),
-                        Ok(None) => {
-                            self.contact_editor.error =
-                                Some("That contact no longer exists.".to_owned());
-                        }
-                        Err(error) => self.contact_editor.error = Some(error),
-                    }
-                }
-                StoreEvent::ContactSaved { result } => {
-                    self.contact_editor.saving = false;
-                    match result {
-                        Ok(()) => {
-                            if let Some(record) = &self.contact_editor.record {
-                                self.adjust_contact_counts(
-                                    record.summary.kind,
-                                    self.contact_editor.kind,
-                                );
-                            }
-                            self.contact_editor.close();
-                            self.refresh_contact_lists();
-                            self.notify(ctx, "Contact saved to the local database.");
-                        }
-                        Err(error) => self.contact_editor.error = Some(error),
-                    }
-                }
-                StoreEvent::Seeded {
-                    result,
-                    counts,
-                    shifts,
-                } => {
-                    self.cache_counts = counts;
+                StoreEvent::Seeded { shifts, .. } => {
                     self.cache_shifts = Some(shifts);
-                    self.contacts_all.seed_in_flight = false;
-                    self.contacts_clients.seed_in_flight = false;
-                    self.contacts_workers.seed_in_flight = false;
-
-                    match result {
-                        Ok(report) => {
-                            for state in [
-                                &mut self.contacts_all,
-                                &mut self.contacts_clients,
-                                &mut self.contacts_workers,
-                            ] {
-                                state.reset();
-                                state.total = counts.for_filter(state.filter);
-                                state.counts = counts;
-                                state.next_cursor = None;
-                                state.generation = 0;
-                                state.loading = false;
-                                state.error = None;
-                                state.selected = None;
-                                state.needs_more = false;
-                            }
-                            self.notify(
-                                ctx,
-                                format!(
-                                    "Generated {} contacts and {} shifts in {:.0} ms.",
-                                    report.contacts, report.shifts, report.duration_ms
-                                ),
-                            );
-                        }
-                        Err(error) => {
-                            self.contacts_clients.error = Some(error.clone());
-                            self.contacts_workers.error = Some(error);
-                            self.notify(ctx, "Could not generate demo data.");
-                        }
-                    }
+                    let _ = ctx;
                 }
+                StoreEvent::IntakeCompleted { .. }
+                | StoreEvent::ContactLoaded { .. }
+                | StoreEvent::ContactSaved { .. }
+                | StoreEvent::Contacts { .. } => {}
             }
         }
     }
@@ -576,8 +506,15 @@ impl CareLibreApp {
         }
     }
 
+    fn access_token(&self) -> Option<String> {
+        self.server
+            .session
+            .as_ref()
+            .map(|session| session.auth.access_token.clone())
+    }
+
     fn ensure_contacts_loaded(&mut self) {
-        if !self.store_ready {
+        if self.access_token().is_none() {
             return;
         }
 
@@ -620,12 +557,35 @@ impl CareLibreApp {
             )
         };
 
-        if let Some(store) = &self.store {
-            store.query(generation, filter, search, after, limit);
+        let role = match filter {
+            ContactFilter::All => "all",
+            ContactFilter::Clients => "client",
+            ContactFilter::Workers => "worker",
+        };
+
+        let Some(token) = self.access_token() else {
+            let state = self.contact_state_mut(filter);
+            state.loading = false;
+            state.error = Some("Sign in to load contacts from the server.".to_owned());
+            return;
+        };
+
+        if let Some(remote) = &self.remote {
+            remote.list_contacts(
+                generation,
+                self.server.base_url.clone(),
+                token,
+                filter,
+                role,
+                search,
+                after,
+                limit,
+                append,
+            );
         } else {
             let state = self.contact_state_mut(filter);
             state.loading = false;
-            state.error = Some("The local cache is not running.".to_owned());
+            state.error = Some("The server connection is not available.".to_owned());
         }
     }
 
@@ -641,19 +601,8 @@ impl CareLibreApp {
             }
             ContactsAction::OpenContact(id) => self.open_contact(&id),
             ContactsAction::LoadMore => self.send_contacts_query(filter, true),
-            ContactsAction::SeedDemo => {
-                let state = self.contact_state_mut(filter);
-                state.seed_in_flight = true;
-                state.error = None;
-
-                if let Some(store) = &self.store {
-                    store.seed_demo(10_000, 50_000);
-                } else {
-                    let state = self.contact_state_mut(filter);
-                    state.seed_in_flight = false;
-                    state.error = Some("The local cache is not running.".to_owned());
-                }
-            }
+            ContactsAction::GoToSettings => self.page = Page::Settings,
+            ContactsAction::StartIntake => self.open_intake(),
         }
     }
 
@@ -744,14 +693,27 @@ impl CareLibreApp {
                 self.intake.list_requested = false;
             }
             IntakeAction::Complete => {
-                if let Some(draft) = &self.intake.draft {
-                    self.intake.saving = true;
-                    self.intake.dirty = false;
-                    if let Some(store) = &self.store {
-                        store.complete_intake(draft.clone());
-                    }
-                }
+                let payload = self.intake.draft.as_ref().map(intake_write);
+                let Some(payload) = payload else {
+                    return;
+                };
+                let Some(token) = self.access_token() else {
+                    self.intake.error =
+                        Some("Sign in to the server before completing an intake.".to_owned());
+                    return;
+                };
+                let Some(remote) = &self.remote else {
+                    self.intake.error = Some("The server connection is not available.".to_owned());
+                    return;
+                };
+                let request_id = self.intake.next_request();
+                self.intake.create_request = Some(request_id);
+                self.intake.saving = true;
+                self.intake.dirty = false;
+                self.intake.error = None;
+                remote.create_contact(request_id, self.server.base_url.clone(), token, payload);
             }
+            IntakeAction::GoToSettings => self.page = Page::Settings,
             IntakeAction::ViewContact { page, name } => {
                 self.page = page;
                 let filter = match page {
@@ -771,14 +733,7 @@ impl CareLibreApp {
         }
     }
 
-    fn invalidate_contacts(&mut self, kind: IntakeKind) {
-        self.cache_counts.all += 1;
-        match kind {
-            IntakeKind::Client => self.cache_counts.clients += 1,
-            IntakeKind::Worker => self.cache_counts.workers += 1,
-            IntakeKind::Other => self.cache_counts.other += 1,
-        }
-
+    fn refresh_contact_lists(&mut self) {
         for state in [
             &mut self.contacts_all,
             &mut self.contacts_clients,
@@ -786,22 +741,137 @@ impl CareLibreApp {
         ] {
             state.reset();
             state.generation = 0;
-            state.total = self.cache_counts.for_filter(state.filter);
-            state.counts = self.cache_counts;
             state.next_cursor = None;
             state.loading = false;
-            state.selected = None;
         }
     }
 
     pub fn open_contact(&mut self, id: &str) {
-        let request_id = self.contact_editor.begin(id.to_owned());
-        if let Some(store) = &self.store {
-            store.load_contact(request_id, id.to_owned());
-        } else {
-            self.contact_editor.loading = false;
-            self.contact_editor.error = Some("The local cache is not running.".to_owned());
+        if let Some(window) = self.contact_windows.get(id) {
+            if let Some(ctx) = &self.app_ctx {
+                ctx.send_viewport_cmd_to(contact_viewport_id(id), egui::ViewportCommand::Focus);
+            }
+            let _ = window;
+            return;
         }
+
+        let state = ContactWindowState::new(id.to_owned());
+        let request_id = state.request_id.unwrap_or(1);
+        self.contact_windows.insert(id.to_owned(), state);
+        self.load_contact_window(id, request_id);
+    }
+
+    fn load_contact_window(&mut self, id: &str, request_id: u64) {
+        let token = match self.access_token() {
+            Some(token) => token,
+            None => {
+                if let Some(window) = self.contact_windows.get_mut(id) {
+                    window.loading = false;
+                    window.error = Some("Sign in to load this contact.".to_owned());
+                }
+                return;
+            }
+        };
+
+        if let Some(remote) = &self.remote {
+            remote.load_contact(
+                request_id,
+                self.server.base_url.clone(),
+                token,
+                id.to_owned(),
+            );
+        } else if let Some(window) = self.contact_windows.get_mut(id) {
+            window.loading = false;
+            window.error = Some("The server connection is not available.".to_owned());
+        }
+    }
+
+    fn save_contact_window(&mut self, id: &str) {
+        let token = self.access_token();
+        let Some(window) = self.contact_windows.get_mut(id) else {
+            return;
+        };
+        let payload = match window.build_write() {
+            Ok(payload) => payload,
+            Err(error) => {
+                window.error = Some(error);
+                return;
+            }
+        };
+        let request_id = window.request_id();
+        window.saving = true;
+        window.error = None;
+
+        let Some(token) = token else {
+            window.saving = false;
+            window.error = Some("Sign in to save contacts.".to_owned());
+            return;
+        };
+
+        if let Some(remote) = &self.remote {
+            remote.save_contact(
+                request_id,
+                self.server.base_url.clone(),
+                token,
+                id.to_owned(),
+                payload,
+            );
+        } else {
+            window.saving = false;
+            window.error = Some("The server connection is not available.".to_owned());
+        }
+    }
+
+    fn close_contact_window(&mut self, id: &str) {
+        self.contact_windows.remove(id);
+        if let Some(ctx) = &self.app_ctx {
+            ctx.send_viewport_cmd_to(contact_viewport_id(id), egui::ViewportCommand::Close);
+        }
+    }
+
+    fn close_all_contact_windows(&mut self) {
+        let ids: Vec<String> = self.contact_windows.keys().cloned().collect();
+        for id in ids {
+            self.close_contact_window(&id);
+        }
+    }
+
+    fn render_contact_windows(&mut self, ctx: &egui::Context) {
+        let ids: Vec<String> = self.contact_windows.keys().cloned().collect();
+        let mut actions: Vec<(String, ContactEditorAction)> = Vec::new();
+
+        for id in ids {
+            let Some(window) = self.contact_windows.get_mut(&id) else {
+                continue;
+            };
+            let viewport_id = contact_viewport_id(&id);
+            let builder = egui::ViewportBuilder::default()
+                .with_title(window.title())
+                .with_app_id("carelibre-contact")
+                .with_inner_size([880.0, 780.0])
+                .with_min_inner_size([640.0, 520.0]);
+
+            let action = ctx.show_viewport_immediate(viewport_id, builder, |ui, _| {
+                pages::contact_editor::show_viewport(ui, window)
+            });
+
+            if window.close_requested {
+                ctx.send_viewport_cmd_to(viewport_id, egui::ViewportCommand::Close);
+            }
+            if let Some(action) = action {
+                actions.push((id.clone(), action));
+            }
+        }
+
+        for (id, action) in actions {
+            match action {
+                ContactEditorAction::Save => self.save_contact_window(&id),
+                ContactEditorAction::Cancel => self.close_contact_window(&id),
+            }
+        }
+
+        self.contact_windows
+            .retain(|_, window| !window.close_requested);
     }
 
     /// Open the first loaded contact. Used by screenshot previews.
@@ -822,69 +892,163 @@ impl CareLibreApp {
     }
 
     pub fn contact_editor_ready(&self) -> bool {
-        self.contact_editor.open && !self.contact_editor.loading
+        self.contact_windows.values().any(|window| !window.loading)
     }
 
-    fn save_contact_editor(&mut self) {
-        match self.contact_editor.update() {
-            Ok(update) => {
-                if let Some(store) = &self.store {
-                    store.save_contact(update);
-                    self.contact_editor.saving = true;
-                    self.contact_editor.error = None;
-                } else {
-                    self.contact_editor.error = Some("The local cache is not running.".to_owned());
+    /// Number of custom-field definitions loaded in the active editor window.
+    pub fn contact_editor_custom_fields(&self) -> usize {
+        self.contact_windows
+            .values()
+            .filter_map(|window| window.detail.as_ref())
+            .map(|detail| detail.custom_fields.len())
+            .max()
+            .unwrap_or(0)
+    }
+
+    fn poll_remote(&mut self, ctx: &egui::Context) {
+        let events: Vec<RemoteEvent> = match &self.remote {
+            Some(remote) => std::iter::from_fn(|| remote.try_recv()).collect(),
+            None => Vec::new(),
+        };
+
+        for event in events {
+            match event {
+                RemoteEvent::ContactsListed {
+                    request_id,
+                    filter,
+                    append,
+                    result,
+                } => {
+                    let state = self.contact_state_mut(filter);
+                    if request_id != state.generation {
+                        continue;
+                    }
+                    state.loading = false;
+                    let mut updated_counts = None;
+                    match result {
+                        Ok((list, elapsed_ms)) => {
+                            let counts = ContactCounts {
+                                all: list.counts.all,
+                                clients: list.counts.clients,
+                                workers: list.counts.workers,
+                                dual: list.counts.dual,
+                                other: list.counts.other,
+                            };
+                            updated_counts = Some(counts);
+                            state.counts = counts;
+                            state.total = list.total;
+                            state.next_cursor = list.next.map(|cursor| store::ContactCursor {
+                                name: cursor.name,
+                                id: cursor.id,
+                            });
+                            state.last_query_ms = Some(elapsed_ms);
+                            state.error = None;
+
+                            let rows: Vec<_> = list.items.iter().map(row_from_api).collect();
+                            if append {
+                                let mut existing = (*state.rows.load_full()).clone();
+                                existing.extend(rows);
+                                state.rows.store(Arc::new(existing));
+                            } else {
+                                state.rows.store(Arc::new(rows));
+                            }
+                        }
+                        Err(error) => state.error = Some(error),
+                    }
+                    if let Some(counts) = updated_counts {
+                        self.cache_counts = counts;
+                    }
+                }
+                RemoteEvent::ContactLoaded { request_id, result } => {
+                    if let Some((_, window)) = self
+                        .contact_windows
+                        .iter_mut()
+                        .find(|(_, window)| window.request_id == Some(request_id))
+                    {
+                        window.loading = false;
+                        match result {
+                            Ok(detail) => window.apply(detail),
+                            Err(error) => window.error = Some(error),
+                        }
+                    }
+                }
+                RemoteEvent::ContactSaved { request_id, result } => {
+                    let contact_id = self
+                        .contact_windows
+                        .iter()
+                        .find(|(_, window)| window.request_id == Some(request_id))
+                        .map(|(id, _)| id.clone());
+                    let Some(contact_id) = contact_id else {
+                        continue;
+                    };
+                    match result {
+                        Ok(_) => {
+                            self.close_contact_window(&contact_id);
+                            self.refresh_contact_lists();
+                            self.send_contacts_query(ContactFilter::All, false);
+                            self.notify(ctx, "Contact saved to the server.");
+                        }
+                        Err(error) => {
+                            if let Some(window) = self.contact_windows.get_mut(&contact_id) {
+                                window.saving = false;
+                                window.error = Some(error);
+                            }
+                        }
+                    }
+                }
+                RemoteEvent::ContactCreated { request_id, result } => {
+                    self.handle_contact_created(ctx, request_id, result);
                 }
             }
-            Err(error) => self.contact_editor.error = Some(error),
         }
     }
 
-    fn refresh_contact_lists(&mut self) {
-        for state in [
-            &mut self.contacts_all,
-            &mut self.contacts_clients,
-            &mut self.contacts_workers,
-        ] {
-            state.reset();
-            state.generation = 0;
-            state.next_cursor = None;
-            state.loading = false;
-        }
-    }
-
-    fn adjust_contact_counts(&mut self, old: ContactKind, new: ContactKind) {
-        if old == new {
+    fn handle_contact_created(
+        &mut self,
+        ctx: &egui::Context,
+        request_id: u64,
+        result: Result<ApiContactDetail, String>,
+    ) {
+        if self.intake.create_request != Some(request_id) {
             return;
         }
+        self.intake.create_request = None;
+        self.intake.saving = false;
+        match result {
+            Ok(detail) => {
+                let name = detail.contact.display_name.clone();
+                let kind = kind_from_role(&detail.contact.role);
+                let contact_id = detail.contact.id.clone();
+                self.intake.completed = Some(crate::intake::CompletedIntake {
+                    contact_id,
+                    name: name.clone(),
+                    kind: match kind {
+                        ContactKind::Worker => IntakeKind::Worker,
+                        ContactKind::Other | ContactKind::Dual => IntakeKind::Other,
+                        ContactKind::Client => IntakeKind::Client,
+                    },
+                });
+                self.intake.view = IntakeView::Completed;
+                self.intake.dirty = false;
+                self.intake.error = None;
+                self.refresh_contact_lists();
+                self.send_contacts_query(ContactFilter::All, false);
 
-        fn decrement(counts: &mut ContactCounts, kind: ContactKind) {
-            match kind {
-                ContactKind::Client => counts.clients = counts.clients.saturating_sub(1),
-                ContactKind::Worker => counts.workers = counts.workers.saturating_sub(1),
-                ContactKind::Dual => counts.dual = counts.dual.saturating_sub(1),
-                ContactKind::Other => counts.other = counts.other.saturating_sub(1),
+                let draft_id = self.intake.draft.as_ref().map(|draft| draft.id.clone());
+                if let Some(draft_id) = draft_id
+                    && let Some(store) = &self.store
+                {
+                    let request = self.intake.next_request();
+                    self.intake.discard_request = Some(request);
+                    store.discard_intake(request, draft_id);
+                }
+
+                self.notify(ctx, format!("{name} has been added to the server."));
             }
-        }
-
-        fn increment(counts: &mut ContactCounts, kind: ContactKind) {
-            match kind {
-                ContactKind::Client => counts.clients += 1,
-                ContactKind::Worker => counts.workers += 1,
-                ContactKind::Dual => counts.dual += 1,
-                ContactKind::Other => counts.other += 1,
+            Err(error) => {
+                self.intake.dirty = true;
+                self.intake.error = Some(error);
             }
-        }
-
-        decrement(&mut self.cache_counts, old);
-        increment(&mut self.cache_counts, new);
-        for state in [
-            &mut self.contacts_all,
-            &mut self.contacts_clients,
-            &mut self.contacts_workers,
-        ] {
-            state.counts = self.cache_counts;
-            state.total = self.cache_counts.for_filter(state.filter);
         }
     }
 
@@ -920,6 +1084,8 @@ impl CareLibreApp {
                         });
                         self.server.refresh_in_flight = false;
                         self.settings.on_signed_in();
+                        self.refresh_contact_lists();
+                        self.send_contacts_query(ContactFilter::All, false);
                         self.notify(ctx, format!("Signed in to {organisation}."));
                     }
                     Err(error) => {
@@ -943,6 +1109,9 @@ impl CareLibreApp {
                     }
                     Err(_) => {
                         self.server.session = None;
+                        self.close_all_contact_windows();
+                        self.refresh_contact_lists();
+                        self.cache_counts = ContactCounts::default();
                         self.settings.error =
                             Some("Your session expired. Please sign in again.".to_owned());
                         self.notify(ctx, "Session expired. Please sign in again.");
@@ -950,6 +1119,9 @@ impl CareLibreApp {
                 }
             }
             Event::LoggedOut { result } => {
+                self.refresh_contact_lists();
+                self.close_all_contact_windows();
+                self.cache_counts = ContactCounts::default();
                 if let Err(error) = result {
                     self.notify(ctx, format!("Signed out locally. Server error: {error}"));
                 }
@@ -1050,6 +1222,9 @@ impl CareLibreApp {
             self.server.session = None;
             self.server.refresh_in_flight = false;
             self.server.auth_in_flight = false;
+            self.close_all_contact_windows();
+            self.refresh_contact_lists();
+            self.cache_counts = ContactCounts::default();
             self.settings.on_signed_out();
             self.notify(ctx, "Server changed. Please sign in again.");
         }
@@ -1266,9 +1441,9 @@ impl CareLibreApp {
                     edition_card(
                         ui,
                         account.as_ref().map(|a| a.edition.as_str()),
-                        self.store_ready,
+                        self.access_token().is_some(),
                         self.cache_counts.all,
-                        self.store_error.is_some(),
+                        matches!(self.server.connection, ConnectionState::Offline { .. }),
                     );
                 });
             });
@@ -1518,9 +1693,9 @@ fn user_row(ui: &mut Ui, account: Option<&AccountBadge>) -> bool {
 fn edition_card(
     ui: &mut Ui,
     edition: Option<&str>,
-    cache_ready: bool,
-    cache_contacts: usize,
-    cache_error: bool,
+    server_ready: bool,
+    server_contacts: usize,
+    server_error: bool,
 ) {
     let title = match edition {
         Some(edition) if !edition.eq_ignore_ascii_case("community") => {
@@ -1556,15 +1731,19 @@ fn edition_card(
                 );
                 ui.add_space(8.0);
 
-                let (colour, text) = if cache_error {
-                    (theme::DANGER, "Local cache unavailable".to_owned())
-                } else if cache_ready {
+                let (colour, text) = if server_error {
+                    (theme::DANGER, "Server offline".to_owned())
+                } else if server_ready {
                     (
                         theme::SUCCESS,
-                        format!("Local cache · {} contacts", format_count(cache_contacts)),
+                        if server_contacts == 0 {
+                            "Server connected".to_owned()
+                        } else {
+                            format!("Server · {} contacts", format_count(server_contacts))
+                        },
                     )
                 } else {
-                    (theme::WARNING, "Local cache starting…".to_owned())
+                    (theme::WARNING, "Sign in to load contacts".to_owned())
                 };
 
                 ui.horizontal(|ui| {
@@ -1601,6 +1780,59 @@ fn capitalize(value: &str) -> String {
         Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
         None => String::new(),
     }
+}
+
+fn intake_write(draft: &crate::intake::IntakeDraft) -> ApiContactWrite {
+    use serde_json::Value;
+
+    let mut details = serde_json::Map::new();
+    for (key, value) in &draft.fields {
+        details.insert(key.clone(), Value::String(value.clone()));
+    }
+    let role = match draft.kind {
+        IntakeKind::Client => "client",
+        IntakeKind::Worker => "worker",
+        IntakeKind::Other => "other",
+    };
+    details.insert("contact_role".to_owned(), Value::String(role.to_owned()));
+    details.insert(
+        "contact_status".to_owned(),
+        Value::String("Onboarding".to_owned()),
+    );
+
+    let date_of_birth = chrono::NaiveDate::parse_from_str(draft.get("date_of_birth"), "%d/%m/%Y")
+        .ok()
+        .map(|date| date.format("%Y-%m-%d").to_string());
+
+    let notes = ["intake_notes", "worker_notes", "notes"]
+        .iter()
+        .map(|key| draft.get(key).trim())
+        .find(|value| !value.is_empty())
+        .map(str::to_owned);
+
+    ApiContactWrite {
+        display_name: draft.display_name(),
+        given_name: optional_str(draft.get("first_name")),
+        family_name: optional_str(draft.get("last_name")),
+        preferred_name: optional_str(draft.get("preferred_name")),
+        pronouns: optional_str(draft.get("pronouns")),
+        date_of_birth,
+        email: optional_str(draft.get("email")),
+        phone: optional_str(draft.get("phone")),
+        notes,
+        details: Value::Object(details),
+        is_active: true,
+        custom_fields: BTreeMap::new(),
+    }
+}
+
+fn optional_str(value: &str) -> Option<String> {
+    let value = value.trim();
+    (!value.is_empty()).then(|| value.to_owned())
+}
+
+fn contact_viewport_id(id: &str) -> egui::ViewportId {
+    egui::ViewportId::from_hash_of(("carelibre-contact", id))
 }
 
 fn dot(ui: &mut Ui, colour: Color32) {

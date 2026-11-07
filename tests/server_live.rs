@@ -105,3 +105,49 @@ fn login_rejects_bad_credentials() {
         "unexpected error: {message}"
     );
 }
+
+#[test]
+#[ignore = "requires the seeded Blue Dreams Care server"]
+fn server_contacts_load_and_editor_opens() {
+    use carelibre_desktop::pages::Page;
+
+    let mut app = carelibre_desktop::CareLibreApp::with_server(&egui::Context::default());
+    app.sign_in("owner@bluedreams.example", "BlueDreamsCare!2026");
+    app.set_page(Page::Contacts);
+
+    let mut harness = Harness::builder()
+        .with_size(egui::vec2(1280.0, 800.0))
+        .with_context_setup(theme::apply)
+        .build_ui_state(
+            |ui, app: &mut carelibre_desktop::CareLibreApp| app.show(ui),
+            app,
+        );
+
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while app_contacts_loaded(&harness) == 0 {
+        if Instant::now() >= deadline {
+            panic!("timed out waiting for server contacts");
+        }
+        harness.run();
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    harness.state_mut().open_first_contact();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !harness.state().contact_editor_ready() {
+        if Instant::now() >= deadline {
+            panic!("timed out waiting for the contact editor");
+        }
+        harness.run();
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    assert!(
+        harness.state().contact_editor_custom_fields() > 0,
+        "the seeded server custom fields should be loaded into the editor"
+    );
+}
+
+fn app_contacts_loaded(harness: &Harness<'_, carelibre_desktop::CareLibreApp>) -> usize {
+    harness.state().contacts_loaded()
+}

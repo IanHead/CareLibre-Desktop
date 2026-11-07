@@ -4,10 +4,10 @@ Top-priority requirement: **FAST**. Every interaction should feel local, even wh
 organisation has years of shifts and tens of thousands of contacts. This document is the
 working plan for getting there.
 
-> **Implementation status.** Phase A foundations are in place: bundled SQLite cache,
-> background query worker, virtualised 50,000-row contact list, deterministic 1M-shift
-> fixture, measured roster queries, and an F12 performance HUD. Measured on the seeded
-> fixture: first contact page 1.1 ms, roster-week count 0.5 ms, 2,000 roster rows 3.5 ms.
+> **Implementation status.** Contacts are currently read live from the CareLibre server
+> through a background API worker and rendered in virtualised, paged lists; SQLite remains
+> in place for intake drafts. The local-first roster cache and delta-sync engine described
+> here are the next performance phase. F12 shows frame time and API latency today.
 
 ## 1. Targets
 

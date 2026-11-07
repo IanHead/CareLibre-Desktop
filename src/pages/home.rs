@@ -6,9 +6,17 @@ use eframe::egui::{
 };
 
 use crate::pages::{Action, Page};
+use crate::store::ContactCounts;
 use crate::theme;
 
-pub fn show(ui: &mut Ui, user_name: Option<&str>, organisation: Option<&str>) -> Option<Action> {
+pub fn show(
+    ui: &mut Ui,
+    user_name: Option<&str>,
+    organisation: Option<&str>,
+    counts: ContactCounts,
+    signed_in: bool,
+    server_label: &str,
+) -> Option<Action> {
     let mut action: Option<Action> = None;
 
     egui::ScrollArea::vertical()
@@ -16,9 +24,9 @@ pub fn show(ui: &mut Ui, user_name: Option<&str>, organisation: Option<&str>) ->
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
 
-            header(ui, user_name, organisation);
+            header(ui, user_name, organisation, signed_in);
             ui.add_space(16.0);
-            stats(ui);
+            stats(ui, counts);
             ui.add_space(14.0);
 
             let total_width = ui.available_width();
@@ -43,9 +51,14 @@ pub fn show(ui: &mut Ui, user_name: Option<&str>, organisation: Option<&str>) ->
                     vec2(right_width, 0.0),
                     Layout::top_down(Align::Min),
                     |ui| {
-                        todays_roster(ui, &mut action);
-                        ui.add_space(10.0);
-                        recent_activity(ui);
+                        data_source_card(
+                            ui,
+                            &mut action,
+                            counts,
+                            signed_in,
+                            organisation,
+                            server_label,
+                        );
                     },
                 );
             });
@@ -56,7 +69,7 @@ pub fn show(ui: &mut Ui, user_name: Option<&str>, organisation: Option<&str>) ->
     action
 }
 
-fn header(ui: &mut Ui, user_name: Option<&str>, organisation: Option<&str>) {
+fn header(ui: &mut Ui, user_name: Option<&str>, organisation: Option<&str>, signed_in: bool) {
     ui.horizontal(|ui| {
         ui.vertical(|ui| {
             let salutation = match greeting_hour() {
@@ -77,22 +90,36 @@ fn header(ui: &mut Ui, user_name: Option<&str>, organisation: Option<&str>) {
         });
 
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            theme::pill(ui, "PROTOTYPE · SAMPLE DATA", theme::WARNING);
+            if signed_in {
+                theme::pill(ui, "LIVE SERVER DATA", theme::ACCENT);
+            } else {
+                theme::pill(ui, "SIGN IN TO LOAD DATA", theme::WARNING);
+            }
         });
     });
 }
 
-fn stats(ui: &mut Ui) {
+fn stats(ui: &mut Ui, counts: ContactCounts) {
     let cards = [
-        ("Active clients", "128", "+6 this month", theme::ACCENT),
-        ("Support workers", "64", "+2 this month", theme::ACCENT_BLUE),
-        ("Shifts today", "37", "4 in progress", theme::WARNING),
-        ("Unallocated", "5", "Needs review", theme::DANGER),
+        (
+            "Contacts",
+            counts.all,
+            "Live from the server",
+            theme::ACCENT,
+        ),
+        ("Clients", counts.clients, "Client role", theme::ACCENT_BLUE),
+        ("Workers", counts.workers, "Worker role", theme::ACCENT),
+        (
+            "Other contacts",
+            counts.other,
+            "Support network",
+            theme::WARNING,
+        ),
     ];
 
     ui.columns(4, |cols| {
         for (col, (label, value, note, colour)) in cols.iter_mut().zip(cards) {
-            stat_card(col, label, value, note, colour);
+            stat_card(col, label, &value.to_string(), note, colour);
         }
     });
 }
@@ -241,13 +268,13 @@ fn getting_started(ui: &mut Ui) {
         let steps = [
             ("Native shell", "egui on wgpu, Rust only", true),
             ("Home dashboard", "You are looking at it", true),
-            ("Database backend", "PostgreSQL, MySQL or MariaDB", false),
-            ("Contacts & rostering", "The core care records", false),
+            ("Server contacts", "Live API data and custom fields", true),
             (
-                "Quoting & documents",
-                "Templates and natural language",
-                false,
+                "Guided intake",
+                "Saves onboarding records to the server",
+                true,
             ),
+            ("Rostering", "The next major vertical", false),
         ];
 
         for (title, subtitle, done) in steps {
@@ -287,140 +314,64 @@ fn getting_started(ui: &mut Ui) {
     });
 }
 
-fn todays_roster(ui: &mut Ui, action: &mut Option<Action>) {
-    section_header(ui, "Today's roster", "Sample data");
-
+fn data_source_card(
+    ui: &mut Ui,
+    action: &mut Option<Action>,
+    counts: ContactCounts,
+    signed_in: bool,
+    organisation: Option<&str>,
+    server_label: &str,
+) {
     theme::card().show(ui, |ui| {
         ui.set_width(ui.available_width());
 
-        let shifts = [
-            (
-                "09:00 – 12:00",
-                "Margaret Chen",
-                "Sam Taylor",
-                theme::SUCCESS,
-                "Confirmed",
-            ),
-            (
-                "13:30 – 15:00",
-                "Noah Williams",
-                "Priya Nair",
-                theme::WARNING,
-                "In progress",
-            ),
-            (
-                "16:00 – 18:00",
-                "Unassigned",
-                "—",
-                theme::DANGER,
-                "Needs worker",
-            ),
-        ];
-
-        for (i, (time, client, worker, colour, status)) in shifts.into_iter().enumerate() {
-            if i > 0 {
-                ui.add_space(2.0);
-                ui.separator();
-                ui.add_space(6.0);
-            }
-
-            ui.horizontal(|ui| {
-                ui.vertical(|ui| {
-                    let detail = if worker == "—" {
-                        time.to_owned()
-                    } else {
-                        format!("{time} · {worker}")
-                    };
-                    ui.label(
-                        RichText::new(detail)
-                            .color(theme::MUTED)
-                            .size(10.5)
-                            .monospace(),
-                    );
-                    ui.label(RichText::new(client).font(theme::strong_font(13.5)));
-                });
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    theme::pill(ui, status, colour);
-                });
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("Data source").font(theme::strong_font(13.5)));
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                theme::pill(
+                    ui,
+                    if signed_in { "SERVER" } else { "OFFLINE" },
+                    if signed_in { theme::SUCCESS } else { theme::WARNING },
+                );
             });
-        }
+        });
+        ui.add_space(8.0);
 
-        ui.add_space(6.0);
-        if ui
-            .add(
-                egui::Button::new(
-                    RichText::new("Open full roster  →")
-                        .color(theme::ACCENT)
-                        .size(12.0),
-                )
-                .frame(false),
+        row(ui, "Connection", server_label);
+        row(
+            ui,
+            "Organisation",
+            organisation.unwrap_or("Not signed in"),
+        );
+        row(ui, "Contacts", &counts.all.to_string());
+        row(ui, "Custom fields", "Database metadata");
+
+        ui.add_space(8.0);
+        ui.label(
+            RichText::new(
+                "Contacts, profile fields and custom fields are read from the CareLibre server. Edits are saved back to the server; nothing is mocked locally.",
             )
-            .clicked()
-        {
-            *action = Some(Action::Navigate(Page::Rostering));
+            .color(theme::FAINT)
+            .size(10.0),
+        );
+
+        if !signed_in {
+            ui.add_space(10.0);
+            if ui.add(theme::primary_button("Sign in to the server")).clicked() {
+                *action = Some(Action::Navigate(Page::Settings));
+            }
         }
     });
 }
 
-fn recent_activity(ui: &mut Ui) {
-    egui::Frame::new()
-        .fill(theme::SURFACE)
-        .stroke(Stroke::new(1.0, theme::BORDER))
-        .corner_radius(CornerRadius::same(14))
-        .inner_margin(egui::Margin::symmetric(14, 12))
-        .show(ui, |ui| {
-            ui.set_width(ui.available_width());
-
-            ui.horizontal(|ui| {
-                ui.label(RichText::new("Recent activity").font(theme::strong_font(13.5)));
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    ui.label(
-                        RichText::new("Latest changes")
-                            .color(theme::FAINT)
-                            .size(10.5),
-                    );
-                });
-            });
-            ui.add_space(4.0);
-
-            let activity = [
-                (
-                    theme::ACCENT,
-                    "Shift published",
-                    "Margaret Chen · 09:00 – 12:00",
-                    "5m",
-                ),
-                (
-                    theme::ACCENT_BLUE,
-                    "Intake started",
-                    "Noah Williams · new client",
-                    "22m",
-                ),
-            ];
-
-            for (i, (colour, title, detail, age)) in activity.into_iter().enumerate() {
-                if i > 0 {
-                    ui.add_space(6.0);
-                }
-
-                ui.horizontal(|ui| {
-                    let (rect, _) = ui.allocate_exact_size(vec2(8.0, 8.0), Sense::hover());
-                    ui.painter().circle_filled(rect.center(), 4.0, colour);
-                    ui.vertical(|ui| {
-                        ui.label(RichText::new(title).font(theme::strong_font(11.5)));
-                        ui.label(RichText::new(detail).color(theme::FAINT).size(10.0));
-                    });
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        ui.label(
-                            RichText::new(age)
-                                .color(theme::FAINT)
-                                .size(10.0)
-                                .monospace(),
-                        );
-                    });
-                });
-            }
+fn row(ui: &mut Ui, label: &str, value: &str) {
+    ui.horizontal(|ui| {
+        ui.label(RichText::new(label).color(theme::MUTED).size(10.5));
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            ui.label(RichText::new(value).color(theme::TEXT).size(10.5));
         });
+    });
+    ui.add_space(2.0);
 }
 
 fn section_header(ui: &mut Ui, title: &str, subtitle: &str) {

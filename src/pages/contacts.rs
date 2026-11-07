@@ -1,4 +1,4 @@
-//! Virtualised contact list backed by the local SQLite cache.
+//! Virtualised contact list backed by the CareLibre server API.
 
 use std::{
     sync::Arc,
@@ -25,8 +25,9 @@ const SEARCH_DEBOUNCE: Duration = Duration::from_millis(120);
 pub enum ContactsAction {
     SearchChanged,
     LoadMore,
-    SeedDemo,
     OpenContact(String),
+    GoToSettings,
+    StartIntake,
 }
 
 pub struct ContactsState {
@@ -42,7 +43,6 @@ pub struct ContactsState {
     pub error: Option<String>,
     pub selected: Option<String>,
     pub last_query_ms: Option<f32>,
-    pub seed_in_flight: bool,
     pub needs_more: bool,
 }
 
@@ -61,7 +61,6 @@ impl ContactsState {
             error: None,
             selected: None,
             last_query_ms: None,
-            seed_in_flight: false,
             needs_more: false,
         }
     }
@@ -78,21 +77,15 @@ impl ContactsState {
 pub fn show(
     ui: &mut Ui,
     state: &mut ContactsState,
-    store_ready: bool,
-    store_error: Option<&str>,
+    signed_in: bool,
+    server_error: Option<&str>,
 ) -> Option<ContactsAction> {
-    if let Some(error) = store_error {
-        message_card(ui, "Local cache error", error, theme::DANGER);
-        return None;
+    if !signed_in {
+        return sign_in_card(ui);
     }
 
-    if !store_ready {
-        message_card(
-            ui,
-            "Starting local cache",
-            "The SQLite cache is opening. This only takes a moment.",
-            theme::MUTED,
-        );
+    if let Some(error) = server_error {
+        message_card(ui, "Server unavailable", error, theme::DANGER);
         return None;
     }
 
@@ -109,8 +102,15 @@ pub fn show(
 
     ui.add_space(8.0);
 
-    if state.counts.all == 0 {
-        seed_card(ui, state, &mut action);
+    if state.counts.all == 0 && state.loading && state.error.is_none() {
+        message_card(
+            ui,
+            "Loading contacts",
+            "Fetching the first page from the CareLibre server.",
+            theme::MUTED,
+        );
+    } else if state.counts.all == 0 && state.search.trim().is_empty() && state.error.is_none() {
+        empty_card(ui, &mut action);
     } else if state.total == 0 && !state.search.trim().is_empty() {
         message_card(
             ui,
@@ -134,7 +134,7 @@ fn header(ui: &mut Ui, state: &ContactsState) {
             });
             ui.label(
                 RichText::new(
-                    "Virtualised view of the local SQLite cache. Reads never touch the network.",
+                    "Live contact data from the CareLibre server, fetched by a background worker.",
                 )
                 .color(theme::MUTED)
                 .size(12.5),
@@ -142,7 +142,7 @@ fn header(ui: &mut Ui, state: &ContactsState) {
         });
 
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            theme::pill(ui, "LOCAL CACHE", theme::ACCENT);
+            theme::pill(ui, "SERVER", theme::ACCENT);
         });
     });
 }
@@ -474,7 +474,8 @@ fn placeholder_row(ui: &mut Ui, index: usize) {
     );
 }
 
-fn seed_card(ui: &mut Ui, state: &ContactsState, action: &mut Option<ContactsAction>) {
+fn sign_in_card(ui: &mut Ui) -> Option<ContactsAction> {
+    let mut action = None;
     egui::Frame::new()
         .fill(theme::SURFACE)
         .stroke(Stroke::new(1.0, theme::BORDER))
@@ -482,37 +483,44 @@ fn seed_card(ui: &mut Ui, state: &ContactsState, action: &mut Option<ContactsAct
         .inner_margin(Margin::same(22))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
-            ui.label(RichText::new("Local cache is empty").font(theme::strong_font(16.0)));
+            ui.label(RichText::new("Sign in to load contacts").font(theme::strong_font(18.0)));
             ui.add_space(4.0);
             ui.label(
                 RichText::new(
-                    "Generate deterministic demo contacts and shifts in SQLite to exercise \
-                     virtualised lists and the performance HUD. Nothing is sent to the server.",
+                    "Contacts are read directly from the CareLibre server. Sign in with your organisation account in Settings to continue.",
                 )
                 .color(theme::MUTED)
                 .size(12.0),
             );
             ui.add_space(12.0);
-
-            if state.seed_in_flight {
-                ui.label(
-                    RichText::new("Generating demo data…")
-                        .color(theme::WARNING)
-                        .size(12.0),
-                );
-            } else if ui
-                .add(theme::primary_button("Generate demo data"))
-                .clicked()
-            {
-                *action = Some(ContactsAction::SeedDemo);
+            if ui.add(theme::primary_button("Go to Settings")).clicked() {
+                action = Some(ContactsAction::GoToSettings);
             }
+        });
+    action
+}
 
-            ui.add_space(6.0);
+fn empty_card(ui: &mut Ui, action: &mut Option<ContactsAction>) {
+    egui::Frame::new()
+        .fill(theme::SURFACE)
+        .stroke(Stroke::new(1.0, theme::BORDER))
+        .corner_radius(CornerRadius::same(14))
+        .inner_margin(Margin::same(22))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.label(RichText::new("No contacts on the server yet").font(theme::strong_font(18.0)));
+            ui.add_space(4.0);
             ui.label(
-                RichText::new("10,000 contacts · 50,000 shifts · local only")
-                    .color(theme::FAINT)
-                    .size(10.0),
+                RichText::new(
+                    "Create the first contact with a guided intake. Completed intakes are saved to the server.",
+                )
+                .color(theme::MUTED)
+                .size(12.0),
             );
+            ui.add_space(12.0);
+            if ui.add(theme::primary_button("Start intake")).clicked() {
+                *action = Some(ContactsAction::StartIntake);
+            }
         });
 }
 

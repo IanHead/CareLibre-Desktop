@@ -33,6 +33,11 @@ fn main() {
     let live = args.iter().any(|arg| arg == "--live");
     let perf = args.iter().any(|arg| arg == "--perf");
     let contact = args.iter().any(|arg| arg == "--contact");
+    let login = args.iter().find_map(|arg| {
+        arg.strip_prefix("--login=")
+            .and_then(|value| value.split_once(':'))
+            .map(|(email, password)| (email.to_owned(), password.to_owned()))
+    });
     let intake = args.iter().find_map(|arg| match arg.as_str() {
         "--intake=client" => Some(IntakeKind::Client),
         "--intake=worker" => Some(IntakeKind::Worker),
@@ -66,6 +71,18 @@ fn main() {
             std::thread::sleep(Duration::from_millis(50));
         }
 
+        if let Some((email, password)) = &login {
+            harness.state_mut().sign_in(email, password);
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while !harness.state().signed_in() {
+                if Instant::now() >= deadline {
+                    panic!("timed out signing in");
+                }
+                harness.run();
+                std::thread::sleep(Duration::from_millis(25));
+            }
+        }
+
         let deadline = Instant::now() + Duration::from_secs(10);
         while !harness.state().cache_ready() {
             if Instant::now() >= deadline {
@@ -73,6 +90,14 @@ fn main() {
             }
             harness.run();
             std::thread::sleep(Duration::from_millis(25));
+        }
+
+        if login.is_some() {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while harness.state().server_contacts_loaded() == 0 && Instant::now() < deadline {
+                harness.run();
+                std::thread::sleep(Duration::from_millis(25));
+            }
         }
 
         if matches!(page, Page::Clients | Page::Workers | Page::Contacts) {

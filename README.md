@@ -3,12 +3,13 @@
 A fast, native desktop client for [CareLibre](https://github.com/IanHead/CareLibre), the
 open-source care management platform for disability and aged care providers.
 
-> **Status: prototype.** The native application shell, home dashboard, live server
-> connection and account authentication are in place. Contacts, clients and workers render
-> from a local SQLite cache with virtualised 50,000-row lists, and every contact can be
-> opened and edited against the database. Guided intake wizards persist drafts locally and
-> create onboarding records. Custom fields are database-backed metadata and render
-> dynamically in the editor. Rostering, services, documents and communications are next.
+> **Status: prototype.** The native application shell, home dashboard and server
+> authentication are in place. Contacts, clients and workers are read live from the
+> CareLibre server through a background worker and displayed in virtualised, paged lists.
+> Every contact opens in its own native, free-floating editor window; edits and custom-field
+> values are saved back to the server. Guided intake wizards persist drafts locally and
+> create onboarding contacts on the server. Rostering, services, documents and
+> communications are next.
 
 ![CareLibre home screen](docs/home.png)
 
@@ -25,18 +26,18 @@ open-source care management platform for disability and aged care providers.
 ## Design principles
 
 - **Performance is the feature.** The desktop client is designed to be as fast as
-  possible: every list is virtualised, reads come from a local SQLite cache, the UI thread
-  never touches SQLite or the network, writes are local-first, and no screen waits on a
-  spinner. Performance budgets and the local-first sync plan are documented in
-  [`docs/performance-architecture.md`](docs/performance-architecture.md).
+  possible: every list is virtualised, API calls run on background workers, the UI thread
+  never blocks on the network or SQLite, and no screen waits on a spinner. Contacts are
+  fetched directly from the server today; the local-first cache and delta-sync plan for
+  large rosters is in [`docs/performance-architecture.md`](docs/performance-architecture.md).
 - **Native, not a web page in a trench coat.** Rust, [egui](https://github.com/emilk/egui)
   and wgpu. No Electron, no embedded web view, no JavaScript.
 - **Cross-platform.** Windows, macOS and Linux from one codebase.
 - **GPU first, CPU fallback.** wgpu selects Vulkan, Metal, DX12 or OpenGL at runtime and
   can fall back to software adapters (for example lavapipe or llvmpipe) on machines
   without a usable GPU.
-- **Multitasking by default.** The shell is built for a home screen plus free-floating
-  windows, so several records can be open at once.
+- **Multitasking by default.** Contact records open in independent native OS windows that
+  can be moved, resized and kept open alongside the home screen.
 - **Open source, self-hostable.** Community Edition is free forever. Business and
   Enterprise editions add support, consulting and managed deployment.
 
@@ -84,9 +85,18 @@ Open **Settings** in the sidebar to:
 - sign out and inspect the active organisation and edition
 
 The connection is checked every 15 seconds and the status is shown in the status bar.
-Access tokens are refreshed automatically; the refresh token is kept in memory only
-for now. Persisting it in the OS keychain is on the roadmap, together with offline
-support and domain data.
+Signing in is required for all contact data and intake completion: the desktop no longer
+uses mock contacts. Access tokens are refreshed automatically; the refresh token is kept in
+memory only for now. Persisting it in the OS keychain is on the roadmap.
+
+For local development, the server repository ships a demo seed (Blue Dreams Care) with
+1,700+ contacts and custom fields:
+
+```sh
+cd ../CareLibre
+make seed-demo
+# owner@bluedreams.example / BlueDreamsCare!2026
+```
 
 ### Live integration tests
 
@@ -108,43 +118,38 @@ The **Intake** button in the top bar opens a scenario picker for:
   terms, award classification, compliance checks and expiry dates.
 - **Other contact intake** — coordinators, family, GPs and other support-network contacts.
 
-Wizards save automatically to the local SQLite cache, can be closed and resumed from the
-picker, and create a contact with status **Onboarding** when completed. Completed records
-appear immediately in the virtualised Contacts list. The captured intake data is stored as
-JSON alongside the contact summary ready for the sync API.
+Wizards save drafts automatically to the local SQLite cache, can be closed and resumed from
+the picker, and create the contact on the server when completed. Core fields are sent as
+contact columns; the rest of the intake data is stored in the contact's server-side
+`details` JSON. Completed records appear immediately in the server-backed Contacts list.
 
 ## Contact records and custom fields
 
-Click any row in Contacts, Clients or Workers to open the record editor. The editor loads
-the core record, its extended profile and all custom-field values from SQLite; nothing is
-hardcoded in the UI.
+Click any row in Contacts, Clients or Workers to open a native editor window. Each window is
+an independent OS window that can be moved and resized away from the main application.
 
-- Core fields: display name, contact type, status, division, email and phone.
-- Profile fields are grouped into sections appropriate to the contact type, with client,
-  worker and other-contact variants.
-- **Custom fields are metadata.** Definitions live in the `custom_fields` table (label,
-  type, options, section, order, required flag) and values in `contact_custom_values`.
-  The editor renders them dynamically, then saves everything in one transaction.
-- Saving updates the full-text index and refreshes the virtualised lists without a restart.
+The editor loads the contact, its extended `details` profile and every active custom-field
+definition from the server. Nothing is hardcoded in the UI:
 
-## Local cache and performance
+- **Stock fields** are the server's contact columns: display name, given/family/preferred
+  name, pronouns, date of birth, email, phone, notes, role and status.
+- **Custom fields are metadata.** Definitions live in the server's
+  `custom_field_definitions` table and values in `custom_field_values`. The editor renders
+  them with the same labels and inputs as stock fields, in the same form — they are not
+  grouped into a separate custom-fields section. A field created in the server admin panel
+  appears automatically on the next contact open.
+- Profile JSON from intake is rendered as editable fields alongside the stock record.
+- Saving sends a `PATCH /api/v1/contacts/{id}` request and refreshes the server-backed list.
 
-Rostering and contact screens read from a bundled SQLite cache; the UI thread never
-touches SQLite or the network. The contacts list is virtualised and pages in as you
-scroll, with local full-text search.
+## Server data and performance
 
-Seed a large deterministic fixture and time the hot queries:
+Contacts are read from `GET /api/v1/contacts` and detail/custom-field data from
+`GET /api/v1/contacts/{id}`. All calls run on a background worker; the UI renders the last
+snapshot and pages in more rows as you scroll. There is no mock contact data in the desktop
+client.
 
-```sh
-cargo run --release --example seed_cache -- 50000 1000000
-cargo run --release --example bench_cache
-```
-
-This creates 50,000 contacts and 1,000,000 shifts in the platform data directory. Press
-**F12** in the app to toggle the performance HUD (frame time, loaded rows, last query,
-cache location).
-
-The full architecture and roadmap for local-first sync is in
+Press **F12** in the app to toggle the performance HUD (frame time, rows loaded, API
+latency). The full architecture and roadmap for local-first caching and delta sync is in
 [`docs/performance-architecture.md`](docs/performance-architecture.md).
 
 ## Development
@@ -162,7 +167,10 @@ The UI can be rendered without a display, which is handy for design review and C
 ```sh
 cargo run --example screenshot -- docs/home.png
 cargo run --example screenshot -- docs/rostering.png rostering
-cargo run --example screenshot -- docs/settings.png settings --live
+cargo run --example screenshot -- docs/contacts.png contacts --live \
+  --login=you@example.com:your-password
+cargo run --example screenshot -- docs/contact-editor.png contacts --live --contact \
+  --login=you@example.com:your-password
 ```
 
 ### Layout
@@ -172,18 +180,17 @@ cargo run --example screenshot -- docs/settings.png settings --live
 | `src/main.rs` | Native entry point and window configuration |
 | `src/app.rs` | Application shell: top bar, sidebar, status bar, routing |
 | `src/api.rs` | Blocking HTTP client for the CareLibre REST API |
-| `src/server.rs` | Connection state and the background API worker |
+| `src/server.rs` | Connection state and the auth/health worker |
+| `src/remote.rs` | Background contact API worker |
 | `src/config.rs` | Persisted desktop preferences |
 | `src/contact.rs` | Full contact, custom-field and update models |
 | `src/intake.rs` | Intake draft model and shared types |
-| `src/store/` | SQLite schema, queries, intake persistence, demo seeding and the cache worker |
+| `src/store/` | Local SQLite store for intake drafts and development tooling |
 | `src/perf.rs` | F12 performance HUD |
 | `src/theme.rs` | Palette, typography and shared card/pill widgets |
 | `src/pages/` | One module per area; `home.rs` dashboard, `contacts.rs` virtualised list, `contact_editor.rs` record editor, `intake/` wizards, `settings.rs` connection/account UI |
 | `assets/fonts/` | Bundled Inter font (SIL OFL 1.1) and licence |
 | `examples/screenshot.rs` | Headless renderer used for snapshots |
-| `examples/seed_cache.rs` | Deterministic cache fixture generator |
-| `examples/bench_cache.rs` | Local query benchmark |
 | `tests/ui.rs` | Headless rendering and sidebar navigation tests |
 | `tests/store.rs` | SQLite schema, filtering, FTS and keyset paging tests |
 | `tests/server_live.rs` | Live server connection tests (`--ignored`) |
@@ -196,13 +203,13 @@ The desktop client tracks the wider CareLibre requirements:
 - [x] Home dashboard and navigation
 - [x] Live server connection, account authentication and organisation onboarding
 - [x] PostgreSQL-backed CareLibre server (via REST API)
-- [x] Local SQLite cache, background query worker and virtualised contacts
-- [x] Guided intake wizards with persisted drafts
-- [x] Contact editing backed by SQLite, including custom-field metadata
-- [x] Performance HUD and 1M-shift synthetic fixture
-- [ ] Delta sync and optimistic local writes
-- [ ] Care-domain API integration for the screens below
-- [ ] Contacts, clients, workers and divisions syncing to the server
+- [x] Server-backed contacts, background API worker and virtualised lists
+- [x] Guided intake wizards that create server contacts
+- [x] Native free-floating contact editor windows
+- [x] Contact editing with server-stored custom-field metadata
+- [x] Performance HUD
+- [ ] Delta sync, optimistic local writes and offline cache
+- [ ] Server-side rostering, services and other care-domain modules
 - [ ] Services, rates and effective-dated rate versions
 - [ ] Rostering with shifts, assignments and sessions
 - [ ] Natural-language quoting and document merge templates

@@ -37,7 +37,9 @@ fn sidebar_navigation_works() {
     let mut harness = harness(CareLibreApp::new());
     harness.run();
 
-    harness.get_by_label("Rostering").click();
+    harness
+        .get_by_role_and_label(egui::Role::Button, "Rostering")
+        .click();
     harness.run();
 
     assert_eq!(harness.state().page(), Page::Rostering);

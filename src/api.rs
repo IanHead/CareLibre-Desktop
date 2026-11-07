@@ -7,6 +7,8 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
+use crate::contact::{ApiContactDetail, ApiContactList, ApiContactWrite};
+
 pub const DEFAULT_BASE_URL: &str = "http://127.0.0.1:8484";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(6);
 
@@ -240,6 +242,107 @@ impl ApiClient {
         } else {
             Err(error_from_body(status, &body))
         }
+    }
+
+    pub fn list_contacts(
+        &self,
+        access_token: &str,
+        role: &str,
+        search: &str,
+        after: Option<(&str, &str)>,
+        limit: usize,
+    ) -> ApiResult<ApiContactList> {
+        let mut query = url::form_urlencoded::Serializer::new(String::new());
+        query.append_pair("limit", &limit.to_string());
+        query.append_pair("role", role);
+        if !search.trim().is_empty() {
+            query.append_pair("search", search.trim());
+        }
+        if let Some((name, id)) = after {
+            query.append_pair("after_name", name);
+            query.append_pair("after_id", id);
+        }
+        let path = format!("/api/v1/contacts?{}", query.finish());
+        self.get_json_with_token(&path, access_token)
+    }
+
+    pub fn get_contact(&self, access_token: &str, id: &str) -> ApiResult<ApiContactDetail> {
+        self.get_json_with_token(&format!("/api/v1/contacts/{id}"), access_token)
+    }
+
+    pub fn update_contact(
+        &self,
+        access_token: &str,
+        id: &str,
+        payload: &ApiContactWrite,
+    ) -> ApiResult<ApiContactDetail> {
+        let (status, body) = self.send_with_token(
+            "PATCH",
+            &format!("/api/v1/contacts/{id}"),
+            access_token,
+            payload,
+        )?;
+        decode(status, &body)
+    }
+
+    pub fn create_contact(
+        &self,
+        access_token: &str,
+        payload: &ApiContactWrite,
+    ) -> ApiResult<ApiContactDetail> {
+        let (status, body) =
+            self.send_with_token("POST", "/api/v1/contacts", access_token, payload)?;
+        decode(status, &body)
+    }
+
+    fn get_json_with_token<T: DeserializeOwned>(
+        &self,
+        path: &str,
+        access_token: &str,
+    ) -> ApiResult<T> {
+        let mut response = self
+            .agent
+            .get(self.endpoint(path))
+            .header("authorization", format!("Bearer {access_token}"))
+            .call()
+            .map_err(map_transport_error)?;
+        let status = response.status().as_u16();
+        let body = response
+            .body_mut()
+            .read_to_string()
+            .map_err(|err| ApiError::Network(err.to_string()))?;
+        decode(status, &body)
+    }
+
+    fn send_with_token<B: Serialize>(
+        &self,
+        method: &str,
+        path: &str,
+        access_token: &str,
+        body: &B,
+    ) -> ApiResult<(u16, String)> {
+        let payload =
+            serde_json::to_string(body).map_err(|err| ApiError::Decode(err.to_string()))?;
+        let request = match method {
+            "POST" => self.agent.post(self.endpoint(path)),
+            "PATCH" => self.agent.patch(self.endpoint(path)),
+            _ => {
+                return Err(ApiError::Network(format!(
+                    "unsupported HTTP method {method}"
+                )));
+            }
+        };
+        let mut response = request
+            .header("authorization", format!("Bearer {access_token}"))
+            .header("content-type", "application/json")
+            .send(payload)
+            .map_err(map_transport_error)?;
+        let status = response.status().as_u16();
+        let body = response
+            .body_mut()
+            .read_to_string()
+            .map_err(|err| ApiError::Network(err.to_string()))?;
+        Ok((status, body))
     }
 
     fn endpoint(&self, path: &str) -> String {

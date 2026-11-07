@@ -39,6 +39,7 @@ pub struct IntakeState {
     pub list_request: Option<u64>,
     pub load_request: Option<u64>,
     pub discard_request: Option<u64>,
+    pub create_request: Option<u64>,
 }
 
 impl IntakeState {
@@ -60,6 +61,7 @@ impl IntakeState {
             list_request: None,
             load_request: None,
             discard_request: None,
+            create_request: None,
         }
     }
 
@@ -109,9 +111,45 @@ pub enum IntakeAction {
     BackToPicker,
     Complete,
     ViewContact { page: Page, name: String },
+    GoToSettings,
 }
 
-pub fn show(ui: &mut Ui, state: &mut IntakeState, store_ready: bool) -> Option<IntakeAction> {
+pub fn show(
+    ui: &mut Ui,
+    state: &mut IntakeState,
+    store_ready: bool,
+    signed_in: bool,
+) -> Option<IntakeAction> {
+    if !signed_in {
+        header(
+            ui,
+            "Intake",
+            "Sign in to the server before starting an onboarding workflow.",
+        );
+        ui.add_space(16.0);
+        let mut action = None;
+        theme::card().show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.label(
+                RichText::new("Server sign-in required")
+                    .font(theme::strong_font(16.0)),
+            );
+            ui.add_space(4.0);
+            ui.label(
+                RichText::new(
+                    "Completed intakes are saved directly to the CareLibre server. Sign in with your organisation account to begin.",
+                )
+                .color(theme::MUTED)
+                .size(12.0),
+            );
+            ui.add_space(10.0);
+            if ui.add(theme::primary_button("Go to Settings")).clicked() {
+                action = Some(IntakeAction::GoToSettings);
+            }
+        });
+        return action;
+    }
+
     match state.view {
         IntakeView::Picker => {
             egui::ScrollArea::vertical()
@@ -556,7 +594,7 @@ fn summary_card(
         ui.label(RichText::new(label).color(colour).size(10.5));
         ui.label(
             RichText::new(
-                "Stored in the local SQLite cache. Nothing is sent to the server until sync lands.",
+                "Drafts are stored locally; completing the intake creates the contact on the server.",
             )
             .color(theme::FAINT)
             .size(9.5),

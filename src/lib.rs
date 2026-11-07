@@ -10,6 +10,7 @@ pub mod contact;
 pub mod intake;
 pub mod pages;
 pub mod perf;
+pub mod remote;
 pub mod server;
 pub mod store;
 pub mod theme;
