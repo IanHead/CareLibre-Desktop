@@ -14,6 +14,10 @@ use crate::{
         ApiContactDetail, ApiContactList, ApiContactWrite, ApiRelationship, ApiRelationshipGraph,
         ApiRelationshipList, ApiRelationshipWrite,
     },
+    rostering::{
+        ApiAssignment, ApiAssignmentUpdate, ApiAssignmentWrite, ApiShift, ApiShiftDetail,
+        ApiShiftList, ApiShiftUpdate, ApiShiftWrite, ApiSite, ApiSiteWrite, ApiSuitability,
+    },
     store::{ContactCursor, ContactFilter},
 };
 
@@ -72,6 +76,71 @@ pub enum RemoteCommand {
         token: String,
         id: String,
     },
+    ListSites {
+        request_id: u64,
+        base_url: String,
+        token: String,
+    },
+    CreateSite {
+        request_id: u64,
+        base_url: String,
+        token: String,
+        payload: Box<ApiSiteWrite>,
+    },
+    ListShifts {
+        request_id: u64,
+        base_url: String,
+        token: String,
+        from: Option<String>,
+        to: Option<String>,
+        status: Option<String>,
+        site_id: Option<String>,
+    },
+    GetShift {
+        request_id: u64,
+        base_url: String,
+        token: String,
+        id: String,
+    },
+    CreateShift {
+        request_id: u64,
+        base_url: String,
+        token: String,
+        payload: Box<ApiShiftWrite>,
+    },
+    UpdateShift {
+        request_id: u64,
+        base_url: String,
+        token: String,
+        id: String,
+        payload: Box<ApiShiftUpdate>,
+    },
+    CreateAssignment {
+        request_id: u64,
+        base_url: String,
+        token: String,
+        shift_id: String,
+        payload: Box<ApiAssignmentWrite>,
+    },
+    UpdateAssignment {
+        request_id: u64,
+        base_url: String,
+        token: String,
+        id: String,
+        payload: Box<ApiAssignmentUpdate>,
+    },
+    DeleteAssignment {
+        request_id: u64,
+        base_url: String,
+        token: String,
+        id: String,
+    },
+    ShiftSuitability {
+        request_id: u64,
+        base_url: String,
+        token: String,
+        shift_id: String,
+    },
 }
 
 pub enum RemoteEvent {
@@ -113,6 +182,52 @@ pub enum RemoteEvent {
         request_id: u64,
         id: String,
         result: Result<(), String>,
+    },
+    SitesListed {
+        request_id: u64,
+        result: Result<Vec<ApiSite>, String>,
+    },
+    SiteCreated {
+        request_id: u64,
+        result: Result<ApiSite, String>,
+    },
+    ShiftsListed {
+        request_id: u64,
+        result: Result<ApiShiftList, String>,
+    },
+    ShiftLoaded {
+        request_id: u64,
+        id: String,
+        result: Result<ApiShiftDetail, String>,
+    },
+    ShiftCreated {
+        request_id: u64,
+        result: Result<ApiShift, String>,
+    },
+    ShiftUpdated {
+        request_id: u64,
+        id: String,
+        result: Result<ApiShift, String>,
+    },
+    AssignmentCreated {
+        request_id: u64,
+        shift_id: String,
+        result: Result<ApiAssignment, String>,
+    },
+    AssignmentUpdated {
+        request_id: u64,
+        id: String,
+        result: Result<ApiAssignment, String>,
+    },
+    AssignmentDeleted {
+        request_id: u64,
+        id: String,
+        result: Result<(), String>,
+    },
+    SuitabilityLoaded {
+        request_id: u64,
+        shift_id: String,
+        result: Result<ApiSuitability, String>,
     },
 }
 
@@ -256,6 +371,150 @@ impl RemoteHandle {
         });
     }
 
+    pub fn list_sites(&self, request_id: u64, base_url: String, token: String) {
+        let _ = self.commands.send(RemoteCommand::ListSites {
+            request_id,
+            base_url,
+            token,
+        });
+    }
+
+    pub fn create_site(
+        &self,
+        request_id: u64,
+        base_url: String,
+        token: String,
+        payload: ApiSiteWrite,
+    ) {
+        let _ = self.commands.send(RemoteCommand::CreateSite {
+            request_id,
+            base_url,
+            token,
+            payload: Box::new(payload),
+        });
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn list_shifts(
+        &self,
+        request_id: u64,
+        base_url: String,
+        token: String,
+        from: Option<String>,
+        to: Option<String>,
+        status: Option<String>,
+        site_id: Option<String>,
+    ) {
+        let _ = self.commands.send(RemoteCommand::ListShifts {
+            request_id,
+            base_url,
+            token,
+            from,
+            to,
+            status,
+            site_id,
+        });
+    }
+
+    pub fn get_shift(&self, request_id: u64, base_url: String, token: String, id: String) {
+        let _ = self.commands.send(RemoteCommand::GetShift {
+            request_id,
+            base_url,
+            token,
+            id,
+        });
+    }
+
+    pub fn create_shift(
+        &self,
+        request_id: u64,
+        base_url: String,
+        token: String,
+        payload: ApiShiftWrite,
+    ) {
+        let _ = self.commands.send(RemoteCommand::CreateShift {
+            request_id,
+            base_url,
+            token,
+            payload: Box::new(payload),
+        });
+    }
+
+    pub fn update_shift(
+        &self,
+        request_id: u64,
+        base_url: String,
+        token: String,
+        id: String,
+        payload: ApiShiftUpdate,
+    ) {
+        let _ = self.commands.send(RemoteCommand::UpdateShift {
+            request_id,
+            base_url,
+            token,
+            id,
+            payload: Box::new(payload),
+        });
+    }
+
+    pub fn create_assignment(
+        &self,
+        request_id: u64,
+        base_url: String,
+        token: String,
+        shift_id: String,
+        payload: ApiAssignmentWrite,
+    ) {
+        let _ = self.commands.send(RemoteCommand::CreateAssignment {
+            request_id,
+            base_url,
+            token,
+            shift_id,
+            payload: Box::new(payload),
+        });
+    }
+
+    pub fn update_assignment(
+        &self,
+        request_id: u64,
+        base_url: String,
+        token: String,
+        id: String,
+        payload: ApiAssignmentUpdate,
+    ) {
+        let _ = self.commands.send(RemoteCommand::UpdateAssignment {
+            request_id,
+            base_url,
+            token,
+            id,
+            payload: Box::new(payload),
+        });
+    }
+
+    pub fn delete_assignment(&self, request_id: u64, base_url: String, token: String, id: String) {
+        let _ = self.commands.send(RemoteCommand::DeleteAssignment {
+            request_id,
+            base_url,
+            token,
+            id,
+        });
+    }
+
+    pub fn shift_suitability(
+        &self,
+        request_id: u64,
+        base_url: String,
+        token: String,
+        shift_id: String,
+    ) {
+        let _ = self.commands.send(RemoteCommand::ShiftSuitability {
+            request_id,
+            base_url,
+            token,
+            shift_id,
+        });
+    }
+
     pub fn try_recv(&self) -> Option<RemoteEvent> {
         self.events.try_recv().ok()
     }
@@ -390,6 +649,153 @@ fn run(ctx: egui::Context, commands: Receiver<RemoteCommand>, events: Sender<Rem
                 let _ = events.send(RemoteEvent::RelationshipDeleted {
                     request_id,
                     id,
+                    result,
+                });
+            }
+            RemoteCommand::ListSites {
+                request_id,
+                base_url,
+                token,
+            } => {
+                let result = ApiClient::new(&base_url)
+                    .and_then(|client| client.list_sites(&token))
+                    .map_err(|err| err.to_string());
+                let _ = events.send(RemoteEvent::SitesListed { request_id, result });
+            }
+            RemoteCommand::CreateSite {
+                request_id,
+                base_url,
+                token,
+                payload,
+            } => {
+                let result = ApiClient::new(&base_url)
+                    .and_then(|client| client.create_site(&token, &payload))
+                    .map_err(|err| err.to_string());
+                let _ = events.send(RemoteEvent::SiteCreated { request_id, result });
+            }
+            RemoteCommand::ListShifts {
+                request_id,
+                base_url,
+                token,
+                from,
+                to,
+                status,
+                site_id,
+            } => {
+                let result = ApiClient::new(&base_url)
+                    .and_then(|client| {
+                        client.list_shifts(
+                            &token,
+                            from.as_deref(),
+                            to.as_deref(),
+                            status.as_deref(),
+                            site_id.as_deref(),
+                        )
+                    })
+                    .map_err(|err| err.to_string());
+                let _ = events.send(RemoteEvent::ShiftsListed { request_id, result });
+            }
+            RemoteCommand::GetShift {
+                request_id,
+                base_url,
+                token,
+                id,
+            } => {
+                let result = ApiClient::new(&base_url)
+                    .and_then(|client| client.get_shift(&token, &id))
+                    .map_err(|err| err.to_string());
+                let _ = events.send(RemoteEvent::ShiftLoaded {
+                    request_id,
+                    id,
+                    result,
+                });
+            }
+            RemoteCommand::CreateShift {
+                request_id,
+                base_url,
+                token,
+                payload,
+            } => {
+                let result = ApiClient::new(&base_url)
+                    .and_then(|client| client.create_shift(&token, &payload))
+                    .map_err(|err| err.to_string());
+                let _ = events.send(RemoteEvent::ShiftCreated { request_id, result });
+            }
+            RemoteCommand::UpdateShift {
+                request_id,
+                base_url,
+                token,
+                id,
+                payload,
+            } => {
+                let result = ApiClient::new(&base_url)
+                    .and_then(|client| client.update_shift(&token, &id, &payload))
+                    .map_err(|err| err.to_string());
+                let _ = events.send(RemoteEvent::ShiftUpdated {
+                    request_id,
+                    id,
+                    result,
+                });
+            }
+            RemoteCommand::CreateAssignment {
+                request_id,
+                base_url,
+                token,
+                shift_id,
+                payload,
+            } => {
+                let result = ApiClient::new(&base_url)
+                    .and_then(|client| client.create_assignment(&token, &shift_id, &payload))
+                    .map_err(|err| err.to_string());
+                let _ = events.send(RemoteEvent::AssignmentCreated {
+                    request_id,
+                    shift_id,
+                    result,
+                });
+            }
+            RemoteCommand::UpdateAssignment {
+                request_id,
+                base_url,
+                token,
+                id,
+                payload,
+            } => {
+                let result = ApiClient::new(&base_url)
+                    .and_then(|client| client.update_assignment(&token, &id, &payload))
+                    .map_err(|err| err.to_string());
+                let _ = events.send(RemoteEvent::AssignmentUpdated {
+                    request_id,
+                    id,
+                    result,
+                });
+            }
+            RemoteCommand::DeleteAssignment {
+                request_id,
+                base_url,
+                token,
+                id,
+            } => {
+                let result = ApiClient::new(&base_url)
+                    .and_then(|client| client.delete_assignment(&token, &id))
+                    .map_err(|err| err.to_string());
+                let _ = events.send(RemoteEvent::AssignmentDeleted {
+                    request_id,
+                    id,
+                    result,
+                });
+            }
+            RemoteCommand::ShiftSuitability {
+                request_id,
+                base_url,
+                token,
+                shift_id,
+            } => {
+                let result = ApiClient::new(&base_url)
+                    .and_then(|client| client.shift_suitability(&token, &shift_id))
+                    .map_err(|err| err.to_string());
+                let _ = events.send(RemoteEvent::SuitabilityLoaded {
+                    request_id,
+                    shift_id,
                     result,
                 });
             }

@@ -14,6 +14,7 @@ use carelibre_desktop::{
     theme::{self, ThemeMode},
 };
 use eframe::egui;
+use egui_kittest::kittest::Queryable;
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -53,6 +54,7 @@ fn main() {
             .and_then(|value| value.split_once(':'))
             .map(|(email, password)| (email.to_owned(), password.to_owned()))
     });
+    let suitability = args.iter().any(|arg| arg == "--suitability");
     let intake = args.iter().find_map(|arg| match arg.as_str() {
         "--intake=client" => Some(IntakeKind::Client),
         "--intake=worker" => Some(IntakeKind::Worker),
@@ -132,6 +134,30 @@ fn main() {
             while !harness.state().relationship_graph_ready() && Instant::now() < deadline {
                 harness.run();
                 std::thread::sleep(Duration::from_millis(25));
+            }
+        }
+
+        if page == Page::Rostering {
+            let deadline = Instant::now() + Duration::from_secs(15);
+            while harness.state().roster_shift_count() == 0 && Instant::now() < deadline {
+                harness.run();
+                std::thread::sleep(Duration::from_millis(25));
+            }
+            if harness.state_mut().open_first_shift() {
+                let deadline = Instant::now() + Duration::from_secs(10);
+                while !harness.state().roster_detail_ready() && Instant::now() < deadline {
+                    harness.run();
+                    std::thread::sleep(Duration::from_millis(25));
+                }
+            }
+            if suitability && harness.state_mut().find_workers_for_selected_shift() {
+                let deadline = Instant::now() + Duration::from_secs(15);
+                while !harness.state().roster_suitability_ready() && Instant::now() < deadline {
+                    harness.run();
+                    std::thread::sleep(Duration::from_millis(25));
+                }
+                harness.get_by_label("Worker suitability").scroll_to_me();
+                harness.run();
             }
         }
 

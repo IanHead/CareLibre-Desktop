@@ -11,6 +11,10 @@ use crate::contact::{
     ApiContactDetail, ApiContactList, ApiContactWrite, ApiRelationship, ApiRelationshipGraph,
     ApiRelationshipList, ApiRelationshipWrite,
 };
+use crate::rostering::{
+    ApiAssignment, ApiAssignmentUpdate, ApiAssignmentWrite, ApiShift, ApiShiftDetail, ApiShiftList,
+    ApiShiftUpdate, ApiShiftWrite, ApiSite, ApiSiteWrite, ApiSuitability,
+};
 
 pub const DEFAULT_BASE_URL: &str = "http://127.0.0.1:8484";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(6);
@@ -333,9 +337,13 @@ impl ApiClient {
     }
 
     pub fn delete_relationship(&self, access_token: &str, id: &str) -> ApiResult<()> {
+        self.delete_with_token(&format!("/api/v1/relationships/{id}"), access_token)
+    }
+
+    fn delete_with_token(&self, path: &str, access_token: &str) -> ApiResult<()> {
         let mut response = self
             .agent
-            .delete(self.endpoint(&format!("/api/v1/relationships/{id}")))
+            .delete(self.endpoint(path))
             .header("authorization", format!("Bearer {access_token}"))
             .call()
             .map_err(map_transport_error)?;
@@ -349,6 +357,113 @@ impl ApiClient {
         } else {
             Err(error_from_body(status, &body))
         }
+    }
+
+    // Rostering -----------------------------------------------------------
+
+    pub fn list_sites(&self, access_token: &str) -> ApiResult<Vec<ApiSite>> {
+        self.get_json_with_token("/api/v1/sites", access_token)
+    }
+
+    pub fn create_site(&self, access_token: &str, payload: &ApiSiteWrite) -> ApiResult<ApiSite> {
+        let (status, body) =
+            self.send_with_token("POST", "/api/v1/sites", access_token, payload)?;
+        decode(status, &body)
+    }
+
+    pub fn list_shifts(
+        &self,
+        access_token: &str,
+        from: Option<&str>,
+        to: Option<&str>,
+        status: Option<&str>,
+        site_id: Option<&str>,
+    ) -> ApiResult<ApiShiftList> {
+        let mut query = url::form_urlencoded::Serializer::new(String::new());
+        if let Some(from) = from {
+            query.append_pair("from", from);
+        }
+        if let Some(to) = to {
+            query.append_pair("to", to);
+        }
+        if let Some(status) = status.filter(|status| *status != "all") {
+            query.append_pair("status", status);
+        }
+        if let Some(site_id) = site_id {
+            query.append_pair("site_id", site_id);
+        }
+        query.append_pair("limit", "500");
+        self.get_json_with_token(&format!("/api/v1/shifts?{}", query.finish()), access_token)
+    }
+
+    pub fn get_shift(&self, access_token: &str, id: &str) -> ApiResult<ApiShiftDetail> {
+        self.get_json_with_token(&format!("/api/v1/shifts/{id}"), access_token)
+    }
+
+    pub fn create_shift(&self, access_token: &str, payload: &ApiShiftWrite) -> ApiResult<ApiShift> {
+        let (status, body) =
+            self.send_with_token("POST", "/api/v1/shifts", access_token, payload)?;
+        decode(status, &body)
+    }
+
+    pub fn update_shift(
+        &self,
+        access_token: &str,
+        id: &str,
+        payload: &ApiShiftUpdate,
+    ) -> ApiResult<ApiShift> {
+        let (status, body) = self.send_with_token(
+            "PATCH",
+            &format!("/api/v1/shifts/{id}"),
+            access_token,
+            payload,
+        )?;
+        decode(status, &body)
+    }
+
+    pub fn create_assignment(
+        &self,
+        access_token: &str,
+        shift_id: &str,
+        payload: &ApiAssignmentWrite,
+    ) -> ApiResult<ApiAssignment> {
+        let (status, body) = self.send_with_token(
+            "POST",
+            &format!("/api/v1/shifts/{shift_id}/assignments"),
+            access_token,
+            payload,
+        )?;
+        decode(status, &body)
+    }
+
+    pub fn update_assignment(
+        &self,
+        access_token: &str,
+        id: &str,
+        payload: &ApiAssignmentUpdate,
+    ) -> ApiResult<ApiAssignment> {
+        let (status, body) = self.send_with_token(
+            "PATCH",
+            &format!("/api/v1/assignments/{id}"),
+            access_token,
+            payload,
+        )?;
+        decode(status, &body)
+    }
+
+    pub fn delete_assignment(&self, access_token: &str, id: &str) -> ApiResult<()> {
+        self.delete_with_token(&format!("/api/v1/assignments/{id}"), access_token)
+    }
+
+    pub fn shift_suitability(
+        &self,
+        access_token: &str,
+        shift_id: &str,
+    ) -> ApiResult<ApiSuitability> {
+        self.get_json_with_token(
+            &format!("/api/v1/shifts/{shift_id}/suitability"),
+            access_token,
+        )
     }
 
     fn get_json_with_token<T: DeserializeOwned>(

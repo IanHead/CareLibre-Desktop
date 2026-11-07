@@ -270,3 +270,40 @@ fn relationship_graph_round_trip() {
         "deleted relationship should disappear"
     );
 }
+
+#[test]
+#[ignore = "requires a running CareLibre server with the demo seed"]
+fn rostering_endpoints_round_trip() {
+    let base_url = std::env::var("CARELTIRE_TEST_SERVER")
+        .or_else(|_| std::env::var("CARELIBRE_TEST_SERVER"))
+        .unwrap_or_else(|_| DEFAULT_BASE_URL.to_owned());
+    let client = ApiClient::new(&base_url).expect("valid server URL");
+    let session = client
+        .login("owner@bluedreams.example", "BlueDreamsCare!2026", None)
+        .expect("demo sign-in");
+
+    let sites = client
+        .list_sites(&session.access_token)
+        .expect("sites load");
+    assert!(!sites.is_empty(), "demo data should include sites");
+
+    let shifts = client
+        .list_shifts(&session.access_token, None, None, None, None)
+        .expect("shifts load");
+    assert!(!shifts.items.is_empty(), "demo data should include shifts");
+
+    let first = &shifts.items[0];
+    let detail = client
+        .get_shift(&session.access_token, &first.id)
+        .expect("shift detail loads");
+    assert_eq!(detail.shift.id, first.id);
+    assert!(
+        !detail.assignments.is_empty(),
+        "demo shift should have assignments"
+    );
+
+    let suitability = client
+        .shift_suitability(&session.access_token, &first.id)
+        .expect("suitability loads");
+    assert_eq!(suitability.shift_id, first.id);
+}

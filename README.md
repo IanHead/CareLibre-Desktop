@@ -26,6 +26,8 @@ open-source care management platform for disability and aged care providers.
 
 ![CareLibre relationship network](docs/relationships.png)
 
+![CareLibre rostering](docs/rostering.png)
+
 ![CareLibre client-side window chrome](docs/client-side.png)
 
 ## Design principles
@@ -186,6 +188,22 @@ The **Relationships** workspace page manages the network directly. Choose any tw
 contact or organisation — give each side a role, and link them. It lists and filters every
 link in the tenant and supports deleting them.
 
+## Rostering and worker suitability
+
+The **Rostering** workspace lists shifts by day with date, status and site filters.
+Create or edit a shift with its kind, local start/end time, site, location and status;
+assign any contact as a client or worker, update attendance (`assigned`, `attended`,
+`no_show`, `cancelled`), and record worker outcomes and 1–5 ratings. Sites can be added
+from the same page.
+
+**Worker suitability** is advisory and explainable. The server scores candidates from
+observed history and explicit constraints, then returns the evidence behind each score —
+for example “2 attended shifts at site Blue Dreams Day Program” or “preferred for Personal
+care: Regular program lead”. Hard `blocked` constraints are listed separately with their
+reasons, and the coordinator decides; nothing is auto-assigned. See the server's
+[ADR 0011](https://github.com/IanHead/CareLibre-Server/blob/main/docs/adr/0011-rostering-suitability-graph.md)
+for the evidence model.
+
 ## Appearance, window decorations and sign-in
 
 CareLibre adapts to the desktop's light or dark appearance by default. **Settings →
@@ -258,7 +276,8 @@ cargo run --example screenshot -- docs/contact-editor.png contacts --live --cont
 | `src/store/` | Local SQLite store for intake drafts and development tooling |
 | `src/perf.rs` | F12 performance HUD |
 | `src/theme.rs` | Palette, typography and shared card/pill widgets |
-| `src/pages/` | One module per area; `home.rs` dashboard, `contacts.rs` virtualised list, `contact_editor.rs` record editor, `relationships.rs` network page, `intake/` wizards, `settings.rs` connection/account UI |
+| `src/rostering.rs` | Rostering API models and local-time conversion |
+| `src/pages/` | One module per area; `home.rs` dashboard, `contacts.rs` virtualised list, `contact_editor.rs` record editor, `relationships.rs` network page, `rostering.rs` shifts and suitability, `intake/` wizards, `settings.rs` connection/account UI |
 | `assets/fonts/` | Bundled Inter font (SIL OFL 1.1) and licence |
 | `examples/screenshot.rs` | Headless renderer used for snapshots |
 | `tests/ui.rs` | Headless rendering and sidebar navigation tests |
@@ -287,7 +306,7 @@ The desktop client tracks the wider CareLibre requirements:
 - [ ] Delta sync, optimistic local writes and offline cache
 - [ ] Server-side rostering, services and other care-domain modules
 - [ ] Services, rates and effective-dated rate versions
-- [ ] Rostering with shifts, assignments and sessions
+- [x] Rostering with shifts, assignments and explainable worker suitability
 - [ ] Natural-language quoting and document merge templates
 - [ ] Configurable forms, fields and cost-centre inheritance
 - [ ] Configurable SMS and email communications

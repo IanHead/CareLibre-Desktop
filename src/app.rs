@@ -27,6 +27,7 @@ use crate::{
         contacts::{ContactsAction, ContactsState, LOAD_MORE_SIZE, PAGE_SIZE},
         intake::{IntakeAction, IntakeState, IntakeView},
         relationships::{RelationshipsAction, RelationshipsForm},
+        rostering::{RosteringAction, RosteringState},
         settings::SettingsForm,
     },
     perf::{PerfHud, PerfInfo},
@@ -62,6 +63,9 @@ pub struct CareLibreApp {
     relationship_edges: Vec<ApiRelationship>,
     relationship_graph_loaded: bool,
     relationship_form: RelationshipsForm,
+    rostering: RosteringState,
+    rostering_request_seq: u64,
+    rostering_requests: BTreeMap<u64, RosterRequest>,
     known_contacts: BTreeMap<String, ContactRow>,
     last_page: Page,
     page_changed_at: f64,
@@ -82,6 +86,19 @@ struct Notice {
     text: String,
     created_at: f64,
     expires_at: f64,
+}
+
+enum RosterRequest {
+    Sites,
+    Shifts,
+    Detail,
+    Suitability,
+    CreateShift,
+    UpdateShift,
+    CreateSite,
+    CreateAssignment,
+    UpdateAssignment,
+    DeleteAssignment,
 }
 
 struct PendingInlineRelationship {
@@ -140,6 +157,10 @@ impl CareLibreApp {
             relationship_edges: Vec::new(),
             relationship_graph_loaded: false,
             relationship_form: RelationshipsForm::default(),
+            rostering: RosteringState::default(),
+            // Rostering request ids live in their own range.
+            rostering_request_seq: 1 << 40,
+            rostering_requests: BTreeMap::new(),
             known_contacts: BTreeMap::new(),
             last_page: Page::Home,
             page_changed_at: f64::NEG_INFINITY,
@@ -395,6 +416,7 @@ impl CareLibreApp {
         let mut contacts_action: Option<(ContactFilter, ContactsAction)> = None;
         let mut intake_action: Option<IntakeAction> = None;
         let mut relationship_action: Option<RelationshipsAction> = None;
+        let mut rostering_action: Option<RosteringAction> = None;
         let action = egui::CentralPanel::default()
             .frame(
                 Frame::new()
@@ -412,6 +434,7 @@ impl CareLibreApp {
                     &mut contacts_action,
                     &mut intake_action,
                     &mut relationship_action,
+                    &mut rostering_action,
                 )
             })
             .inner;
@@ -424,6 +447,9 @@ impl CareLibreApp {
         }
         if let Some(relationship_action) = relationship_action {
             self.handle_relationships_action(ui.ctx(), relationship_action);
+        }
+        if let Some(rostering_action) = rostering_action {
+            self.handle_rostering_action(ui.ctx(), rostering_action);
         }
 
         if let Some(action) = action {
@@ -463,6 +489,7 @@ impl CareLibreApp {
         contacts_action: &mut Option<(ContactFilter, ContactsAction)>,
         intake_action: &mut Option<IntakeAction>,
         relationship_action: &mut Option<RelationshipsAction>,
+        rostering_action: &mut Option<RosteringAction>,
     ) -> Option<Action> {
         if self.page == Page::Relationships {
             self.ensure_party_catalog();
@@ -545,6 +572,14 @@ impl CareLibreApp {
                     server_error.as_deref(),
                 ) {
                     *contacts_action = Some((ContactFilter::Workers, action));
+                }
+                None
+            }
+            Page::Rostering => {
+                self.ensure_roster_loaded();
+                let catalog = self.lookup_parties();
+                if let Some(action) = pages::rostering::show(ui, &mut self.rostering, &catalog) {
+                    *rostering_action = Some(action);
                 }
                 None
             }
@@ -1400,6 +1435,238 @@ impl CareLibreApp {
             });
     }
 
+    fn next_rostering_request(&mut self) -> u64 {
+        self.rostering_request_seq += 1;
+        self.rostering_request_seq
+    }
+
+    fn ensure_roster_loaded(&mut self) {
+        if self.rostering.requested {
+            return;
+        }
+        if self.access_token().is_none() || self.remote.is_none() {
+            return;
+        }
+        self.rostering.requested = true;
+        self.rostering.loading_shifts = true;
+        self.load_roster_sites();
+        self.load_roster_shifts();
+    }
+
+    fn load_roster_sites(&mut self) {
+        let Some(token) = self.access_token() else {
+            return;
+        };
+        if self.remote.is_none() {
+            return;
+        }
+        let request = self.next_rostering_request();
+        self.rostering_requests
+            .insert(request, RosterRequest::Sites);
+        if let Some(remote) = &self.remote {
+            remote.list_sites(request, self.server.base_url.clone(), token);
+        }
+    }
+
+    fn load_roster_shifts(&mut self) {
+        let Some(token) = self.access_token() else {
+            return;
+        };
+        if self.remote.is_none() {
+            return;
+        }
+        let from = match crate::rostering::local_day_start(&self.rostering.filter_from) {
+            Ok(value) => value,
+            Err(error) => {
+                self.rostering.error = Some(error);
+                return;
+            }
+        };
+        let to = match crate::rostering::local_day_end(&self.rostering.filter_to) {
+            Ok(value) => value,
+            Err(error) => {
+                self.rostering.error = Some(error);
+                return;
+            }
+        };
+        self.rostering.loading_shifts = true;
+        let request = self.next_rostering_request();
+        self.rostering_requests
+            .insert(request, RosterRequest::Shifts);
+        if let Some(remote) = &self.remote {
+            remote.list_shifts(
+                request,
+                self.server.base_url.clone(),
+                token,
+                Some(from),
+                Some(to),
+                Some(self.rostering.filter_status.clone()),
+                self.rostering.filter_site.clone(),
+            );
+        }
+    }
+
+    fn load_roster_detail(&mut self, id: String) {
+        let Some(token) = self.access_token() else {
+            return;
+        };
+        if self.remote.is_none() {
+            return;
+        }
+        self.rostering.loading_detail = true;
+        let request = self.next_rostering_request();
+        self.rostering_requests
+            .insert(request, RosterRequest::Detail);
+        if let Some(remote) = &self.remote {
+            remote.get_shift(request, self.server.base_url.clone(), token, id);
+        }
+    }
+
+    fn load_roster_suitability(&mut self, id: String) {
+        let Some(token) = self.access_token() else {
+            return;
+        };
+        if self.remote.is_none() {
+            return;
+        }
+        self.rostering.loading_suitability = true;
+        let request = self.next_rostering_request();
+        self.rostering_requests
+            .insert(request, RosterRequest::Suitability);
+        if let Some(remote) = &self.remote {
+            remote.shift_suitability(request, self.server.base_url.clone(), token, id);
+        }
+    }
+
+    fn refresh_roster_after_assignment(&mut self) {
+        if let Some(id) = self.rostering.selected.clone() {
+            self.load_roster_detail(id.clone());
+            if self.rostering.suitability.is_some() {
+                self.load_roster_suitability(id);
+            }
+        }
+        self.load_roster_shifts();
+    }
+
+    fn handle_rostering_action(&mut self, ctx: &egui::Context, action: RosteringAction) {
+        let Some(token) = self.access_token() else {
+            self.rostering.error = Some("Sign in to use rostering.".to_owned());
+            return;
+        };
+        if self.remote.is_none() {
+            self.rostering.error = Some("The server connection is not available.".to_owned());
+            return;
+        }
+
+        match action {
+            RosteringAction::OpenCreate(date) => {
+                self.rostering.editor = Some(pages::rostering::ShiftEditor::new_for(date));
+            }
+            RosteringAction::Refresh => {
+                self.rostering.requested = false;
+                self.rostering.error = None;
+                self.ensure_roster_loaded();
+            }
+            RosteringAction::LoadShift(id) => {
+                self.rostering.selected = Some(id.clone());
+                self.rostering.detail = None;
+                self.rostering.suitability = None;
+                self.rostering.suitability_error = None;
+                self.load_roster_detail(id);
+            }
+            RosteringAction::CreateShift(payload) => {
+                if let Some(editor) = &mut self.rostering.editor {
+                    editor.saving = true;
+                    editor.error = None;
+                }
+                let request = self.next_rostering_request();
+                self.rostering_requests
+                    .insert(request, RosterRequest::CreateShift);
+                if let Some(remote) = &self.remote {
+                    remote.create_shift(request, self.server.base_url.clone(), token, payload);
+                }
+            }
+            RosteringAction::UpdateShift { id, payload } => {
+                if let Some(editor) = &mut self.rostering.editor {
+                    editor.saving = true;
+                    editor.error = None;
+                }
+                let request = self.next_rostering_request();
+                self.rostering_requests
+                    .insert(request, RosterRequest::UpdateShift);
+                if let Some(remote) = &self.remote {
+                    remote.update_shift(request, self.server.base_url.clone(), token, id, payload);
+                }
+            }
+            RosteringAction::CreateSite(payload) => {
+                if let Some(form) = &mut self.rostering.site_form {
+                    form.saving = true;
+                    form.error = None;
+                }
+                let request = self.next_rostering_request();
+                self.rostering_requests
+                    .insert(request, RosterRequest::CreateSite);
+                if let Some(remote) = &self.remote {
+                    remote.create_site(request, self.server.base_url.clone(), token, payload);
+                }
+            }
+            RosteringAction::CreateAssignment {
+                shift_id,
+                contact_id,
+                role,
+            } => {
+                self.rostering.assignment_pending = true;
+                self.rostering.assignment_error = None;
+                let request = self.next_rostering_request();
+                self.rostering_requests
+                    .insert(request, RosterRequest::CreateAssignment);
+                if let Some(remote) = &self.remote {
+                    remote.create_assignment(
+                        request,
+                        self.server.base_url.clone(),
+                        token,
+                        shift_id,
+                        crate::rostering::ApiAssignmentWrite {
+                            contact_id,
+                            role,
+                            session_id: None,
+                            status: None,
+                            notes: None,
+                        },
+                    );
+                }
+            }
+            RosteringAction::UpdateAssignment { id, payload } => {
+                let request = self.next_rostering_request();
+                self.rostering_requests
+                    .insert(request, RosterRequest::UpdateAssignment);
+                if let Some(remote) = &self.remote {
+                    remote.update_assignment(
+                        request,
+                        self.server.base_url.clone(),
+                        token,
+                        id,
+                        payload,
+                    );
+                }
+            }
+            RosteringAction::DeleteAssignment(id) => {
+                let request = self.next_rostering_request();
+                self.rostering_requests
+                    .insert(request, RosterRequest::DeleteAssignment);
+                if let Some(remote) = &self.remote {
+                    remote.delete_assignment(request, self.server.base_url.clone(), token, id);
+                }
+            }
+            RosteringAction::FindWorkers(id) => {
+                self.rostering.loading_suitability = true;
+                self.rostering.suitability_error = None;
+                self.load_roster_suitability(id);
+            }
+        }
+        let _ = ctx;
+    }
+
     fn handle_editor_action(&mut self, ctx: &egui::Context, id: &str, action: ContactEditorAction) {
         match action {
             ContactEditorAction::Save => self.save_contact_window(id),
@@ -1806,6 +2073,41 @@ impl CareLibreApp {
         self.relationship_graph_loaded
     }
 
+    /// Number of roster shifts loaded in the rostering workspace.
+    pub fn roster_shift_count(&self) -> usize {
+        self.rostering.shifts.len()
+    }
+
+    /// True once a selected shift's detail has loaded.
+    pub fn roster_detail_ready(&self) -> bool {
+        self.rostering.detail.is_some()
+    }
+
+    /// True once suitability has been scored for the selected shift.
+    pub fn roster_suitability_ready(&self) -> bool {
+        self.rostering.suitability.is_some()
+    }
+
+    /// Score workers for the selected shift. Used by screenshot previews.
+    pub fn find_workers_for_selected_shift(&mut self) -> bool {
+        let Some(id) = self.rostering.selected.clone() else {
+            return false;
+        };
+        self.load_roster_suitability(id);
+        true
+    }
+
+    /// Open the first loaded shift. Used by screenshot previews.
+    pub fn open_first_shift(&mut self) -> bool {
+        let Some(shift) = self.rostering.shifts.first() else {
+            return false;
+        };
+        let id = shift.id.clone();
+        self.rostering.selected = Some(id.clone());
+        self.load_roster_detail(id);
+        true
+    }
+
     /// Number of server relationships loaded across open record editors.
     pub fn relationship_count(&self) -> usize {
         self.contact_windows
@@ -1959,7 +2261,252 @@ impl CareLibreApp {
                 } => {
                     self.handle_relationship_deleted(ctx, request_id, id, result);
                 }
+                RemoteEvent::SitesListed { request_id, result } => {
+                    self.handle_sites_listed(request_id, result);
+                }
+                RemoteEvent::SiteCreated { request_id, result } => {
+                    self.handle_site_created(ctx, request_id, result);
+                }
+                RemoteEvent::ShiftsListed { request_id, result } => {
+                    self.handle_shifts_listed(request_id, result);
+                }
+                RemoteEvent::ShiftLoaded {
+                    request_id,
+                    id,
+                    result,
+                } => {
+                    self.handle_shift_loaded(request_id, id, result);
+                }
+                RemoteEvent::ShiftCreated { request_id, result } => {
+                    self.handle_shift_created(ctx, request_id, result);
+                }
+                RemoteEvent::ShiftUpdated {
+                    request_id,
+                    id,
+                    result,
+                } => {
+                    self.handle_shift_updated(ctx, request_id, id, result);
+                }
+                RemoteEvent::AssignmentCreated {
+                    request_id,
+                    shift_id,
+                    result,
+                } => {
+                    self.handle_assignment_created(ctx, request_id, shift_id, result);
+                }
+                RemoteEvent::AssignmentUpdated {
+                    request_id,
+                    id,
+                    result,
+                } => {
+                    self.handle_assignment_updated(request_id, id, result);
+                }
+                RemoteEvent::AssignmentDeleted {
+                    request_id,
+                    id,
+                    result,
+                } => {
+                    self.handle_assignment_deleted(request_id, id, result);
+                }
+                RemoteEvent::SuitabilityLoaded {
+                    request_id,
+                    shift_id,
+                    result,
+                } => {
+                    self.handle_suitability_loaded(request_id, shift_id, result);
+                }
             }
+        }
+    }
+
+    fn handle_sites_listed(
+        &mut self,
+        request_id: u64,
+        result: Result<Vec<crate::rostering::ApiSite>, String>,
+    ) {
+        self.rostering_requests.remove(&request_id);
+        match result {
+            Ok(sites) => self.rostering.sites = sites,
+            Err(error) => self.rostering.error = Some(error),
+        }
+    }
+
+    fn handle_site_created(
+        &mut self,
+        ctx: &egui::Context,
+        request_id: u64,
+        result: Result<crate::rostering::ApiSite, String>,
+    ) {
+        self.rostering_requests.remove(&request_id);
+        match result {
+            Ok(site) => {
+                self.rostering.sites.push(site.clone());
+                self.rostering.sites.sort_by(|a, b| a.name.cmp(&b.name));
+                self.rostering.site_form = None;
+                self.notify(ctx, format!("Site “{}” added.", site.name));
+            }
+            Err(error) => {
+                if let Some(form) = &mut self.rostering.site_form {
+                    form.saving = false;
+                    form.error = Some(error);
+                }
+            }
+        }
+    }
+
+    fn handle_shifts_listed(
+        &mut self,
+        request_id: u64,
+        result: Result<crate::rostering::ApiShiftList, String>,
+    ) {
+        self.rostering_requests.remove(&request_id);
+        self.rostering.loading_shifts = false;
+        self.rostering.requested = true;
+        match result {
+            Ok(list) => {
+                self.rostering.shifts = list.items;
+                self.rostering.error = None;
+            }
+            Err(error) => self.rostering.error = Some(error),
+        }
+    }
+
+    fn handle_shift_loaded(
+        &mut self,
+        request_id: u64,
+        _id: String,
+        result: Result<crate::rostering::ApiShiftDetail, String>,
+    ) {
+        self.rostering_requests.remove(&request_id);
+        self.rostering.loading_detail = false;
+        match result {
+            Ok(detail) => {
+                self.rostering.selected = Some(detail.shift.id.clone());
+                self.rostering.detail = Some(detail);
+                self.rostering.error = None;
+            }
+            Err(error) => self.rostering.error = Some(error),
+        }
+    }
+
+    fn handle_shift_created(
+        &mut self,
+        ctx: &egui::Context,
+        request_id: u64,
+        result: Result<crate::rostering::ApiShift, String>,
+    ) {
+        self.rostering_requests.remove(&request_id);
+        match result {
+            Ok(shift) => {
+                self.rostering.editor = None;
+                self.notify(ctx, "Shift created.");
+                self.load_roster_shifts();
+                self.load_roster_detail(shift.id);
+            }
+            Err(error) => {
+                if let Some(editor) = &mut self.rostering.editor {
+                    editor.saving = false;
+                    editor.error = Some(error);
+                }
+            }
+        }
+    }
+
+    fn handle_shift_updated(
+        &mut self,
+        ctx: &egui::Context,
+        request_id: u64,
+        id: String,
+        result: Result<crate::rostering::ApiShift, String>,
+    ) {
+        self.rostering_requests.remove(&request_id);
+        match result {
+            Ok(shift) => {
+                if let Some(existing) = self
+                    .rostering
+                    .shifts
+                    .iter_mut()
+                    .find(|existing| existing.id == id)
+                {
+                    *existing = shift.clone();
+                }
+                if let Some(detail) = &mut self.rostering.detail
+                    && detail.shift.id == id
+                {
+                    detail.shift = shift;
+                }
+                self.rostering.editor = None;
+                self.notify(ctx, "Shift updated.");
+            }
+            Err(error) => {
+                if let Some(editor) = &mut self.rostering.editor {
+                    editor.saving = false;
+                    editor.error = Some(error);
+                }
+            }
+        }
+    }
+
+    fn handle_assignment_created(
+        &mut self,
+        ctx: &egui::Context,
+        request_id: u64,
+        _shift_id: String,
+        result: Result<crate::rostering::ApiAssignment, String>,
+    ) {
+        self.rostering_requests.remove(&request_id);
+        self.rostering.assignment_pending = false;
+        match result {
+            Ok(_) => {
+                self.rostering.assignment_target = None;
+                self.rostering.assignment_error = None;
+                self.notify(ctx, "Assignment added.");
+                self.refresh_roster_after_assignment();
+            }
+            Err(error) => self.rostering.assignment_error = Some(error),
+        }
+    }
+
+    fn handle_assignment_updated(
+        &mut self,
+        request_id: u64,
+        _id: String,
+        result: Result<crate::rostering::ApiAssignment, String>,
+    ) {
+        self.rostering_requests.remove(&request_id);
+        match result {
+            Ok(_) => self.refresh_roster_after_assignment(),
+            Err(error) => self.rostering.error = Some(error),
+        }
+    }
+
+    fn handle_assignment_deleted(
+        &mut self,
+        request_id: u64,
+        _id: String,
+        result: Result<(), String>,
+    ) {
+        self.rostering_requests.remove(&request_id);
+        match result {
+            Ok(()) => self.refresh_roster_after_assignment(),
+            Err(error) => self.rostering.error = Some(error),
+        }
+    }
+
+    fn handle_suitability_loaded(
+        &mut self,
+        request_id: u64,
+        _shift_id: String,
+        result: Result<crate::rostering::ApiSuitability, String>,
+    ) {
+        self.rostering_requests.remove(&request_id);
+        self.rostering.loading_suitability = false;
+        match result {
+            Ok(suitability) => {
+                self.rostering.suitability = Some(suitability);
+                self.rostering.suitability_error = None;
+            }
+            Err(error) => self.rostering.suitability_error = Some(error),
         }
     }
 

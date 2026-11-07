@@ -4,6 +4,7 @@ pub mod home;
 pub mod intake;
 pub mod placeholder;
 pub mod relationships;
+pub mod rostering;
 pub mod settings;
 
 use crate::theme::ThemeMode;
