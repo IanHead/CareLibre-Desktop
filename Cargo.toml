@@ -1,0 +1,39 @@
+[package]
+name = "carelibre-desktop"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+license = "GPL-3.0-or-later"
+description = "Fast, native desktop client for the CareLibre care management platform"
+repository = "https://github.com/IanHead/CareLibre-Desktop"
+publish = false
+
+[dependencies]
+eframe = { version = "0.37", default-features = false, features = [
+    "accesskit",
+    "clipboard",
+    "default_fonts",
+    "links",
+    "wayland",
+    "wgpu",
+    "x11",
+] }
+
+# Enables the bundled monochrome emoji font so navigation icons render on every
+# platform without relying on system fonts.
+egui = { version = "0.37", features = ["monochrome_emoji_fonts"] }
+
+[dev-dependencies]
+egui_kittest = { version = "0.37", features = ["wgpu"] }
+image = { version = "0.25", default-features = false, features = ["png"] }
+
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
