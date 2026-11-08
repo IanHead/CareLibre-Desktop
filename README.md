@@ -10,25 +10,17 @@ open-source care management platform for disability and aged care providers.
 > draggable tabs — each can be reordered, closed or popped out into a native free-floating
 > window. Edits, custom-field values and linked relationships are saved back to the server.
 > Guided intake wizards persist drafts locally and create onboarding contacts on the server.
-> Rostering, services, documents and communications are next.
+> Rostering is live with a worker/client timeline, recurrence and explainable suitability, and
+> every workspace page can pop out into its own native window. Services, documents and
+> communications are next.
 
-![CareLibre home screen](docs/home.png)
-
-![CareLibre virtualised contacts](docs/contacts.png)
-
-![CareLibre server settings](docs/settings.png)
-
-![CareLibre intake picker](docs/intake.png)
-
-![CareLibre client intake wizard](docs/intake-client.png)
-
-![CareLibre contact editor with custom fields](docs/contact-editor.png)
-
-![CareLibre relationship network](docs/relationships.png)
-
-![CareLibre rostering](docs/rostering.png)
-
-![CareLibre client-side window chrome](docs/client-side.png)
+<table>
+  <tr>
+    <td align="center"><a href="docs/home.png"><img src="docs/thumbs/home.png" alt="CareLibre home dashboard"></a><br><sub><b>Home</b> — live workload at a glance</sub></td>
+    <td align="center"><a href="docs/contact-editor.png"><img src="docs/thumbs/contact-editor.png" alt="CareLibre contact record and linked relationships"></a><br><sub><b>Records</b> — docked, with linked relationships</sub></td>
+    <td align="center"><a href="docs/rostering.png"><img src="docs/thumbs/rostering.png" alt="CareLibre rostering timeline"></a><br><sub><b>Rostering</b> — timeline by worker or client</sub></td>
+  </tr>
+</table>
 
 ## Design principles
 

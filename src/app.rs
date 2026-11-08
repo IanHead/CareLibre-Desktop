@@ -332,6 +332,11 @@ impl CareLibreApp {
         self.settings.client_side_decorations = enabled;
     }
 
+    /// Clear transient notifications for headless screenshots.
+    pub fn dismiss_notice(&mut self) {
+        self.notice = None;
+    }
+
     /// Change the appearance for previews/tests without persisting it.
     pub fn set_theme_mode(&mut self, mode: theme::ThemeMode) {
         self.config.theme = mode;

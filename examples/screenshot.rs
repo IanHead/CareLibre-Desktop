@@ -55,6 +55,7 @@ fn main() {
             .map(|(email, password)| (email.to_owned(), password.to_owned()))
     });
     let suitability = args.iter().any(|arg| arg == "--suitability");
+    let relationships = args.iter().any(|arg| arg == "--relationships");
     let intake = args.iter().find_map(|arg| match arg.as_str() {
         "--intake=client" => Some(IntakeKind::Client),
         "--intake=worker" => Some(IntakeKind::Worker),
@@ -121,6 +122,18 @@ fn main() {
             }
         }
 
+        if page == Page::Home && login.is_some() {
+            // Load a contact page once so the dashboard counts are populated.
+            harness.state_mut().set_page(Page::Contacts);
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while harness.state().contacts_loaded() == 0 && Instant::now() < deadline {
+                harness.run();
+                std::thread::sleep(Duration::from_millis(25));
+            }
+            harness.state_mut().set_page(Page::Home);
+            harness.run();
+        }
+
         if matches!(page, Page::Clients | Page::Workers | Page::Contacts) {
             let deadline = Instant::now() + Duration::from_secs(5);
             while harness.state().contacts_loaded() == 0 && Instant::now() < deadline {
@@ -168,9 +181,21 @@ fn main() {
                 harness.run();
                 std::thread::sleep(Duration::from_millis(25));
             }
+            if relationships {
+                let deadline = Instant::now() + Duration::from_secs(10);
+                while harness.state().relationship_count() == 0 && Instant::now() < deadline {
+                    harness.run();
+                    std::thread::sleep(Duration::from_millis(25));
+                }
+                harness
+                    .get_by_label_contains("Add relationship")
+                    .scroll_to_me();
+                harness.run();
+            }
         }
     }
 
+    harness.state_mut().dismiss_notice();
     if perf {
         harness.run();
         harness.key_press(egui::Key::F12);
