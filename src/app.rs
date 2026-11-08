@@ -439,6 +439,8 @@ impl CareLibreApp {
                     .inner_margin(Margin::same(24)),
             )
             .show(ui, |ui| {
+                self.page_toolbar(ui);
+                ui.add_space(10.0);
                 if page_progress < 1.0 {
                     let enter = theme::ease_out(page_progress);
                     ui.multiply_opacity(0.35 + 0.65 * enter);
@@ -1242,6 +1244,58 @@ impl CareLibreApp {
         }
     }
 
+    /// The pane toolbar: identifies the open page and offers the page-level
+    /// pop-out control.
+    fn page_toolbar(&mut self, ui: &mut Ui) {
+        let page = self.page;
+        let popped = self.popped_pages.contains(&page);
+        let mut toggle = false;
+
+        Frame::new()
+            .fill(theme::surface())
+            .stroke(Stroke::new(1.0, theme::border()))
+            .corner_radius(CornerRadius::same(10))
+            .inner_margin(Margin::symmetric(12, 6))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new(format!("{}  {}", page.icon(), page.label()))
+                            .color(theme::muted())
+                            .font(theme::strong_font(11.5)),
+                    );
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        let label = if popped { "Dock page" } else { "Pop out page" };
+                        let glyph = if popped { "↙" } else { "↗" };
+                        let button = egui::Button::new(
+                            RichText::new(format!("{glyph}  {label}"))
+                                .color(theme::accent())
+                                .font(theme::strong_font(11.5)),
+                        )
+                        .fill(theme::surface_raised())
+                        .stroke(Stroke::new(1.0, theme::border()))
+                        .corner_radius(CornerRadius::same(8))
+                        .min_size(vec2(0.0, 30.0));
+                        let response = ui.add(button);
+                        response.widget_info(|| {
+                            egui::WidgetInfo::labeled(egui::Role::Button, true, label)
+                        });
+                        if response.clicked() {
+                            toggle = true;
+                        }
+                        response.on_hover_text(if popped {
+                            "Bring this page back into the main window"
+                        } else {
+                            "Open this page in its own native window"
+                        });
+                    });
+                });
+            });
+
+        if toggle {
+            self.toggle_page_popout(ui.ctx(), page);
+        }
+    }
+
     /// Placeholder shown in the main window when the current page lives in its
     /// own native window.
     fn detached_page_placeholder(&mut self, ui: &mut Ui) {
@@ -1358,7 +1412,7 @@ impl CareLibreApp {
                             .stroke(Stroke::new(1.0, theme::border())),
                     )
                     .show(ui, |ui| {
-                        ui.horizontal_centered(|ui| {
+                        ui.horizontal(|ui| {
                             ui.label(
                                 RichText::new(format!("{}  {}", page.icon(), page.label()))
                                     .color(theme::text())
@@ -3475,7 +3529,7 @@ impl CareLibreApp {
                     .stroke(Stroke::new(1.0, theme::border())),
             )
             .show(ui, |ui| {
-                ui.horizontal_centered(|ui| {
+                ui.horizontal(|ui| {
                     // Brand
                     let (logo, _) = ui.allocate_exact_size(vec2(34.0, 34.0), Sense::hover());
                     ui.painter()
@@ -3510,26 +3564,6 @@ impl CareLibreApp {
                     );
 
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        let popped = self.popped_pages.contains(&self.page);
-                        let popout = ui.add(
-                            egui::Button::new(
-                                RichText::new(if popped { "Dock page" } else { "Pop out page" })
-                                    .color(theme::muted())
-                                    .size(11.0),
-                            )
-                            .frame(false),
-                        );
-                        if popout.clicked() {
-                            let page = self.page;
-                            self.toggle_page_popout(ui.ctx(), page);
-                        }
-                        popout.on_hover_text(if popped {
-                            "Bring this page back into the main window"
-                        } else {
-                            "Open this page in its own native window"
-                        });
-                        ui.add_space(4.0);
-
                         match &account {
                             Some(account) => {
                                 let response = theme::avatar(
@@ -3722,7 +3756,7 @@ impl CareLibreApp {
                     .stroke(Stroke::new(1.0, theme::border())),
             )
             .show(ui, |ui| {
-                ui.horizontal_centered(|ui| {
+                ui.horizontal(|ui| {
                     ui.label(
                         RichText::new("CareLibre Desktop v0.1.0 · Prototype")
                             .color(theme::faint())

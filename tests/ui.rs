@@ -124,7 +124,7 @@ fn pages_can_pop_out_and_dock() {
     harness.run_steps(2);
     assert!(harness.state().page_popped_out(Page::Rostering));
 
-    harness.get_by_label("Dock page").click();
+    harness.get_by_label("Dock page").click_accesskit();
     harness.run_steps(2);
     assert!(!harness.state().page_popped_out(Page::Rostering));
 }
