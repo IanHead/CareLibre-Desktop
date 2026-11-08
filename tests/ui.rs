@@ -99,3 +99,32 @@ fn multiple_contacts_open_as_dock_tabs() {
         vec!["first-contact".to_owned(), "second-contact".to_owned()]
     );
 }
+
+#[test]
+fn open_contacts_render_the_sliding_dock() {
+    let mut app = CareLibreApp::new();
+    app.open_contact("first-contact");
+
+    let mut harness = harness(app);
+    harness.run();
+
+    harness.get_by_label("OPEN RECORDS");
+}
+
+#[test]
+fn pages_can_pop_out_and_dock() {
+    let mut app = CareLibreApp::new();
+    app.set_page(Page::Rostering);
+    app.set_client_side_decorations(false);
+
+    let mut harness = harness(app);
+    harness.run();
+
+    harness.get_by_label("Pop out page").click();
+    harness.run_steps(2);
+    assert!(harness.state().page_popped_out(Page::Rostering));
+
+    harness.get_by_label("Dock page").click();
+    harness.run_steps(2);
+    assert!(!harness.state().page_popped_out(Page::Rostering));
+}

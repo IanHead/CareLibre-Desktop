@@ -35,7 +35,7 @@ pub enum Action {
     SetTheme(ThemeMode),
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub enum Page {
     Home,
     Intake,

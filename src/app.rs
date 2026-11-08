@@ -1,7 +1,7 @@
 //! Application shell: top bar, navigation, status bar and routing.
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -37,6 +37,8 @@ use crate::{
     theme,
 };
 
+const DOCK_ANIM_SECS: f32 = 0.20;
+
 pub struct CareLibreApp {
     page: Page,
     search: String,
@@ -69,7 +71,9 @@ pub struct CareLibreApp {
     known_contacts: BTreeMap<String, ContactRow>,
     last_page: Page,
     page_changed_at: f64,
-    dock_opened_at: Option<f64>,
+    dock_closing: Option<String>,
+    dock_close_started: Option<f64>,
+    popped_pages: BTreeSet<Page>,
     remote: Option<RemoteHandle>,
     app_ctx: Option<egui::Context>,
     store: Option<StoreHandle>,
@@ -167,7 +171,9 @@ impl CareLibreApp {
             known_contacts: BTreeMap::new(),
             last_page: Page::Home,
             page_changed_at: f64::NEG_INFINITY,
-            dock_opened_at: None,
+            dock_closing: None,
+            dock_close_started: None,
+            popped_pages: BTreeSet::new(),
             remote: None,
             app_ctx: None,
             store: None,
@@ -420,6 +426,7 @@ impl CareLibreApp {
         let mut intake_action: Option<IntakeAction> = None;
         let mut relationship_action: Option<RelationshipsAction> = None;
         let mut rostering_action: Option<RosteringAction> = None;
+        let page_popped = self.page_popped_out(self.page);
         let action = egui::CentralPanel::default()
             .frame(
                 Frame::new()
@@ -432,13 +439,19 @@ impl CareLibreApp {
                     ui.multiply_opacity(0.35 + 0.65 * enter);
                     ui.add_space((1.0 - enter) * 8.0);
                 }
-                self.page_contents(
-                    ui,
-                    &mut contacts_action,
-                    &mut intake_action,
-                    &mut relationship_action,
-                    &mut rostering_action,
-                )
+                if page_popped {
+                    self.detached_page_placeholder(ui);
+                    None
+                } else {
+                    self.page_contents(
+                        ui,
+                        self.page,
+                        &mut contacts_action,
+                        &mut intake_action,
+                        &mut relationship_action,
+                        &mut rostering_action,
+                    )
+                }
             })
             .inner;
 
@@ -461,6 +474,7 @@ impl CareLibreApp {
 
         self.render_contact_windows(ui.ctx());
         self.render_intake_window(ui.ctx());
+        self.render_page_viewports(ui.ctx());
 
         if self.config.client_side_decorations {
             chrome::resize_handles(ui.ctx());
@@ -489,15 +503,16 @@ impl CareLibreApp {
     fn page_contents(
         &mut self,
         ui: &mut Ui,
+        page: Page,
         contacts_action: &mut Option<(ContactFilter, ContactsAction)>,
         intake_action: &mut Option<IntakeAction>,
         relationship_action: &mut Option<RelationshipsAction>,
         rostering_action: &mut Option<RosteringAction>,
     ) -> Option<Action> {
-        if self.page == Page::Relationships {
+        if page == Page::Relationships {
             self.ensure_party_catalog();
         }
-        match self.page {
+        match page {
             Page::Settings => pages::settings::show(ui, &mut self.settings, &self.server),
             Page::Home => {
                 let account = self.account_badge();
@@ -1017,6 +1032,7 @@ impl CareLibreApp {
     }
 
     pub fn open_contact(&mut self, id: &str) {
+        self.dock_closing = None;
         if let Some(window) = self.contact_windows.get(id) {
             if window.popped_out
                 && let Some(ctx) = &self.app_ctx
@@ -1152,7 +1168,39 @@ impl CareLibreApp {
         }
     }
 
+    /// Close a record. If it is the last docked record, keep it around for the
+    /// dock's slide-out animation before removing it.
     fn close_contact_window(&mut self, id: &str) {
+        let is_docked = self
+            .contact_windows
+            .get(id)
+            .is_some_and(|window| !window.popped_out);
+        let docked_count = self
+            .contact_order
+            .iter()
+            .filter(|open| {
+                self.contact_windows
+                    .get(*open)
+                    .is_some_and(|window| !window.popped_out)
+            })
+            .count();
+
+        if is_docked && docked_count <= 1 && self.dock_closing.is_none() {
+            self.dock_closing = Some(id.to_owned());
+            self.dock_close_started = self
+                .app_ctx
+                .as_ref()
+                .map(|ctx| ctx.input(|input| input.time));
+            if let Some(ctx) = &self.app_ctx {
+                ctx.request_repaint();
+            }
+            return;
+        }
+
+        self.remove_contact_window(id);
+    }
+
+    fn remove_contact_window(&mut self, id: &str) {
         let popped_out = self
             .contact_windows
             .get(id)
@@ -1186,6 +1234,181 @@ impl CareLibreApp {
         let ids: Vec<String> = self.contact_windows.keys().cloned().collect();
         for id in ids {
             self.close_contact_window(&id);
+        }
+    }
+
+    /// Placeholder shown in the main window when the current page lives in its
+    /// own native window.
+    fn detached_page_placeholder(&mut self, ui: &mut Ui) {
+        let page = self.page;
+        let mut focus = false;
+        let mut dock = false;
+        ui.vertical_centered(|ui| {
+            ui.add_space(70.0);
+            let (rect, _) = ui.allocate_exact_size(vec2(56.0, 56.0), Sense::hover());
+            ui.painter()
+                .rect_filled(rect, CornerRadius::same(15), theme::surface_raised());
+            ui.painter().text(
+                rect.center(),
+                Align2::CENTER_CENTER,
+                page.icon(),
+                FontId::proportional(24.0),
+                theme::text(),
+            );
+            ui.add_space(12.0);
+            ui.label(RichText::new(page.label()).font(theme::strong_font(24.0)));
+            ui.label(
+                RichText::new("This page is open in its own window.")
+                    .color(theme::muted())
+                    .size(12.5),
+            );
+            ui.add_space(14.0);
+            ui.horizontal(|ui| {
+                if ui.add(theme::primary_button("Focus window")).clicked() {
+                    focus = true;
+                }
+                if ui.add(theme::secondary_button("Dock back")).clicked() {
+                    dock = true;
+                }
+            });
+        });
+
+        if focus {
+            ui.ctx()
+                .send_viewport_cmd_to(page_viewport_id(page), egui::ViewportCommand::Focus);
+        }
+        if dock {
+            self.dock_page(ui.ctx(), page);
+        }
+    }
+
+    pub fn page_popped_out(&self, page: Page) -> bool {
+        self.popped_pages.contains(&page)
+    }
+
+    fn toggle_page_popout(&mut self, ctx: &egui::Context, page: Page) {
+        if self.popped_pages.contains(&page) {
+            self.dock_page(ctx, page);
+        } else {
+            self.popped_pages.insert(page);
+            ctx.request_repaint();
+        }
+    }
+
+    fn dock_page(&mut self, ctx: &egui::Context, page: Page) {
+        self.popped_pages.remove(&page);
+        ctx.send_viewport_cmd_to(page_viewport_id(page), egui::ViewportCommand::Close);
+        ctx.request_repaint();
+    }
+
+    /// Render every page that has been detached into a native window. Each
+    /// window reuses the page renderer, so pop-out/dock works for every page.
+    fn render_page_viewports(&mut self, ctx: &egui::Context) {
+        let pages: Vec<Page> = self.popped_pages.iter().copied().collect();
+        for page in pages {
+            let viewport_id = page_viewport_id(page);
+            let title = format!("{} — CareLibre", page.label());
+            let builder = egui::ViewportBuilder::default()
+                .with_title(&title)
+                .with_app_id("carelibre-page")
+                .with_decorations(!self.config.client_side_decorations)
+                .with_inner_size([1180.0, 800.0])
+                .with_min_inner_size([720.0, 520.0]);
+            let client_side = self.config.client_side_decorations;
+            let mut close = false;
+            let mut contacts_action: Option<(ContactFilter, ContactsAction)> = None;
+            let mut intake_action: Option<IntakeAction> = None;
+            let mut relationship_action: Option<RelationshipsAction> = None;
+            let mut rostering_action: Option<RosteringAction> = None;
+            let mut page_action: Option<Action> = None;
+
+            ctx.show_viewport_immediate(viewport_id, builder, |ui, _| {
+                if ui.ctx().input(|input| input.viewport().close_requested()) {
+                    close = true;
+                    return;
+                }
+
+                if client_side {
+                    egui::Panel::top(format!("page-window-chrome-{}", page.label()))
+                        .exact_size(chrome::HEIGHT)
+                        .show_separator_line(false)
+                        .frame(
+                            Frame::new()
+                                .fill(theme::sidebar())
+                                .inner_margin(Margin::ZERO),
+                        )
+                        .show(ui, |ui| {
+                            let ctx = ui.ctx().clone();
+                            chrome::title_bar(ui, &ctx, &title);
+                        });
+                }
+
+                egui::Panel::top(format!("page-window-bar-{}", page.label()))
+                    .exact_size(38.0)
+                    .show_separator_line(false)
+                    .frame(
+                        Frame::new()
+                            .fill(theme::sidebar())
+                            .inner_margin(Margin::symmetric(14, 4))
+                            .stroke(Stroke::new(1.0, theme::border())),
+                    )
+                    .show(ui, |ui| {
+                        ui.horizontal_centered(|ui| {
+                            ui.label(
+                                RichText::new(format!("{}  {}", page.icon(), page.label()))
+                                    .color(theme::text())
+                                    .font(theme::strong_font(12.5)),
+                            );
+                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                if ui.add(theme::secondary_button("Dock")).clicked() {
+                                    close = true;
+                                }
+                            });
+                        });
+                    });
+
+                egui::CentralPanel::default()
+                    .frame(
+                        Frame::new()
+                            .fill(theme::bg())
+                            .inner_margin(Margin::same(24)),
+                    )
+                    .show(ui, |ui| {
+                        page_action = self.page_contents(
+                            ui,
+                            page,
+                            &mut contacts_action,
+                            &mut intake_action,
+                            &mut relationship_action,
+                            &mut rostering_action,
+                        );
+                    });
+
+                if client_side {
+                    chrome::resize_handles(ui.ctx());
+                }
+            });
+
+            if close {
+                self.popped_pages.remove(&page);
+                ctx.send_viewport_cmd_to(viewport_id, egui::ViewportCommand::Close);
+                continue;
+            }
+            if let Some((filter, action)) = contacts_action {
+                self.handle_contacts_action(filter, action);
+            }
+            if let Some(action) = intake_action {
+                self.handle_intake_action(ctx, action);
+            }
+            if let Some(action) = relationship_action {
+                self.handle_relationships_action(ctx, action);
+            }
+            if let Some(action) = rostering_action {
+                self.handle_rostering_action(ctx, action);
+            }
+            if let Some(action) = page_action {
+                self.handle_action(ctx, action);
+            }
         }
     }
 
@@ -1255,16 +1478,34 @@ impl CareLibreApp {
             }
         }
 
+        if let Some(closing) = self.dock_closing.clone()
+            && !docked.iter().any(|id| id == &closing)
+        {
+            self.dock_closing = None;
+            self.dock_close_started = None;
+        }
+
         if docked.is_empty() {
+            // Keep the slide animation seeded at 0 while closed so the first
+            // record opens with an eased 0 → 1 slide instead of jumping open.
+            let animation_id = ui.scope_id().with("contact_dock").with("animation");
+            let _ = ui.ctx().animate_bool_responsive(animation_id, false);
             self.active_contact = None;
-            self.dock_opened_at = None;
+            self.dock_closing = None;
+            self.dock_close_started = None;
             return;
         }
 
-        let now = ui.ctx().input(|i| i.time);
-        let opened_at = *self.dock_opened_at.get_or_insert(now);
-        let progress = ((now - opened_at) / 0.2).clamp(0.0, 1.0) as f32;
-        if progress < 1.0 {
+        let now = ui.ctx().input(|input| input.time);
+        if let Some(closing) = self.dock_closing.clone() {
+            let started = *self.dock_close_started.get_or_insert(now);
+            if now - started >= DOCK_ANIM_SECS as f64 {
+                self.dock_closing = None;
+                self.dock_close_started = None;
+                self.remove_contact_window(&closing);
+                ui.ctx().request_repaint();
+                return;
+            }
             ui.ctx().request_repaint();
         }
 
@@ -1282,7 +1523,12 @@ impl CareLibreApp {
         let mut close_all = false;
         let mut editor_action: Option<(String, ContactEditorAction)> = None;
 
-        egui::Panel::right("contact_dock")
+        let collapsed = egui::Panel::right("contact_dock_collapsed")
+            .exact_size(0.0)
+            .resizable(false)
+            .show_separator_line(false)
+            .frame(Frame::new());
+        let expanded = egui::Panel::right("contact_dock")
             .resizable(true)
             .default_size(520.0)
             .size_range(380.0..=780.0)
@@ -1292,10 +1538,20 @@ impl CareLibreApp {
                     .fill(theme::surface())
                     .stroke(Stroke::new(1.0, theme::border()))
                     .inner_margin(Margin::ZERO),
-            )
-            .show(ui, |ui| {
-                if progress < 1.0 {
-                    ui.multiply_opacity(0.4 + 0.6 * theme::ease_out(progress));
+            );
+
+        // `show_switched` animates the expanded panel toward its edge and clips
+        // it, using egui's responsive cubic-out easing. Closing keeps the last
+        // record in place until the slide-out completes.
+        let mut is_expanded = self.dock_closing.is_none();
+        egui::Panel::show_switched(
+            ui,
+            &mut is_expanded,
+            collapsed,
+            expanded,
+            |ui, show_expanded| {
+                if !show_expanded {
+                    return;
                 }
 
                 self.dock_tab_strip(
@@ -1314,7 +1570,8 @@ impl CareLibreApp {
                 {
                     editor_action = Some((active.clone(), action));
                 }
-            });
+            },
+        );
 
         if let Some((dragged, target)) = reorder {
             let from = self.contact_order.iter().position(|id| id == &dragged);
@@ -3248,6 +3505,26 @@ impl CareLibreApp {
                     );
 
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        let popped = self.popped_pages.contains(&self.page);
+                        let popout = ui.add(
+                            egui::Button::new(
+                                RichText::new(if popped { "Dock page" } else { "Pop out page" })
+                                    .color(theme::muted())
+                                    .size(11.0),
+                            )
+                            .frame(false),
+                        );
+                        if popout.clicked() {
+                            let page = self.page;
+                            self.toggle_page_popout(ui.ctx(), page);
+                        }
+                        popout.on_hover_text(if popped {
+                            "Bring this page back into the main window"
+                        } else {
+                            "Open this page in its own native window"
+                        });
+                        ui.add_space(4.0);
+
                         match &account {
                             Some(account) => {
                                 let response = theme::avatar(
@@ -3793,6 +4070,10 @@ fn intake_viewport_id() -> egui::ViewportId {
 
 fn contact_viewport_id(id: &str) -> egui::ViewportId {
     egui::ViewportId::from_hash_of(("carelibre-contact", id))
+}
+
+fn page_viewport_id(page: Page) -> egui::ViewportId {
+    egui::ViewportId::from_hash_of(("carelibre-page", page.label()))
 }
 
 /// A draggable tab in the record dock. Returns the tab response and whether

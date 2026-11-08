@@ -456,6 +456,13 @@ fn header(ui: &mut Ui, state: &mut RosteringState, action: &mut Option<Rostering
 fn filters(ui: &mut Ui, state: &mut RosteringState, action: &mut Option<RosteringAction>) {
     theme::card().show(ui, |ui| {
         ui.set_width(ui.available_width());
+        let before = (
+            state.filter_status.clone(),
+            state.filter_site.clone(),
+            state.filter_division.clone(),
+            state.filter_service.clone(),
+            state.filter_cost_centre.clone(),
+        );
 
         ui.horizontal_wrapped(|ui| {
             if ui.add(theme::secondary_button("‹")).clicked() {
@@ -517,9 +524,6 @@ fn filters(ui: &mut Ui, state: &mut RosteringState, action: &mut Option<Rosterin
             service_filter(ui, state);
             cost_centre_filter(ui, state);
 
-            if ui.add(theme::secondary_button("Apply filters")).clicked() {
-                *action = Some(RosteringAction::Refresh);
-            }
             if ui
                 .add(
                     egui::Button::new(
@@ -533,7 +537,23 @@ fn filters(ui: &mut Ui, state: &mut RosteringState, action: &mut Option<Rosterin
             {
                 state.site_form = Some(SiteForm::default());
             }
+            ui.label(
+                RichText::new("Filters apply immediately")
+                    .color(theme::faint())
+                    .size(9.5),
+            );
         });
+
+        let after = (
+            state.filter_status.clone(),
+            state.filter_site.clone(),
+            state.filter_division.clone(),
+            state.filter_service.clone(),
+            state.filter_cost_centre.clone(),
+        );
+        if before != after {
+            *action = Some(RosteringAction::Refresh);
+        }
     });
 }
 

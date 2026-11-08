@@ -44,9 +44,10 @@ open-source care management platform for disability and aged care providers.
 - **GPU first, CPU fallback.** wgpu selects Vulkan, Metal, DX12 or OpenGL at runtime and
   can fall back to software adapters (for example lavapipe or llvmpipe) on machines
   without a usable GPU.
-- **Neat by default, multitasking on demand.** Contact records open in a right-hand dock;
-  keep as many open as you need as reorderable tabs, and pop any record or wizard into an
-  independent native OS window that can be moved, resized and kept alongside the app.
+- **Neat by default, multitasking on demand.** Contact records open in a right-hand dock
+  with an eased slide; keep as many open as you need as reorderable tabs, and pop any record,
+  wizard or workspace page into an independent native OS window that can be moved, resized,
+  docked back and kept alongside the app.
 - **Delightful, GPU-rendered motion.** Page transitions, dock and tab states, navigation
   hover and toast notifications animate on the wgpu-rendered UI at display refresh rate.
 - **Relationships are first class.** The server stores two-sided links with a role for
