@@ -118,7 +118,7 @@ fn appearance_card(ui: &mut Ui, form: &mut SettingsForm, action: &mut Option<Act
         ui.set_width(ui.available_width());
         ui.label(RichText::new("Application").font(theme::strong_font(15.0)));
         ui.label(
-            RichText::new("Appearance and sign-in preferences for this device.")
+            RichText::new("Appearance preferences for this device.")
                 .color(theme::muted())
                 .size(11.0),
         );
@@ -161,27 +161,28 @@ fn appearance_card(ui: &mut Ui, form: &mut SettingsForm, action: &mut Option<Act
             .color(theme::faint())
             .size(10.0),
         );
-
-        ui.add_space(10.0);
-        let mut remember = form.remember_login;
-        if ui
-            .checkbox(
-                &mut remember,
-                RichText::new("Remember me on this device").size(12.0),
-            )
-            .changed()
-        {
-            form.remember_login = remember;
-            *action = Some(Action::SetRememberLogin(remember));
-        }
-        ui.label(
-            RichText::new(
-                "Stores a refresh token in the OS keychain (or an encrypted local vault when no keychain is available). Your password is never stored.",
-            )
-            .color(theme::faint())
-            .size(10.0),
-        );
     });
+}
+
+fn remember_me(ui: &mut Ui, form: &mut SettingsForm, action: &mut Option<Action>) {
+    let mut remember = form.remember_login;
+    if ui
+        .checkbox(
+            &mut remember,
+            RichText::new("Remember me on this device").size(12.0),
+        )
+        .changed()
+    {
+        form.remember_login = remember;
+        *action = Some(Action::SetRememberLogin(remember));
+    }
+    ui.label(
+        RichText::new(
+            "Stores a refresh token in the OS keychain (or an encrypted local vault when no keychain is available). Your password is never stored.",
+        )
+        .color(theme::faint())
+        .size(10.0),
+    );
 }
 
 fn header(ui: &mut Ui, server: &ServerState) {
@@ -382,14 +383,14 @@ fn account_card(
         ui.add_space(8.0);
 
         if let Some(session) = &server.session {
-            signed_in(ui, session, action);
+            signed_in(ui, form, session, action);
         } else {
             signed_out(ui, form, server, action);
         }
     });
 }
 
-fn signed_in(ui: &mut Ui, session: &Session, action: &mut Option<Action>) {
+fn signed_in(ui: &mut Ui, form: &mut SettingsForm, session: &Session, action: &mut Option<Action>) {
     ui.horizontal(|ui| {
         theme::avatar(ui, &session.initials(), 40.0, theme::accent_blue());
         ui.vertical(|ui| {
@@ -423,6 +424,9 @@ fn signed_in(ui: &mut Ui, session: &Session, action: &mut Option<Action>) {
         .size(11.0),
     );
 
+    ui.add_space(12.0);
+    remember_me(ui, form, action);
+
     ui.add_space(14.0);
     if ui.add(theme::secondary_button("Sign out")).clicked() {
         *action = Some(Action::Logout);
@@ -451,6 +455,8 @@ fn signed_out(
         AuthMode::Login => {
             field(ui, "Email", &mut form.email, "you@example.com", false);
             field(ui, "Password", &mut form.password, "Your password", true);
+            remember_me(ui, form, action);
+            ui.add_space(8.0);
             field(
                 ui,
                 "Organisation slug (optional)",
@@ -483,6 +489,7 @@ fn signed_out(
                 "At least 12 characters",
                 true,
             );
+            remember_me(ui, form, action);
         }
     }
 
