@@ -9,8 +9,9 @@ use eframe::egui::{
 use serde_json::{Map, Value};
 
 use crate::contact::{
-    ApiContactDetail, ApiContactWrite, ApiCustomField, ApiGraphNode, ApiRelationship, PartyKind,
-    relationship_role_label,
+    ApiContactDetail, ApiContactWrite, ApiCustomField, ApiGraphNode, ApiRelationship,
+    ApiRelationshipCorrection, ApiRelationshipEvent, END_REASONS, PartyKind, RelationshipChange,
+    end_reason_label, history_action_label, relationship_role_label,
 };
 use crate::theme;
 
@@ -121,13 +122,119 @@ pub enum ContactEditorAction {
         to_role: String,
         notes: String,
     },
-    DeleteRelationship(String),
+    /// End, transfer, change role, correct or remove a relationship.
+    ChangeRelationship {
+        id: String,
+        change: RelationshipChange,
+    },
+    LoadRelationshipHistory(String),
     CreateContact {
         from_role: String,
         to_role: String,
         notes: String,
         draft: NewRelationshipContact,
     },
+}
+
+/// Lifecycle actions offered on a relationship.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RelationshipFormKind {
+    End,
+    Transfer,
+    ChangeRole,
+    Correct,
+    Remove,
+}
+
+impl RelationshipFormKind {
+    fn title(self) -> &'static str {
+        match self {
+            Self::End => "End relationship",
+            Self::Transfer => "Transfer to someone else",
+            Self::ChangeRole => "Change role",
+            Self::Correct => "Correct a mistake",
+            Self::Remove => "Remove (recorded in error)",
+        }
+    }
+
+    fn help(self) -> &'static str {
+        match self {
+            Self::End => {
+                "The relationship stays in the history. The end date can be in the future, such as the end of a notice period."
+            }
+            Self::Transfer => {
+                "Another party takes over from the date below. The current relationship ends the day before and the history links the two."
+            }
+            Self::ChangeRole => {
+                "The relationship continues in new roles from the date below, for example family member to guardian."
+            }
+            Self::Correct => {
+                "Fix details that were recorded wrongly. This is saved as a correction, not as a change in circumstances."
+            }
+            Self::Remove => {
+                "Only for a relationship that was never true. It disappears everywhere but stays in the audit trail."
+            }
+        }
+    }
+}
+
+/// A lifecycle form open against one relationship.
+#[derive(Clone, Debug)]
+pub struct RelationshipForm {
+    pub edge_id: String,
+    pub kind: RelationshipFormKind,
+    /// End date (End) or first day of the new arrangement (Transfer, Change role).
+    pub date: String,
+    /// Index into [`END_REASONS`]. Always chosen explicitly.
+    pub reason: Option<usize>,
+    pub note: String,
+    /// Index into [`RELATIONSHIP_KINDS`] for Change role.
+    pub role_kind: usize,
+    // Correct
+    pub from_role: String,
+    pub to_role: String,
+    pub start_date: String,
+    pub end_date: String,
+    pub notes: String,
+    pub pending: bool,
+    pub error: Option<String>,
+}
+
+impl RelationshipForm {
+    fn new(edge: &ApiRelationship, kind: RelationshipFormKind) -> Self {
+        Self {
+            edge_id: edge.id.clone(),
+            kind,
+            date: chrono::Local::now().date_naive().to_string(),
+            reason: if kind == RelationshipFormKind::Correct {
+                edge.end_reason
+                    .as_deref()
+                    .and_then(|key| END_REASONS.iter().position(|(value, _)| *value == key))
+            } else {
+                None
+            },
+            note: String::new(),
+            role_kind: 0,
+            from_role: edge.from_role.clone(),
+            to_role: edge.to_role.clone(),
+            start_date: edge.start_date.clone().unwrap_or_default(),
+            end_date: edge.end_date.clone().unwrap_or_default(),
+            notes: edge.notes.clone().unwrap_or_default(),
+            pending: false,
+            error: None,
+        }
+    }
+}
+
+/// History shown under one relationship.
+#[derive(Clone, Debug)]
+pub struct RelationshipHistoryView {
+    pub edge_id: String,
+    pub loading: bool,
+    /// Set after a change so the history reloads.
+    pub stale: bool,
+    pub items: Vec<ApiRelationshipEvent>,
+    pub error: Option<String>,
 }
 
 pub struct ContactWindowState {
@@ -157,7 +264,11 @@ pub struct ContactWindowState {
     pub relationship_target: Option<ApiGraphNode>,
     pub relationship_notes: String,
     pub relationship_pending: bool,
-    pub relationship_removing: Option<String>,
+    /// The lifecycle form open against one relationship, if any.
+    pub relationship_form: Option<RelationshipForm>,
+    /// The history shown under one relationship, if any.
+    pub relationship_history: Option<RelationshipHistoryView>,
+    pub show_ended_relationships: bool,
     pub new_relationship_contact: Option<NewRelationshipContact>,
     pub relationship_error: Option<String>,
     pub error: Option<String>,
@@ -194,7 +305,9 @@ impl ContactWindowState {
             relationship_target: None,
             relationship_notes: String::new(),
             relationship_pending: false,
-            relationship_removing: None,
+            relationship_form: None,
+            relationship_history: None,
+            show_ended_relationships: false,
             new_relationship_contact: None,
             relationship_error: None,
             error: None,
@@ -230,7 +343,7 @@ impl ContactWindowState {
         };
         self.details = contact.details.as_object().cloned().unwrap_or_default();
         self.relationship_pending = false;
-        self.relationship_removing = None;
+        self.relationship_form = None;
         self.new_relationship_contact = None;
         self.relationship_error = None;
         self.custom = detail
@@ -277,7 +390,6 @@ impl ContactWindowState {
             self.relationships.push(edge);
         }
         self.relationship_pending = false;
-        self.relationship_removing = None;
         self.relationship_target = None;
         self.relationship_notes.clear();
         self.new_relationship_contact = None;
@@ -286,13 +398,41 @@ impl ContactWindowState {
 
     pub fn relationship_failed(&mut self, message: String) {
         self.relationship_pending = false;
-        self.relationship_removing = None;
         self.relationship_error = Some(message);
     }
 
-    pub fn relationship_removed(&mut self, id: &str) {
-        self.relationships.retain(|edge| edge.id != id);
-        self.relationship_removing = None;
+    /// A lifecycle change was saved; the caller reloads the relationships.
+    pub fn relationship_changed(&mut self) {
+        self.relationship_form = None;
+        self.relationship_target = None;
+        if let Some(history) = &mut self.relationship_history {
+            history.stale = true;
+        }
+    }
+
+    pub fn relationship_change_failed(&mut self, message: String) {
+        match &mut self.relationship_form {
+            Some(form) => {
+                form.pending = false;
+                form.error = Some(message);
+            }
+            None => self.relationship_error = Some(message),
+        }
+    }
+
+    pub fn history_loaded(&mut self, id: &str, result: Result<Vec<ApiRelationshipEvent>, String>) {
+        if let Some(history) = &mut self.relationship_history
+            && history.edge_id == id
+        {
+            history.loading = false;
+            match result {
+                Ok(items) => {
+                    history.items = items;
+                    history.error = None;
+                }
+                Err(error) => history.error = Some(error),
+            }
+        }
     }
 
     pub fn build_write(&self) -> Result<ApiContactWrite, String> {
@@ -724,96 +864,50 @@ fn relationships_card(
             ui.add_space(6.0);
         }
 
-        let mut remove: Option<String> = None;
-        let mut open: Option<String> = None;
-        for edge in &state.relationships {
-            let Some(view) = relationship_view(edge, &state.contact_id) else {
-                continue;
-            };
+        let edges = state.relationships.clone();
+        let (ended, active): (Vec<_>, Vec<_>) = edges.iter().partition(|edge| edge.is_ended());
+        for edge in active {
+            if let Some(next) = relationship_row(ui, state, edge, catalog) {
+                action = Some(next);
+            }
+        }
 
-            Frame::new()
-                .fill(theme::surface_raised())
-                .stroke(Stroke::new(1.0, theme::border()))
-                .corner_radius(CornerRadius::same(10))
-                .inner_margin(Margin::same(10))
-                .show(ui, |ui| {
-                    ui.set_width(ui.available_width());
-                    ui.horizontal(|ui| {
-                        ui.label(
-                            RichText::new(relationship_role_label(&view.linked_role))
-                                .font(theme::strong_font(12.5))
-                                .color(theme::text()),
-                        );
-                        theme::pill(ui, view.linked_kind.label(), theme::accent_blue());
-                        if view.linked_kind == PartyKind::Contact
-                            && ui
-                                .add(
-                                    egui::Button::new(
-                                        RichText::new("Open")
-                                            .color(theme::accent())
-                                            .size(10.5),
-                                    )
-                                    .frame(false),
-                                )
-                                .clicked()
-                        {
-                            open = Some(view.linked_id.clone());
-                        }
-                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            let removing = state.relationship_removing.as_deref()
-                                == Some(edge.id.as_str());
-                            if ui
-                                .add_enabled(
-                                    !removing,
-                                    egui::Button::new(
-                                        RichText::new(if removing {
-                                            "Removing…"
-                                        } else {
-                                            "Remove"
-                                        })
-                                        .color(theme::faint())
-                                        .size(10.0),
-                                    )
-                                    .frame(false),
-                                )
-                                .clicked()
-                            {
-                                remove = Some(edge.id.clone());
-                            }
-                        });
-                    });
-                    ui.label(
-                        RichText::new(&view.linked_name)
-                            .color(theme::text())
-                            .size(12.5),
-                    );
-                    ui.label(
-                        RichText::new(format!(
-                            "This record is {}",
-                            relationship_role_label(&view.subject_role)
-                        ))
-                        .color(theme::faint())
-                        .size(10.0),
-                    );
-                    if let Some(notes) = edge.notes.as_deref()
-                        && !notes.trim().is_empty()
-                    {
-                        ui.label(
-                            RichText::new(notes)
-                                .color(theme::muted())
-                                .size(10.5),
-                        );
+        if !ended.is_empty() {
+            ui.add_space(2.0);
+            let label = format!(
+                "{} ended relationship{}",
+                ended.len(),
+                if ended.len() == 1 { "" } else { "s" }
+            );
+            let toggle = ui.add(
+                egui::Button::new(
+                    RichText::new(if state.show_ended_relationships {
+                        format!("Hide {label}")
+                    } else {
+                        format!("Show {label}")
+                    })
+                    .color(theme::muted())
+                    .size(10.5),
+                )
+                .frame(false),
+            );
+            if toggle.clicked() {
+                state.show_ended_relationships = !state.show_ended_relationships;
+            }
+            if state.show_ended_relationships {
+                ui.add_space(4.0);
+                for edge in ended {
+                    if let Some(next) = relationship_row(ui, state, edge, catalog) {
+                        action = Some(next);
                     }
-                });
-            ui.add_space(6.0);
+                }
+            }
         }
 
-        if let Some(id) = remove {
-            state.relationship_removing = Some(id.clone());
-            action = Some(ContactEditorAction::DeleteRelationship(id));
-        }
-        if let Some(id) = open {
-            action = Some(ContactEditorAction::OpenContact(id));
+        // Adding is hidden while a change is being made, so the party lookup
+        // serves only one form at a time.
+        if state.relationship_form.is_some() {
+            return;
         }
 
         ui.add_space(4.0);
@@ -957,6 +1051,495 @@ fn relationships_card(
     });
 
     action
+}
+
+/// One relationship: summary, actions menu, and any open form or history.
+fn relationship_row(
+    ui: &mut Ui,
+    state: &mut ContactWindowState,
+    edge: &ApiRelationship,
+    catalog: &[ApiGraphNode],
+) -> Option<ContactEditorAction> {
+    let view = relationship_view(edge, &state.contact_id)?;
+    let mut action = None;
+    let ended = edge.is_ended();
+
+    Frame::new()
+        .fill(if ended {
+            theme::surface()
+        } else {
+            theme::surface_raised()
+        })
+        .stroke(Stroke::new(1.0, theme::border()))
+        .corner_radius(CornerRadius::same(10))
+        .inner_margin(Margin::same(10))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                ui.label(
+                    RichText::new(relationship_role_label(&view.linked_role))
+                        .font(theme::strong_font(12.5))
+                        .color(if ended { theme::muted() } else { theme::text() }),
+                );
+                theme::pill(ui, view.linked_kind.label(), theme::accent_blue());
+                if let Some((text, colour)) = status_text(edge) {
+                    theme::pill(ui, &text, colour);
+                }
+                if view.linked_kind == PartyKind::Contact
+                    && ui
+                        .add(
+                            egui::Button::new(
+                                RichText::new("Open").color(theme::accent()).size(10.5),
+                            )
+                            .frame(false),
+                        )
+                        .clicked()
+                {
+                    action = Some(ContactEditorAction::OpenContact(view.linked_id.clone()));
+                }
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    ui.menu_button(RichText::new("Actions…").size(10.5), |ui| {
+                        let mut kinds = Vec::new();
+                        if !ended {
+                            if edge.end_date.is_none() {
+                                kinds.push(RelationshipFormKind::End);
+                            }
+                            kinds.push(RelationshipFormKind::Transfer);
+                            kinds.push(RelationshipFormKind::ChangeRole);
+                        }
+                        kinds.push(RelationshipFormKind::Correct);
+                        kinds.push(RelationshipFormKind::Remove);
+                        for kind in kinds {
+                            if ui.button(kind.title()).clicked() {
+                                state.relationship_form = Some(RelationshipForm::new(edge, kind));
+                                state.relationship_target = None;
+                                ui.close();
+                            }
+                        }
+                    });
+                    let showing = state
+                        .relationship_history
+                        .as_ref()
+                        .is_some_and(|history| history.edge_id == edge.id);
+                    if ui
+                        .add(
+                            egui::Button::new(
+                                RichText::new(if showing { "Hide history" } else { "History" })
+                                    .color(theme::muted())
+                                    .size(10.5),
+                            )
+                            .frame(false),
+                        )
+                        .clicked()
+                    {
+                        if showing {
+                            state.relationship_history = None;
+                        } else {
+                            state.relationship_history = Some(RelationshipHistoryView {
+                                edge_id: edge.id.clone(),
+                                loading: true,
+                                stale: false,
+                                items: Vec::new(),
+                                error: None,
+                            });
+                            action = Some(ContactEditorAction::LoadRelationshipHistory(
+                                edge.id.clone(),
+                            ));
+                        }
+                    }
+                });
+            });
+            ui.label(
+                RichText::new(&view.linked_name)
+                    .color(theme::text())
+                    .size(12.5),
+            );
+            ui.label(
+                RichText::new(format!(
+                    "This record is {}{}",
+                    relationship_role_label(&view.subject_role),
+                    edge.start_date
+                        .as_deref()
+                        .map(|start| format!(" · since {start}"))
+                        .unwrap_or_default()
+                ))
+                .color(theme::faint())
+                .size(10.0),
+            );
+            if let Some(notes) = edge.notes.as_deref()
+                && !notes.trim().is_empty()
+            {
+                ui.label(RichText::new(notes).color(theme::muted()).size(10.5));
+            }
+
+            if state
+                .relationship_form
+                .as_ref()
+                .is_some_and(|form| form.edge_id == edge.id)
+                && let Some(next) = relationship_form(ui, state, edge, &view, catalog)
+            {
+                action = Some(next);
+            }
+
+            if let Some(history) = &mut state.relationship_history
+                && history.edge_id == edge.id
+            {
+                if history.stale && !history.loading {
+                    history.stale = false;
+                    history.loading = true;
+                    action = Some(ContactEditorAction::LoadRelationshipHistory(
+                        edge.id.clone(),
+                    ));
+                }
+                relationship_history(ui, history);
+            }
+        });
+    ui.add_space(6.0);
+    action
+}
+
+/// A short status pill: upcoming, ending soon, or ended with its reason.
+fn status_text(edge: &ApiRelationship) -> Option<(String, Color32)> {
+    let reason = edge
+        .end_reason
+        .as_deref()
+        .map(|reason| format!(" · {}", end_reason_label(reason)))
+        .unwrap_or_default();
+    match (edge.status.as_str(), edge.end_date.as_deref()) {
+        ("ended", Some(end)) => Some((format!("Ended {end}{reason}"), theme::faint())),
+        ("upcoming", _) => Some((
+            format!("Starts {}", edge.start_date.as_deref().unwrap_or("later")),
+            theme::accent_blue(),
+        )),
+        (_, Some(end)) => Some((format!("Ends {end}{reason}"), theme::warning())),
+        _ => None,
+    }
+}
+
+fn relationship_form(
+    ui: &mut Ui,
+    state: &mut ContactWindowState,
+    edge: &ApiRelationship,
+    view: &RelationshipView,
+    catalog: &[ApiGraphNode],
+) -> Option<ContactEditorAction> {
+    let mut action = None;
+    let mut cancel = false;
+    let target = state.relationship_target.clone();
+    let mut form = state.relationship_form.take()?;
+    // Which side of the stored relationship this record is on.
+    let this_is_from = edge.from_kind == PartyKind::Contact && edge.from_id == state.contact_id;
+
+    ui.add_space(8.0);
+    Frame::new()
+        .fill(theme::input())
+        .stroke(Stroke::new(1.0, theme::accent().gamma_multiply(0.5)))
+        .corner_radius(CornerRadius::same(10))
+        .inner_margin(Margin::same(10))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.label(
+                RichText::new(form.kind.title())
+                    .font(theme::strong_font(12.5))
+                    .color(theme::text()),
+            );
+            ui.label(RichText::new(form.kind.help()).color(theme::faint()).size(10.0));
+            ui.add_space(6.0);
+
+            match form.kind {
+                RelationshipFormKind::End => {
+                    text_field(ui, "Last day (YYYY-MM-DD)", &mut form.date);
+                    reason_select(ui, &mut form.reason, "relationship-end-reason");
+                }
+                RelationshipFormKind::Transfer => {
+                    ui.label(
+                        RichText::new(format!(
+                            "Replace {} with:",
+                            view.linked_name
+                        ))
+                        .color(theme::muted())
+                        .size(10.5),
+                    );
+                    party_lookup(ui, state, catalog);
+                    text_field(ui, "New party from (YYYY-MM-DD)", &mut form.date);
+                    reason_select(ui, &mut form.reason, "relationship-transfer-reason");
+                }
+                RelationshipFormKind::ChangeRole => {
+                    let mut kind = form.role_kind.min(RELATIONSHIP_KINDS.len() - 1);
+                    let combo = egui::ComboBox::from_id_salt("relationship-new-role")
+                        .selected_text(RELATIONSHIP_KINDS[kind].label)
+                        .width(ui.available_width().min(220.0))
+                        .show_ui(ui, |ui| {
+                            for (index, spec) in RELATIONSHIP_KINDS.iter().enumerate() {
+                                ui.selectable_value(&mut kind, index, spec.label);
+                            }
+                        });
+                    named(&combo.response, "New relationship type");
+                    form.role_kind = kind;
+                    let spec = &RELATIONSHIP_KINDS[kind];
+                    ui.label(
+                        RichText::new(format!(
+                            "This record becomes {} · {} becomes {}",
+                            relationship_role_label(spec.subject_role),
+                            view.linked_name,
+                            relationship_role_label(spec.linked_role)
+                        ))
+                        .color(theme::faint())
+                        .size(10.0),
+                    );
+                    text_field(ui, "New roles from (YYYY-MM-DD)", &mut form.date);
+                    reason_select(ui, &mut form.reason, "relationship-role-reason");
+                }
+                RelationshipFormKind::Correct => {
+                    let (this_role, other_role) = if this_is_from {
+                        (&mut form.from_role, &mut form.to_role)
+                    } else {
+                        (&mut form.to_role, &mut form.from_role)
+                    };
+                    ui.columns(2, |cols| {
+                        text_field(&mut cols[0], "This record's role", this_role);
+                        text_field(&mut cols[1], "Linked record's role", other_role);
+                    });
+                    ui.columns(2, |cols| {
+                        text_field(&mut cols[0], "Start date (YYYY-MM-DD)", &mut form.start_date);
+                        text_field(&mut cols[1], "End date (YYYY-MM-DD)", &mut form.end_date);
+                    });
+                    if !form.end_date.trim().is_empty() {
+                        reason_select(ui, &mut form.reason, "relationship-correct-reason");
+                    }
+                    text_field(ui, "Relationship notes", &mut form.notes);
+                }
+                RelationshipFormKind::Remove => {}
+            }
+
+            let note_label = match form.kind {
+                RelationshipFormKind::Correct => "What was wrong? (required)",
+                RelationshipFormKind::Remove => "Why was this recorded in error? (required)",
+                _ => "Note (optional)",
+            };
+            field_label(ui, note_label, false);
+            ui.add(
+                egui::TextEdit::multiline(&mut form.note)
+                    .desired_rows(2)
+                    .desired_width(ui.available_width())
+                    .margin(Margin::symmetric(8, 6)),
+            );
+            if form.reason == END_REASONS.iter().position(|(key, _)| *key == "incident") {
+                ui.label(
+                    RichText::new(
+                        "Incident notes are only shown to people allowed to read them, managers by default.",
+                    )
+                    .color(theme::warning())
+                    .size(10.0),
+                );
+            }
+
+            if let Some(error) = &form.error {
+                ui.label(RichText::new(error).color(theme::danger()).size(10.5));
+            }
+
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                let label = match form.kind {
+                    RelationshipFormKind::End => "End relationship",
+                    RelationshipFormKind::Transfer => "Transfer",
+                    RelationshipFormKind::ChangeRole => "Change role",
+                    RelationshipFormKind::Correct => "Save correction",
+                    RelationshipFormKind::Remove => "Remove",
+                };
+                if ui
+                    .add_enabled(!form.pending, theme::primary_button(label))
+                    .clicked()
+                {
+                    match build_change(&form, edge, this_is_from, target.as_ref()) {
+                        Ok(change) => {
+                            form.pending = true;
+                            form.error = None;
+                            action = Some(ContactEditorAction::ChangeRelationship {
+                                id: edge.id.clone(),
+                                change,
+                            });
+                        }
+                        Err(error) => form.error = Some(error),
+                    }
+                }
+                if ui.add(theme::secondary_button("Cancel")).clicked() {
+                    cancel = true;
+                }
+                if form.pending {
+                    ui.label(RichText::new("Saving…").color(theme::warning()).size(10.5));
+                }
+            });
+        });
+
+    if !cancel {
+        state.relationship_form = Some(form);
+    } else {
+        state.relationship_target = None;
+    }
+    action
+}
+
+fn reason_select(ui: &mut Ui, reason: &mut Option<usize>, id: &str) {
+    field_label(ui, "Reason", true);
+    let mut current = *reason;
+    let combo = egui::ComboBox::from_id_salt(id)
+        .selected_text(current.map_or("Choose a reason…", |index| END_REASONS[index].1))
+        .width(ui.available_width().min(260.0))
+        .show_ui(ui, |ui| {
+            for (index, (_, label)) in END_REASONS.iter().enumerate() {
+                ui.selectable_value(&mut current, Some(index), *label);
+            }
+        });
+    named(&combo.response, "Reason");
+    *reason = current;
+}
+
+fn parse_date(value: &str, label: &str) -> Result<String, String> {
+    chrono::NaiveDate::parse_from_str(value.trim(), "%Y-%m-%d")
+        .map(|date| date.to_string())
+        .map_err(|_| format!("{label} must be a date like 2026-11-30."))
+}
+
+fn optional_date(value: &str, label: &str) -> Result<Option<String>, String> {
+    if value.trim().is_empty() {
+        Ok(None)
+    } else {
+        parse_date(value, label).map(Some)
+    }
+}
+
+/// Turn a filled-in form into the change to send, or explain what is missing.
+fn build_change(
+    form: &RelationshipForm,
+    edge: &ApiRelationship,
+    this_is_from: bool,
+    target: Option<&ApiGraphNode>,
+) -> Result<RelationshipChange, String> {
+    let reason = || {
+        form.reason
+            .map(|index| END_REASONS[index].0.to_owned())
+            .ok_or_else(|| "Choose a reason.".to_owned())
+    };
+    let note = form.note.trim().to_owned();
+    match form.kind {
+        RelationshipFormKind::End => Ok(RelationshipChange::End {
+            end_date: parse_date(&form.date, "The last day")?,
+            reason: reason()?,
+            note,
+        }),
+        RelationshipFormKind::Transfer => {
+            let target = target.ok_or("Choose who takes over.")?;
+            Ok(RelationshipChange::Transfer {
+                effective_date: parse_date(&form.date, "The start date")?,
+                // Replace the other party, never this record.
+                replace: if this_is_from { "to" } else { "from" }.to_owned(),
+                new_kind: target.kind,
+                new_id: target.id.clone(),
+                reason: reason()?,
+                note,
+            })
+        }
+        RelationshipFormKind::ChangeRole => {
+            let spec = &RELATIONSHIP_KINDS[form.role_kind.min(RELATIONSHIP_KINDS.len() - 1)];
+            let (from_role, to_role) = if this_is_from {
+                (spec.subject_role, spec.linked_role)
+            } else {
+                (spec.linked_role, spec.subject_role)
+            };
+            Ok(RelationshipChange::ChangeRole {
+                effective_date: parse_date(&form.date, "The start date")?,
+                from_role: from_role.to_owned(),
+                to_role: to_role.to_owned(),
+                reason: reason()?,
+                note,
+            })
+        }
+        RelationshipFormKind::Correct => {
+            if note.is_empty() {
+                return Err("Explain what was wrong.".to_owned());
+            }
+            let end_date = optional_date(&form.end_date, "The end date")?;
+            let end_reason = match end_date {
+                Some(_) => Some(reason()?),
+                None => None,
+            };
+            Ok(RelationshipChange::Correct {
+                relationship: ApiRelationshipCorrection {
+                    from_kind: edge.from_kind,
+                    from_id: edge.from_id.clone(),
+                    from_role: form.from_role.trim().to_owned(),
+                    to_kind: edge.to_kind,
+                    to_id: edge.to_id.clone(),
+                    to_role: form.to_role.trim().to_owned(),
+                    start_date: optional_date(&form.start_date, "The start date")?,
+                    end_date,
+                    end_reason,
+                    notes: optional(&form.notes),
+                },
+                note,
+            })
+        }
+        RelationshipFormKind::Remove => {
+            if note.is_empty() {
+                return Err("Explain why this was recorded in error.".to_owned());
+            }
+            Ok(RelationshipChange::Remove { reason: note })
+        }
+    }
+}
+
+fn relationship_history(ui: &mut Ui, history: &RelationshipHistoryView) {
+    ui.add_space(8.0);
+    ui.label(
+        RichText::new("History")
+            .font(theme::strong_font(11.5))
+            .color(theme::text()),
+    );
+    if history.loading {
+        ui.label(
+            RichText::new("Loading history…")
+                .color(theme::muted())
+                .size(10.5),
+        );
+        return;
+    }
+    if let Some(error) = &history.error {
+        ui.label(RichText::new(error).color(theme::danger()).size(10.5));
+        return;
+    }
+    for event in &history.items {
+        let when = event
+            .effective_date
+            .as_deref()
+            .map(|date| format!("effective {date}"))
+            .unwrap_or_default();
+        let recorded = event.created_at.get(..10).unwrap_or(&event.created_at);
+        let mut line = format!("{} · {}", recorded, history_action_label(&event.action));
+        if let Some(reason) = event.reason.as_deref() {
+            line.push_str(&format!(" · {}", end_reason_label(reason)));
+        }
+        if !when.is_empty() {
+            line.push_str(&format!(" · {when}"));
+        }
+        if let Some(actor) = event.actor_name.as_deref() {
+            line.push_str(&format!(" · by {actor}"));
+        }
+        ui.label(RichText::new(line).color(theme::muted()).size(10.5));
+        if let Some(note) = event.note.as_deref() {
+            ui.label(
+                RichText::new(format!("   “{note}”"))
+                    .color(theme::text())
+                    .size(10.5),
+            );
+        } else if event.note_hidden {
+            ui.label(
+                RichText::new("   Note restricted to people allowed to read incident notes.")
+                    .color(theme::faint())
+                    .size(10.0),
+            );
+        }
+    }
 }
 
 struct RelationshipView {
@@ -1479,8 +2062,13 @@ fn stored_value(field: &ApiCustomField, text: &str) -> Value {
 
 #[cfg(test)]
 mod tests {
-    use super::{ContactWindowState, relationship_view};
-    use crate::contact::{ApiRelationship, PartyKind};
+    use super::{
+        ContactWindowState, RELATIONSHIP_KINDS, RelationshipForm, RelationshipFormKind,
+        build_change, relationship_view,
+    };
+    use crate::contact::{
+        ApiGraphNode, ApiRelationship, END_REASONS, PartyKind, RelationshipChange,
+    };
 
     fn edge() -> ApiRelationship {
         ApiRelationship {
@@ -1495,9 +2083,121 @@ mod tests {
             to_role: "general_practitioner".to_owned(),
             start_date: None,
             end_date: None,
+            end_reason: None,
+            status: "current".to_owned(),
+            previous_id: None,
             notes: None,
             updated_at: String::new(),
         }
+    }
+
+    fn form(kind: RelationshipFormKind) -> RelationshipForm {
+        let mut form = RelationshipForm::new(&edge(), kind);
+        form.date = "2026-12-01".to_owned();
+        form
+    }
+
+    fn reason(key: &str) -> Option<usize> {
+        END_REASONS.iter().position(|(value, _)| *value == key)
+    }
+
+    #[test]
+    fn ending_needs_a_reason_and_a_valid_date() {
+        let mut end = form(RelationshipFormKind::End);
+        assert_eq!(
+            build_change(&end, &edge(), true, None),
+            Err("Choose a reason.".to_owned())
+        );
+        end.reason = reason("moved_away");
+        end.date = "1/12/2026".to_owned();
+        assert!(build_change(&end, &edge(), true, None).is_err());
+        end.date = "2026-12-01".to_owned();
+        assert_eq!(
+            build_change(&end, &edge(), true, None),
+            Ok(RelationshipChange::End {
+                end_date: "2026-12-01".to_owned(),
+                reason: "moved_away".to_owned(),
+                note: String::new(),
+            })
+        );
+    }
+
+    #[test]
+    fn transfer_replaces_the_other_party_not_this_record() {
+        let mut transfer = form(RelationshipFormKind::Transfer);
+        transfer.reason = reason("changed_provider");
+        let target = ApiGraphNode {
+            kind: PartyKind::Organisation,
+            id: "new-clinic".to_owned(),
+            label: "New clinic".to_owned(),
+            degree: 0,
+            depth: None,
+        };
+        let Ok(RelationshipChange::Transfer {
+            replace, new_id, ..
+        }) = build_change(&transfer, &edge(), true, Some(&target))
+        else {
+            panic!("expected a transfer");
+        };
+        assert_eq!((replace.as_str(), new_id.as_str()), ("to", "new-clinic"));
+
+        let Ok(RelationshipChange::Transfer { replace, .. }) =
+            build_change(&transfer, &edge(), false, Some(&target))
+        else {
+            panic!("expected a transfer");
+        };
+        assert_eq!(replace, "from");
+        assert_eq!(
+            build_change(&transfer, &edge(), true, None),
+            Err("Choose who takes over.".to_owned())
+        );
+    }
+
+    #[test]
+    fn change_role_keeps_each_role_on_its_own_side() {
+        let mut change = form(RelationshipFormKind::ChangeRole);
+        change.reason = reason("circumstances_changed");
+        change.role_kind = RELATIONSHIP_KINDS
+            .iter()
+            .position(|kind| kind.label == "Employer")
+            .unwrap();
+        // This record is the `to` side, so its new role goes in `to_role`.
+        let Ok(RelationshipChange::ChangeRole {
+            from_role, to_role, ..
+        }) = build_change(&change, &edge(), false, None)
+        else {
+            panic!("expected a role change");
+        };
+        assert_eq!(
+            (from_role.as_str(), to_role.as_str()),
+            ("employer", "employee")
+        );
+    }
+
+    #[test]
+    fn corrections_and_removals_must_explain_themselves() {
+        let mut correct = form(RelationshipFormKind::Correct);
+        assert_eq!(
+            build_change(&correct, &edge(), true, None),
+            Err("Explain what was wrong.".to_owned())
+        );
+        correct.note = "Wrong start date".to_owned();
+        correct.end_date = "2026-12-31".to_owned();
+        assert_eq!(
+            build_change(&correct, &edge(), true, None),
+            Err("Choose a reason.".to_owned()),
+            "an end date always needs a reason"
+        );
+
+        let mut remove = form(RelationshipFormKind::Remove);
+        assert!(build_change(&remove, &edge(), true, None).is_err());
+        remove.note = "Linked to the wrong client".to_owned();
+        assert_eq!(
+            build_change(&remove, &edge(), true, None),
+            Ok(RelationshipChange::Remove {
+                reason: "Linked to the wrong client".to_owned()
+            })
+        );
     }
 
     #[test]

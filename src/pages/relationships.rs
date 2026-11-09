@@ -56,7 +56,6 @@ pub enum RelationshipsAction {
         to_role: String,
         notes: String,
     },
-    Delete(String),
     OpenContact(String),
     Refresh,
 }
@@ -249,7 +248,7 @@ fn list_card(
 
         let needle = form.filter.trim().to_lowercase();
         let mut shown = 0usize;
-        let mut remove = None;
+        let mut manage: Option<String> = None;
         let mut open = None;
 
         if edges.is_empty() && !loading {
@@ -304,16 +303,31 @@ fn list_card(
                         );
 
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            if ui
-                                .add(
-                                    egui::Button::new(
-                                        RichText::new("Remove").color(theme::faint()).size(10.0),
+                            // End, transfer, correct and remove are done from a
+                            // contact, where the relationship's history is shown.
+                            let contact = if edge.from_kind == PartyKind::Contact {
+                                Some(&edge.from_id)
+                            } else if edge.to_kind == PartyKind::Contact {
+                                Some(&edge.to_id)
+                            } else {
+                                None
+                            };
+                            if let Some(contact) = contact
+                                && ui
+                                    .add(
+                                        egui::Button::new(
+                                            RichText::new("Manage…")
+                                                .color(theme::accent())
+                                                .size(10.0),
+                                        )
+                                        .frame(false),
                                     )
-                                    .frame(false),
-                                )
-                                .clicked()
+                                    .on_hover_text(
+                                        "End, transfer, correct or remove from the contact",
+                                    )
+                                    .clicked()
                             {
-                                remove = Some(edge.id.clone());
+                                manage = Some(contact.clone());
                             }
                         });
                     });
@@ -334,9 +348,8 @@ fn list_card(
             );
         }
 
-        if let Some(id) = remove {
-            form.pending = true;
-            *action = Some(RelationshipsAction::Delete(id));
+        if let Some(id) = manage {
+            *action = Some(RelationshipsAction::OpenContact(id));
         }
         if let Some(id) = open {
             *action = Some(RelationshipsAction::OpenContact(id));

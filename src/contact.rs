@@ -218,8 +218,27 @@ pub struct ApiRelationship {
     pub to_role: String,
     pub start_date: Option<String>,
     pub end_date: Option<String>,
+    /// Why the relationship ends; set whenever `end_date` is.
+    #[serde(default)]
+    pub end_reason: Option<String>,
+    /// `current`, `upcoming` or `ended`.
+    #[serde(default = "current_status")]
+    pub status: String,
+    /// The relationship this one replaced through a transfer or role change.
+    #[serde(default)]
+    pub previous_id: Option<String>,
     pub notes: Option<String>,
     pub updated_at: String,
+}
+
+fn current_status() -> String {
+    "current".to_owned()
+}
+
+impl ApiRelationship {
+    pub fn is_ended(&self) -> bool {
+        self.status == "ended"
+    }
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -272,4 +291,109 @@ pub fn relationship_role_label(role: &str) -> String {
         })
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+// Relationship lifecycle -----------------------------------------------------
+
+/// Why a relationship ends, as `(server key, label)`. Required with any end date.
+pub const END_REASONS: [(&str, &str); 8] = [
+    ("offboarded", "Offboarded or resigned"),
+    ("moved_away", "Moved away or left the area"),
+    ("plan_ended", "Plan or funding ended"),
+    ("deceased", "Deceased"),
+    ("changed_provider", "Changed provider"),
+    ("circumstances_changed", "Circumstances changed"),
+    ("incident", "Incident"),
+    ("other", "Other"),
+];
+
+pub fn end_reason_label(key: &str) -> &str {
+    END_REASONS
+        .iter()
+        .find(|(value, _)| *value == key)
+        .map_or(key, |(_, label)| label)
+}
+
+/// One change to a relationship, sent to the server.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RelationshipChange {
+    /// Set an end date (past, today or future) with a reason.
+    End {
+        end_date: String,
+        reason: String,
+        note: String,
+    },
+    /// Hand one side of the relationship to a different party from a date.
+    Transfer {
+        effective_date: String,
+        /// `from` or `to`: the side being replaced.
+        replace: String,
+        new_kind: PartyKind,
+        new_id: String,
+        reason: String,
+        note: String,
+    },
+    /// Continue the relationship in new roles from a date.
+    ChangeRole {
+        effective_date: String,
+        from_role: String,
+        to_role: String,
+        reason: String,
+        note: String,
+    },
+    /// Fix a mistake in place. `note` explains what was wrong.
+    Correct {
+        relationship: ApiRelationshipCorrection,
+        note: String,
+    },
+    /// Hide a relationship recorded in error.
+    Remove { reason: String },
+}
+
+/// The full set of corrected values for a relationship.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct ApiRelationshipCorrection {
+    pub from_kind: PartyKind,
+    pub from_id: String,
+    pub from_role: String,
+    pub to_kind: PartyKind,
+    pub to_id: String,
+    pub to_role: String,
+    pub start_date: Option<String>,
+    pub end_date: Option<String>,
+    pub end_reason: Option<String>,
+    pub notes: Option<String>,
+}
+
+/// One entry in a relationship's history.
+#[derive(Clone, Debug, Deserialize)]
+pub struct ApiRelationshipEvent {
+    pub id: String,
+    pub relationship_id: String,
+    pub action: String,
+    pub effective_date: Option<String>,
+    pub reason: Option<String>,
+    pub note: Option<String>,
+    #[serde(default)]
+    pub note_hidden: bool,
+    pub actor_name: Option<String>,
+    pub created_at: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct ApiRelationshipHistory {
+    pub items: Vec<ApiRelationshipEvent>,
+}
+
+/// Past-tense label for a history action.
+pub fn history_action_label(action: &str) -> &str {
+    match action {
+        "added" => "Added",
+        "ended" => "Ended",
+        "transferred" => "Transferred",
+        "role_changed" => "Role changed",
+        "corrected" => "Corrected",
+        "removed" => "Removed",
+        other => other,
+    }
 }

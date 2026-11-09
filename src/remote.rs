@@ -11,8 +11,8 @@ use eframe::egui;
 use crate::{
     api::ApiClient,
     contact::{
-        ApiContactDetail, ApiContactList, ApiContactWrite, ApiRelationship, ApiRelationshipGraph,
-        ApiRelationshipList, ApiRelationshipWrite,
+        ApiContactDetail, ApiContactList, ApiContactWrite, ApiRelationship, ApiRelationshipEvent,
+        ApiRelationshipGraph, ApiRelationshipList, ApiRelationshipWrite, RelationshipChange,
     },
     rostering::{
         ApiAssignment, ApiAssignmentUpdate, ApiAssignmentWrite, ApiBatchShiftWrite,
@@ -71,7 +71,14 @@ pub enum RemoteCommand {
         token: String,
         payload: Box<ApiRelationshipWrite>,
     },
-    DeleteRelationship {
+    ChangeRelationship {
+        request_id: u64,
+        base_url: String,
+        token: String,
+        id: String,
+        change: Box<RelationshipChange>,
+    },
+    RelationshipHistory {
         request_id: u64,
         base_url: String,
         token: String,
@@ -209,10 +216,15 @@ pub enum RemoteEvent {
         request_id: u64,
         result: Result<ApiRelationship, String>,
     },
-    RelationshipDeleted {
+    RelationshipChanged {
         request_id: u64,
         id: String,
         result: Result<(), String>,
+    },
+    RelationshipHistoryLoaded {
+        request_id: u64,
+        id: String,
+        result: Result<Vec<ApiRelationshipEvent>, String>,
     },
     SitesListed {
         request_id: u64,
@@ -404,14 +416,31 @@ impl RemoteHandle {
         });
     }
 
-    pub fn delete_relationship(
+    pub fn change_relationship(
+        &self,
+        request_id: u64,
+        base_url: String,
+        token: String,
+        id: String,
+        change: RelationshipChange,
+    ) {
+        let _ = self.commands.send(RemoteCommand::ChangeRelationship {
+            request_id,
+            base_url,
+            token,
+            id,
+            change: Box::new(change),
+        });
+    }
+
+    pub fn relationship_history(
         &self,
         request_id: u64,
         base_url: String,
         token: String,
         id: String,
     ) {
-        let _ = self.commands.send(RemoteCommand::DeleteRelationship {
+        let _ = self.commands.send(RemoteCommand::RelationshipHistory {
             request_id,
             base_url,
             token,
@@ -741,16 +770,33 @@ fn run(ctx: egui::Context, commands: Receiver<RemoteCommand>, events: Sender<Rem
                     .map_err(|err| err.to_string());
                 let _ = events.send(RemoteEvent::RelationshipCreated { request_id, result });
             }
-            RemoteCommand::DeleteRelationship {
+            RemoteCommand::ChangeRelationship {
+                request_id,
+                base_url,
+                token,
+                id,
+                change,
+            } => {
+                let result = ApiClient::new(&base_url)
+                    .and_then(|client| client.change_relationship(&token, &id, &change))
+                    .map_err(|err| err.to_string());
+                let _ = events.send(RemoteEvent::RelationshipChanged {
+                    request_id,
+                    id,
+                    result,
+                });
+            }
+            RemoteCommand::RelationshipHistory {
                 request_id,
                 base_url,
                 token,
                 id,
             } => {
                 let result = ApiClient::new(&base_url)
-                    .and_then(|client| client.delete_relationship(&token, &id))
+                    .and_then(|client| client.relationship_history(&token, &id))
+                    .map(|history| history.items)
                     .map_err(|err| err.to_string());
-                let _ = events.send(RemoteEvent::RelationshipDeleted {
+                let _ = events.send(RemoteEvent::RelationshipHistoryLoaded {
                     request_id,
                     id,
                     result,

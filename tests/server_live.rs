@@ -10,7 +10,7 @@
 
 use carelibre_desktop::{
     api::{ApiClient, DEFAULT_BASE_URL},
-    contact::{ApiRelationshipWrite, PartyKind},
+    contact::{ApiRelationshipWrite, PartyKind, RelationshipChange},
     rostering::{ApiBatchShiftWrite, ApiCopyShiftWrite, ApiShiftWrite},
     server::{ConnectionState, Event, ServerRuntime},
     theme::{self, ThemeMode},
@@ -260,8 +260,14 @@ fn relationship_graph_round_trip() {
     );
 
     client
-        .delete_relationship(&session.access_token, &edge.id)
-        .expect("relationship deleted");
+        .change_relationship(
+            &session.access_token,
+            &edge.id,
+            &RelationshipChange::Remove {
+                reason: "Created by the live integration test.".to_owned(),
+            },
+        )
+        .expect("relationship removed");
 
     let after = client
         .list_relationships(&session.access_token, Some(&contact.id), None)

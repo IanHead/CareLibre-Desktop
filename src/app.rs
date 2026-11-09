@@ -17,7 +17,7 @@ use crate::{
     config::Config,
     contact::{
         ApiContactDetail, ApiContactWrite, ApiGraphNode, ApiRelationship, ApiRelationshipWrite,
-        PartyKind, row_from_api,
+        PartyKind, RelationshipChange, row_from_api,
     },
     credentials,
     intake::IntakeKind,
@@ -59,7 +59,9 @@ pub struct CareLibreApp {
     /// Client/worker links to the organisation requested after an intake,
     /// keyed by request id, holding the new contact's name.
     intake_role_links: BTreeMap<u64, String>,
-    relationship_delete_requests: BTreeMap<u64, Option<String>>,
+    /// Lifecycle changes in flight, keyed by request id, holding the editor window id.
+    relationship_change_requests: BTreeMap<u64, String>,
+    relationship_history_requests: BTreeMap<u64, String>,
     relationship_contact_creates: BTreeMap<u64, PendingInlineRelationship>,
     party_catalog: Vec<ApiGraphNode>,
     party_catalog_request: Option<u64>,
@@ -157,7 +159,8 @@ impl CareLibreApp {
             relationship_list_requests: BTreeMap::new(),
             relationship_create_requests: BTreeMap::new(),
             intake_role_links: BTreeMap::new(),
-            relationship_delete_requests: BTreeMap::new(),
+            relationship_change_requests: BTreeMap::new(),
+            relationship_history_requests: BTreeMap::new(),
             relationship_contact_creates: BTreeMap::new(),
             party_catalog: Vec::new(),
             party_catalog_request: None,
@@ -2018,8 +2021,14 @@ impl CareLibreApp {
             } => {
                 self.create_relationship(ctx, id, from_role, to_kind, to_id, to_role, notes);
             }
-            ContactEditorAction::DeleteRelationship(edge_id) => {
-                self.delete_relationship(id, edge_id);
+            ContactEditorAction::ChangeRelationship {
+                id: edge_id,
+                change,
+            } => {
+                self.change_relationship(id, edge_id, change);
+            }
+            ContactEditorAction::LoadRelationshipHistory(edge_id) => {
+                self.load_relationship_history(id, edge_id);
             }
             ContactEditorAction::CreateContact {
                 from_role,
@@ -2046,9 +2055,6 @@ impl CareLibreApp {
                 self.create_relationship_request(
                     from_kind, from_id, from_role, to_kind, to_id, to_role, notes, None, ctx,
                 );
-            }
-            RelationshipsAction::Delete(id) => {
-                self.delete_relationship_request(id, None);
             }
             RelationshipsAction::OpenContact(id) => self.open_contact(&id),
             RelationshipsAction::Refresh => {
@@ -2157,43 +2163,50 @@ impl CareLibreApp {
         let _ = ctx;
     }
 
-    fn delete_relationship(&mut self, window_id: &str, edge_id: String) {
-        self.delete_relationship_request(edge_id, Some(window_id.to_owned()));
-    }
-
-    fn delete_relationship_request(&mut self, edge_id: String, window_id: Option<String>) {
+    fn change_relationship(
+        &mut self,
+        window_id: &str,
+        edge_id: String,
+        change: RelationshipChange,
+    ) {
         let Some(token) = self.access_token() else {
-            if let Some(window_id) = &window_id {
-                if let Some(window) = self.contact_windows.get_mut(window_id) {
-                    window.relationship_failed("Sign in to edit relationships.".to_owned());
-                }
-            } else {
-                self.relationship_form.error = Some("Sign in to edit relationships.".to_owned());
-                self.relationship_form.pending = false;
+            if let Some(window) = self.contact_windows.get_mut(window_id) {
+                window.relationship_change_failed("Sign in to edit relationships.".to_owned());
             }
             return;
         };
         let request = self.next_relationship_request();
-        self.relationship_delete_requests
-            .insert(request, window_id.clone());
         match &self.remote {
             Some(remote) => {
-                remote.delete_relationship(request, self.server.base_url.clone(), token, edge_id)
+                self.relationship_change_requests
+                    .insert(request, window_id.to_owned());
+                remote.change_relationship(
+                    request,
+                    self.server.base_url.clone(),
+                    token,
+                    edge_id,
+                    change,
+                );
             }
             None => {
-                self.relationship_delete_requests.remove(&request);
-                if let Some(window_id) = &window_id {
-                    if let Some(window) = self.contact_windows.get_mut(window_id) {
-                        window.relationship_failed(
-                            "The server connection is not available.".to_owned(),
-                        );
-                    }
-                } else {
-                    self.relationship_form.error =
-                        Some("The server connection is not available.".to_owned());
-                    self.relationship_form.pending = false;
+                if let Some(window) = self.contact_windows.get_mut(window_id) {
+                    window.relationship_change_failed(
+                        "The server connection is not available.".to_owned(),
+                    );
                 }
             }
+        }
+    }
+
+    fn load_relationship_history(&mut self, window_id: &str, edge_id: String) {
+        let Some(token) = self.access_token() else {
+            return;
+        };
+        let request = self.next_relationship_request();
+        if let Some(remote) = &self.remote {
+            self.relationship_history_requests
+                .insert(request, window_id.to_owned());
+            remote.relationship_history(request, self.server.base_url.clone(), token, edge_id);
         }
     }
 
@@ -2553,12 +2566,23 @@ impl CareLibreApp {
                 RemoteEvent::RelationshipCreated { request_id, result } => {
                     self.handle_relationship_created(ctx, request_id, result);
                 }
-                RemoteEvent::RelationshipDeleted {
+                RemoteEvent::RelationshipChanged {
                     request_id,
                     id,
                     result,
                 } => {
-                    self.handle_relationship_deleted(ctx, request_id, id, result);
+                    self.handle_relationship_changed(ctx, request_id, id, result);
+                }
+                RemoteEvent::RelationshipHistoryLoaded {
+                    request_id,
+                    id,
+                    result,
+                } => {
+                    if let Some(window_id) = self.relationship_history_requests.remove(&request_id)
+                        && let Some(window) = self.contact_windows.get_mut(&window_id)
+                    {
+                        window.history_loaded(&id, result);
+                    }
                 }
                 RemoteEvent::SitesListed { request_id, result } => {
                     self.handle_sites_listed(request_id, result);
@@ -3090,34 +3114,37 @@ impl CareLibreApp {
         }
     }
 
-    fn handle_relationship_deleted(
+    fn handle_relationship_changed(
         &mut self,
         ctx: &egui::Context,
         request_id: u64,
         id: String,
         result: Result<(), String>,
     ) {
-        let Some(window_id) = self.relationship_delete_requests.remove(&request_id) else {
+        let Some(window_id) = self.relationship_change_requests.remove(&request_id) else {
             return;
         };
         match result {
             Ok(()) => {
-                self.relationship_edges.retain(|edge| edge.id != id);
-                for window in self.contact_windows.values_mut() {
-                    window.relationship_removed(&id);
+                if let Some(window) = self.contact_windows.get_mut(&window_id) {
+                    window.relationship_changed();
                 }
-                self.relationship_form.pending = false;
-                self.relationship_form.error = None;
-                self.notify(ctx, "Relationship removed.");
+                // Both ends of the relationship may be open, and the change can
+                // alter who counts as a client or worker.
+                let open: Vec<String> = self.contact_windows.keys().cloned().collect();
+                for contact_id in open {
+                    self.load_contact_relationships(&contact_id);
+                }
+                self.relationship_edges.retain(|edge| edge.id != id);
+                self.relationship_graph_loaded = false;
+                self.party_catalog_request = None;
+                self.refresh_contact_lists();
+                self.send_contacts_query(false);
+                self.notify(ctx, "Relationship updated.");
             }
             Err(error) => {
-                if let Some(window_id) = &window_id {
-                    if let Some(window) = self.contact_windows.get_mut(window_id) {
-                        window.relationship_failed(error);
-                    }
-                } else {
-                    self.relationship_form.error = Some(error);
-                    self.relationship_form.pending = false;
+                if let Some(window) = self.contact_windows.get_mut(&window_id) {
+                    window.relationship_change_failed(error);
                 }
             }
         }
@@ -3437,6 +3464,15 @@ impl CareLibreApp {
                 }
             }
         }
+    }
+
+    /// Point this run at another server without saving it. Used by previews
+    /// and tests; the saved setting is unchanged.
+    pub fn use_server(&mut self, base_url: &str) -> Result<(), String> {
+        let url = api::normalize_base_url(base_url)?;
+        self.settings.base_url = url.clone();
+        self.server.base_url = url;
+        Ok(())
     }
 
     fn save_server(&mut self, ctx: &egui::Context, base_url: &str) {

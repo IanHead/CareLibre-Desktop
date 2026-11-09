@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 use crate::contact::{
     ApiContactDetail, ApiContactList, ApiContactWrite, ApiRelationship, ApiRelationshipGraph,
-    ApiRelationshipList, ApiRelationshipWrite,
+    ApiRelationshipHistory, ApiRelationshipList, ApiRelationshipWrite, RelationshipChange,
 };
 use crate::rostering::{
     ApiAssignment, ApiAssignmentUpdate, ApiAssignmentWrite, ApiBatchShiftWrite, ApiCopyShiftWrite,
@@ -337,8 +337,94 @@ impl ApiClient {
         decode(status, &body)
     }
 
-    pub fn delete_relationship(&self, access_token: &str, id: &str) -> ApiResult<()> {
-        self.delete_with_token(&format!("/api/v1/relationships/{id}"), access_token)
+    /// Apply one lifecycle change: end, transfer, change role, correct or remove.
+    pub fn change_relationship(
+        &self,
+        access_token: &str,
+        id: &str,
+        change: &RelationshipChange,
+    ) -> ApiResult<()> {
+        let blank = |value: &str| {
+            let value = value.trim();
+            (!value.is_empty()).then(|| value.to_owned())
+        };
+        let (method, path, body) = match change {
+            RelationshipChange::End {
+                end_date,
+                reason,
+                note,
+            } => (
+                "POST",
+                format!("/api/v1/relationships/{id}/end"),
+                serde_json::json!({
+                    "end_date": end_date,
+                    "reason": reason,
+                    "note": blank(note),
+                }),
+            ),
+            RelationshipChange::Transfer {
+                effective_date,
+                replace,
+                new_kind,
+                new_id,
+                reason,
+                note,
+            } => (
+                "POST",
+                format!("/api/v1/relationships/{id}/transfer"),
+                serde_json::json!({
+                    "effective_date": effective_date,
+                    "replace": replace,
+                    "new_kind": new_kind,
+                    "new_id": new_id,
+                    "reason": reason,
+                    "note": blank(note),
+                }),
+            ),
+            RelationshipChange::ChangeRole {
+                effective_date,
+                from_role,
+                to_role,
+                reason,
+                note,
+            } => (
+                "POST",
+                format!("/api/v1/relationships/{id}/change-role"),
+                serde_json::json!({
+                    "effective_date": effective_date,
+                    "from_role": from_role,
+                    "to_role": to_role,
+                    "reason": reason,
+                    "note": blank(note),
+                }),
+            ),
+            RelationshipChange::Correct { relationship, note } => {
+                let mut body = serde_json::to_value(relationship)
+                    .map_err(|err| ApiError::Decode(err.to_string()))?;
+                body["note"] = serde_json::Value::String(note.clone());
+                ("PATCH", format!("/api/v1/relationships/{id}"), body)
+            }
+            RelationshipChange::Remove { reason } => (
+                "POST",
+                format!("/api/v1/relationships/{id}/remove"),
+                serde_json::json!({ "reason": reason }),
+            ),
+        };
+        let (status, body) = self.send_with_token(method, &path, access_token, &body)?;
+        if (200..300).contains(&status) {
+            Ok(())
+        } else {
+            Err(error_from_body(status, &body))
+        }
+    }
+
+    /// A relationship's history, including the relationships it replaced.
+    pub fn relationship_history(
+        &self,
+        access_token: &str,
+        id: &str,
+    ) -> ApiResult<ApiRelationshipHistory> {
+        self.get_json_with_token(&format!("/api/v1/relationships/{id}/history"), access_token)
     }
 
     fn delete_with_token(&self, path: &str, access_token: &str) -> ApiResult<()> {

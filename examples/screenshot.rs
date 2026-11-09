@@ -3,6 +3,7 @@
 //! Run with:
 //! `cargo run --example screenshot -- docs/home.png`
 //! `cargo run --example screenshot -- docs/settings.png settings --live`
+//! `--server=http://127.0.0.1:8485` uses another server for this run only.
 
 use std::time::{Duration, Instant};
 
@@ -61,6 +62,9 @@ fn main() {
     });
     let suitability = args.iter().any(|arg| arg == "--suitability");
     let relationships = args.iter().any(|arg| arg == "--relationships");
+    // With --relationships: open the first relationship's history or actions menu.
+    let history = args.iter().any(|arg| arg == "--history");
+    let actions = args.iter().any(|arg| arg == "--actions");
     let intake = args.iter().find_map(|arg| match arg.as_str() {
         "--intake=client" => Some(IntakeKind::Client),
         "--intake=worker" => Some(IntakeKind::Worker),
@@ -68,7 +72,12 @@ fn main() {
         _ => None,
     });
 
+    let server = args.iter().find_map(|arg| arg.strip_prefix("--server="));
+
     let mut app = CareLibreApp::new();
+    if let Some(server) = server {
+        app.use_server(server).expect("valid --server URL");
+    }
     app.set_page(page);
     if let Some(filter) = contact_filter {
         app.set_contact_filter(filter);
@@ -199,6 +208,22 @@ fn main() {
                     .get_by_label_contains("Add relationship")
                     .scroll_to_me();
                 harness.run();
+                if history || actions {
+                    let label = if history { "History" } else { "Actions…" };
+                    let button = harness
+                        .get_all_by_label(label)
+                        .next()
+                        .expect("a relationship");
+                    button.click_accesskit();
+                    for _ in 0..40 {
+                        harness.run();
+                        std::thread::sleep(Duration::from_millis(25));
+                    }
+                    if history {
+                        harness.get_by_label("Hide history").scroll_to_me();
+                        harness.run();
+                    }
+                }
             }
         }
     }
