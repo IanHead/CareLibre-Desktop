@@ -27,19 +27,34 @@ pub use worker::{StoreEvent, StoreHandle};
 /// the local cache live under this organisation id.
 pub const DEMO_ORG_ID: &str = "demo";
 
+/// Narrows the contact list by a contact's relationship to the organisation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ContactFilter {
     All,
     Clients,
     Workers,
+    Other,
 }
 
 impl ContactFilter {
+    pub const ALL: [Self; 4] = [Self::All, Self::Clients, Self::Workers, Self::Other];
+
     pub fn label(self) -> &'static str {
         match self {
-            Self::All => "Contacts",
+            Self::All => "All contacts",
             Self::Clients => "Clients",
             Self::Workers => "Workers",
+            Self::Other => "Other",
+        }
+    }
+
+    /// The `role` query parameter understood by `GET /api/v1/contacts`.
+    pub fn role_param(self) -> &'static str {
+        match self {
+            Self::All => "all",
+            Self::Clients => "client",
+            Self::Workers => "worker",
+            Self::Other => "other",
         }
     }
 
@@ -48,6 +63,7 @@ impl ContactFilter {
             Self::All => "'client','worker','dual','other'",
             Self::Clients => "'client','dual'",
             Self::Workers => "'worker','dual'",
+            Self::Other => "'other'",
         }
     }
 }

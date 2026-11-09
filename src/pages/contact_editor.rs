@@ -14,6 +14,13 @@ use crate::contact::{
 };
 use crate::theme;
 
+/// The contact and organisation roles that make a contact a client: the
+/// organisation provides care to them.
+pub const CLIENT_ROLES: (&str, &str) = ("care_recipient", "provider");
+
+/// The contact and organisation roles that make a contact a worker.
+pub const WORKER_ROLES: (&str, &str) = ("employee", "employer");
+
 /// A relationship kind as shown in the UI, with the role each endpoint holds.
 pub struct RelationshipKind {
     pub label: &'static str,
@@ -21,7 +28,7 @@ pub struct RelationshipKind {
     pub linked_role: &'static str,
 }
 
-pub const RELATIONSHIP_KINDS: [RelationshipKind; 10] = [
+pub const RELATIONSHIP_KINDS: [RelationshipKind; 11] = [
     RelationshipKind {
         label: "Emergency Contact",
         subject_role: "person_supported",
@@ -63,9 +70,14 @@ pub const RELATIONSHIP_KINDS: [RelationshipKind; 10] = [
         linked_role: "friend",
     },
     RelationshipKind {
+        label: "Care Provider",
+        subject_role: CLIENT_ROLES.0,
+        linked_role: CLIENT_ROLES.1,
+    },
+    RelationshipKind {
         label: "Employer",
-        subject_role: "employee",
-        linked_role: "employer",
+        subject_role: WORKER_ROLES.0,
+        linked_role: WORKER_ROLES.1,
     },
     RelationshipKind {
         label: "Other",
@@ -290,11 +302,8 @@ impl ContactWindowState {
         }
 
         let mut details = self.details.clone();
-        if self.role == "contact" {
-            details.remove("contact_role");
-        } else {
-            details.insert("contact_role".to_owned(), Value::String(self.role.clone()));
-        }
+        // Client and worker come from relationships, not a stored field.
+        details.remove("contact_role");
         if self.status == "Active" {
             details.remove("contact_status");
         } else {
@@ -598,7 +607,7 @@ fn core_card(ui: &mut Ui, state: &mut ContactWindowState) -> Option<ContactEdito
         ui.columns(2, |cols| {
             text_field(&mut cols[0], "Phone", &mut state.phone);
             field_label(&mut cols[1], "Role", false);
-            role_select(&mut cols[1], state);
+            role_summary(&mut cols[1], &state.role);
         });
         ui.add_space(4.0);
         ui.columns(2, |cols| {
@@ -1253,19 +1262,19 @@ fn combo(ui: &mut Ui, id: &str, value: &mut String, options: &[String], label: &
     }
 }
 
-fn role_select(ui: &mut Ui, state: &mut ContactWindowState) {
-    let labels = ["client", "worker", "dual", "other", "contact"];
-    let mut current = state.role.clone();
-    let response = egui::ComboBox::from_id_salt("contact-role")
-        .selected_text(role_label(&current))
-        .width(ui.available_width())
-        .show_ui(ui, |ui| {
-            for role in labels {
-                ui.selectable_value(&mut current, role.to_owned(), role_label(role));
-            }
-        });
-    named(&response.response, "Role");
-    state.role = current;
+/// Read-only role. It is derived from relationships with the organisation, so
+/// it changes by adding or ending a Care Provider or Employer relationship.
+fn role_summary(ui: &mut Ui, role: &str) {
+    ui.horizontal(|ui| {
+        role_pill(ui, role);
+    });
+    ui.label(
+        RichText::new(
+            "Set by relationships: add a Care Provider or Employer link to the organisation.",
+        )
+        .color(theme::faint())
+        .size(10.0),
+    );
 }
 
 fn status_select(ui: &mut Ui, state: &mut ContactWindowState) {

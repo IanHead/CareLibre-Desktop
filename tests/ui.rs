@@ -19,8 +19,7 @@ fn harness(app: CareLibreApp) -> Harness<'static, CareLibreApp> {
 fn every_page_renders() {
     for page in [
         Page::Home,
-        Page::Clients,
-        Page::Workers,
+        Page::Contacts,
         Page::Rostering,
         Page::Relationships,
         Page::Services,

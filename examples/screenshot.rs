@@ -11,6 +11,7 @@ use carelibre_desktop::{
     intake::IntakeKind,
     pages::Page,
     server::ConnectionState,
+    store::ContactFilter,
     theme::{self, ThemeMode},
 };
 use eframe::egui;
@@ -22,10 +23,14 @@ fn main() {
         .first()
         .cloned()
         .unwrap_or_else(|| "screenshot.png".to_owned());
+    // `clients` and `workers` open Contacts narrowed to that relationship.
+    let contact_filter = match args.get(1).map(String::as_str) {
+        Some("clients") => Some(ContactFilter::Clients),
+        Some("workers") => Some(ContactFilter::Workers),
+        _ => None,
+    };
     let page = match args.get(1).map(String::as_str) {
-        Some("contacts") => Page::Contacts,
-        Some("clients") => Page::Clients,
-        Some("workers") => Page::Workers,
+        Some("contacts" | "clients" | "workers") => Page::Contacts,
         Some("rostering") => Page::Rostering,
         Some("relationships") => Page::Relationships,
         Some("services") => Page::Services,
@@ -65,6 +70,9 @@ fn main() {
 
     let mut app = CareLibreApp::new();
     app.set_page(page);
+    if let Some(filter) = contact_filter {
+        app.set_contact_filter(filter);
+    }
     app.set_theme_mode(theme_mode);
     if client_side {
         app.set_client_side_decorations(true);
@@ -134,7 +142,7 @@ fn main() {
             harness.run();
         }
 
-        if matches!(page, Page::Clients | Page::Workers | Page::Contacts) {
+        if page == Page::Contacts {
             let deadline = Instant::now() + Duration::from_secs(5);
             while harness.state().contacts_loaded() == 0 && Instant::now() < deadline {
                 harness.run();

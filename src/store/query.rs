@@ -21,6 +21,7 @@ impl ContactCounts {
             ContactFilter::All => self.all,
             ContactFilter::Clients => self.clients + self.dual,
             ContactFilter::Workers => self.workers + self.dual,
+            ContactFilter::Other => self.other,
         }
     }
 }

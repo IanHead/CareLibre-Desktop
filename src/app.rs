@@ -17,7 +17,7 @@ use crate::{
     config::Config,
     contact::{
         ApiContactDetail, ApiContactWrite, ApiGraphNode, ApiRelationship, ApiRelationshipWrite,
-        PartyKind, kind_from_role, row_from_api,
+        PartyKind, row_from_api,
     },
     credentials,
     intake::IntakeKind,
@@ -47,9 +47,7 @@ pub struct CareLibreApp {
     settings: SettingsForm,
     server: ServerState,
     runtime: Option<ServerRuntime>,
-    contacts_all: ContactsState,
-    contacts_clients: ContactsState,
-    contacts_workers: ContactsState,
+    contacts: ContactsState,
     intake: IntakeState,
     contact_windows: BTreeMap<String, ContactWindowState>,
     contact_order: Vec<String>,
@@ -58,6 +56,9 @@ pub struct CareLibreApp {
     relationship_request_seq: u64,
     relationship_list_requests: BTreeMap<u64, String>,
     relationship_create_requests: BTreeMap<u64, Option<String>>,
+    /// Client/worker links to the organisation requested after an intake,
+    /// keyed by request id, holding the new contact's name.
+    intake_role_links: BTreeMap<u64, String>,
     relationship_delete_requests: BTreeMap<u64, Option<String>>,
     relationship_contact_creates: BTreeMap<u64, PendingInlineRelationship>,
     party_catalog: Vec<ApiGraphNode>,
@@ -144,9 +145,7 @@ impl CareLibreApp {
             settings,
             server,
             runtime: None,
-            contacts_all: ContactsState::new(ContactFilter::All),
-            contacts_clients: ContactsState::new(ContactFilter::Clients),
-            contacts_workers: ContactsState::new(ContactFilter::Workers),
+            contacts: ContactsState::new(ContactFilter::All),
             intake: IntakeState::new(),
             contact_windows: BTreeMap::new(),
             contact_order: Vec::new(),
@@ -157,6 +156,7 @@ impl CareLibreApp {
             relationship_request_seq: 1 << 32,
             relationship_list_requests: BTreeMap::new(),
             relationship_create_requests: BTreeMap::new(),
+            intake_role_links: BTreeMap::new(),
             relationship_delete_requests: BTreeMap::new(),
             relationship_contact_creates: BTreeMap::new(),
             party_catalog: Vec::new(),
@@ -372,16 +372,12 @@ impl CareLibreApp {
 
     /// Number of contacts currently materialised in the active list.
     pub fn contacts_loaded(&self) -> usize {
-        match self.page {
-            Page::Workers => self.contacts_workers.loaded(),
-            Page::Contacts => self.contacts_all.loaded(),
-            _ => self.contacts_clients.loaded(),
-        }
+        self.contacts.loaded()
     }
 
     /// Contacts loaded for the global list; also proves server counts are ready.
     pub fn server_contacts_loaded(&self) -> usize {
-        self.contacts_all.loaded()
+        self.contacts.loaded()
     }
 
     /// The whole application UI. Kept separate from [`eframe::App`] so it can be
@@ -427,7 +423,7 @@ impl CareLibreApp {
         self.status_bar(ui);
         self.render_contact_dock(ui);
 
-        let mut contacts_action: Option<(ContactFilter, ContactsAction)> = None;
+        let mut contacts_action: Option<ContactsAction> = None;
         let mut intake_action: Option<IntakeAction> = None;
         let mut relationship_action: Option<RelationshipsAction> = None;
         let mut rostering_action: Option<RosteringAction> = None;
@@ -462,8 +458,8 @@ impl CareLibreApp {
             })
             .inner;
 
-        if let Some((filter, contacts_action)) = contacts_action {
-            self.handle_contacts_action(filter, contacts_action);
+        if let Some(contacts_action) = contacts_action {
+            self.handle_contacts_action(contacts_action);
         }
         if let Some(intake_action) = intake_action {
             self.handle_intake_action(ui.ctx(), intake_action);
@@ -487,11 +483,7 @@ impl CareLibreApp {
             chrome::resize_handles(ui.ctx());
         }
 
-        let perf_state = match self.page {
-            Page::Workers => &self.contacts_workers,
-            Page::Contacts => &self.contacts_all,
-            _ => &self.contacts_clients,
-        };
+        let perf_state = &self.contacts;
         let perf_info = PerfInfo {
             cache_ready: self.store_ready,
             cache_path: (!self.store_path.is_empty()).then_some(self.store_path.as_str()),
@@ -511,7 +503,7 @@ impl CareLibreApp {
         &mut self,
         ui: &mut Ui,
         page: Page,
-        contacts_action: &mut Option<(ContactFilter, ContactsAction)>,
+        contacts_action: &mut Option<ContactsAction>,
         intake_action: &mut Option<IntakeAction>,
         relationship_action: &mut Option<RelationshipsAction>,
         rostering_action: &mut Option<RosteringAction>,
@@ -560,43 +552,11 @@ impl CareLibreApp {
                 };
                 if let Some(action) = pages::contacts::show(
                     ui,
-                    &mut self.contacts_all,
+                    &mut self.contacts,
                     signed_in,
                     server_error.as_deref(),
                 ) {
-                    *contacts_action = Some((ContactFilter::All, action));
-                }
-                None
-            }
-            Page::Clients => {
-                let signed_in = self.access_token().is_some();
-                let server_error = match &self.server.connection {
-                    ConnectionState::Offline { error } => Some(error.clone()),
-                    _ => None,
-                };
-                if let Some(action) = pages::contacts::show(
-                    ui,
-                    &mut self.contacts_clients,
-                    signed_in,
-                    server_error.as_deref(),
-                ) {
-                    *contacts_action = Some((ContactFilter::Clients, action));
-                }
-                None
-            }
-            Page::Workers => {
-                let signed_in = self.access_token().is_some();
-                let server_error = match &self.server.connection {
-                    ConnectionState::Offline { error } => Some(error.clone()),
-                    _ => None,
-                };
-                if let Some(action) = pages::contacts::show(
-                    ui,
-                    &mut self.contacts_workers,
-                    signed_in,
-                    server_error.as_deref(),
-                ) {
-                    *contacts_action = Some((ContactFilter::Workers, action));
+                    *contacts_action = Some(action);
                 }
                 None
             }
@@ -657,22 +617,6 @@ impl CareLibreApp {
 
         for event in events {
             self.handle_server_event(ctx, event);
-        }
-    }
-
-    fn contact_state(&self, filter: ContactFilter) -> &ContactsState {
-        match filter {
-            ContactFilter::All => &self.contacts_all,
-            ContactFilter::Workers => &self.contacts_workers,
-            ContactFilter::Clients => &self.contacts_clients,
-        }
-    }
-
-    fn contact_state_mut(&mut self, filter: ContactFilter) -> &mut ContactsState {
-        match filter {
-            ContactFilter::All => &mut self.contacts_all,
-            ContactFilter::Workers => &mut self.contacts_workers,
-            ContactFilter::Clients => &mut self.contacts_clients,
         }
     }
 
@@ -774,14 +718,11 @@ impl CareLibreApp {
     }
 
     fn tick_contact_search(&mut self) {
-        for filter in [ContactFilter::Clients, ContactFilter::Workers] {
-            let due = self.contact_state(filter).search_due;
-            if let Some(due) = due
-                && Instant::now() >= due
-            {
-                self.contact_state_mut(filter).search_due = None;
-                self.send_contacts_query(filter, false);
-            }
+        if let Some(due) = self.contacts.search_due
+            && Instant::now() >= due
+        {
+            self.contacts.search_due = None;
+            self.send_contacts_query(false);
         }
     }
 
@@ -797,25 +738,19 @@ impl CareLibreApp {
             return;
         }
 
-        let filter = match self.page {
-            Page::Contacts => ContactFilter::All,
-            Page::Clients => ContactFilter::Clients,
-            Page::Workers => ContactFilter::Workers,
-            _ => return,
-        };
+        if self.page != Page::Contacts {
+            return;
+        }
 
-        let needs_load = {
-            let state = self.contact_state(filter);
-            state.generation == 0 && state.search_due.is_none()
-        };
-        if needs_load {
-            self.send_contacts_query(filter, false);
+        if self.contacts.generation == 0 && self.contacts.search_due.is_none() {
+            self.send_contacts_query(false);
         }
     }
 
-    fn send_contacts_query(&mut self, filter: ContactFilter, append: bool) {
+    fn send_contacts_query(&mut self, append: bool) {
+        let filter = self.contacts.filter;
         let (generation, search, after, limit) = {
-            let state = self.contact_state_mut(filter);
+            let state = &mut self.contacts;
             if append && state.next_cursor.is_none() {
                 return;
             }
@@ -836,14 +771,10 @@ impl CareLibreApp {
             )
         };
 
-        let role = match filter {
-            ContactFilter::All => "all",
-            ContactFilter::Clients => "client",
-            ContactFilter::Workers => "worker",
-        };
+        let role = filter.role_param();
 
         let Some(token) = self.access_token() else {
-            let state = self.contact_state_mut(filter);
+            let state = &mut self.contacts;
             state.loading = false;
             state.error = Some("Sign in to load contacts from the server.".to_owned());
             return;
@@ -862,16 +793,17 @@ impl CareLibreApp {
                 append,
             );
         } else {
-            let state = self.contact_state_mut(filter);
+            let state = &mut self.contacts;
             state.loading = false;
             state.error = Some("The server connection is not available.".to_owned());
         }
     }
 
-    fn handle_contacts_action(&mut self, filter: ContactFilter, action: ContactsAction) {
+    fn handle_contacts_action(&mut self, action: ContactsAction) {
         match action {
+            ContactsAction::FilterChanged(filter) => self.show_contacts(filter, None),
             ContactsAction::SearchChanged => {
-                let state = self.contact_state_mut(filter);
+                let state = &mut self.contacts;
                 state.generation += 1;
                 state.search_due = Some(Instant::now() + Duration::from_millis(120));
                 state.loading = true;
@@ -879,7 +811,7 @@ impl CareLibreApp {
                 state.needs_more = false;
             }
             ContactsAction::OpenContact(id) => self.open_contact(&id),
-            ContactsAction::LoadMore => self.send_contacts_query(filter, true),
+            ContactsAction::LoadMore => self.send_contacts_query(true),
             ContactsAction::GoToSettings => self.page = Page::Settings,
             ContactsAction::StartIntake => self.open_intake(),
         }
@@ -1006,36 +938,46 @@ impl CareLibreApp {
                 remote.create_contact(request_id, self.server.base_url.clone(), token, payload);
             }
             IntakeAction::GoToSettings => self.page = Page::Settings,
-            IntakeAction::ViewContact { page, name } => {
-                self.page = page;
-                let filter = match page {
-                    Page::Workers => ContactFilter::Workers,
-                    Page::Contacts => ContactFilter::All,
-                    _ => ContactFilter::Clients,
-                };
-                let state = self.contact_state_mut(filter);
-                state.search = name;
-                state.generation += 1;
-                state.search_due = Some(Instant::now());
-                state.loading = true;
-                state.next_cursor = None;
-                state.selected = None;
+            IntakeAction::ViewContact { filter, name } => {
+                self.page = Page::Contacts;
+                self.show_contacts(filter, Some(name));
                 let _ = ctx;
             }
         }
     }
 
     fn refresh_contact_lists(&mut self) {
-        for state in [
-            &mut self.contacts_all,
-            &mut self.contacts_clients,
-            &mut self.contacts_workers,
-        ] {
-            state.reset();
-            state.generation = 0;
-            state.next_cursor = None;
-            state.loading = false;
+        let state = &mut self.contacts;
+        state.reset();
+        state.generation = 0;
+        state.next_cursor = None;
+        state.loading = false;
+    }
+
+    /// Switch the contact list to a relationship filter, optionally searching
+    /// for a name, and reload it from the first page.
+    fn show_contacts(&mut self, filter: ContactFilter, search: Option<String>) {
+        let state = &mut self.contacts;
+        state.filter = filter;
+        if let Some(search) = search {
+            state.search = search;
         }
+        state.reset();
+        state.total = 0;
+        state.generation += 1;
+        state.search_due = Some(Instant::now());
+        state.loading = true;
+        state.next_cursor = None;
+        state.needs_more = false;
+        state.selected = None;
+    }
+
+    /// Show the contact list narrowed to a relationship. Used by screenshot previews.
+    pub fn set_contact_filter(&mut self, filter: ContactFilter) {
+        self.page = Page::Contacts;
+        self.last_page = Page::Contacts;
+        self.contacts.filter = filter;
+        self.refresh_contact_lists();
     }
 
     pub fn open_contact(&mut self, id: &str) {
@@ -1375,7 +1317,7 @@ impl CareLibreApp {
                 .with_min_inner_size([720.0, 520.0]);
             let client_side = self.config.client_side_decorations;
             let mut close = false;
-            let mut contacts_action: Option<(ContactFilter, ContactsAction)> = None;
+            let mut contacts_action: Option<ContactsAction> = None;
             let mut intake_action: Option<IntakeAction> = None;
             let mut relationship_action: Option<RelationshipsAction> = None;
             let mut rostering_action: Option<RosteringAction> = None;
@@ -1453,8 +1395,8 @@ impl CareLibreApp {
                 ctx.send_viewport_cmd_to(viewport_id, egui::ViewportCommand::Close);
                 continue;
             }
-            if let Some((filter, action)) = contacts_action {
-                self.handle_contacts_action(filter, action);
+            if let Some(action) = contacts_action {
+                self.handle_contacts_action(action);
             }
             if let Some(action) = intake_action {
                 self.handle_intake_action(ctx, action);
@@ -2316,7 +2258,7 @@ impl CareLibreApp {
     /// selected from a relationship lookup immediately.
     fn lookup_parties(&self) -> Vec<ApiGraphNode> {
         let mut nodes = self.party_catalog.clone();
-        let loaded = self.contacts_all.rows.load_full();
+        let loaded = self.contacts.rows.load_full();
         for row in loaded.iter().chain(self.known_contacts.values()) {
             if !nodes
                 .iter()
@@ -2352,21 +2294,15 @@ impl CareLibreApp {
             });
         }
 
-        let states = [
-            &self.contacts_all,
-            &self.contacts_clients,
-            &self.contacts_workers,
-        ];
-        let matches = [
-            true,
-            matches!(kind, ContactKind::Client | ContactKind::Dual),
-            matches!(kind, ContactKind::Worker | ContactKind::Dual),
-        ];
+        let state = &self.contacts;
+        let matches = match state.filter {
+            ContactFilter::All => true,
+            ContactFilter::Clients => matches!(kind, ContactKind::Client | ContactKind::Dual),
+            ContactFilter::Workers => matches!(kind, ContactKind::Worker | ContactKind::Dual),
+            ContactFilter::Other => kind == ContactKind::Other,
+        };
 
-        for (state, matches) in states.into_iter().zip(matches) {
-            if !matches {
-                continue;
-            }
+        if matches {
             let mut rows = (*state.rows.load_full()).clone();
             if !rows.iter().any(|existing| existing.id == row.id) {
                 rows.insert(0, row.clone());
@@ -2417,12 +2353,7 @@ impl CareLibreApp {
 
     /// Open the first loaded contact. Used by screenshot previews.
     pub fn open_first_contact(&mut self) -> bool {
-        let filter = match self.page {
-            Page::Contacts => ContactFilter::All,
-            Page::Workers => ContactFilter::Workers,
-            _ => ContactFilter::Clients,
-        };
-        let rows = self.contact_state(filter).rows.load_full();
+        let rows = self.contacts.rows.load_full();
         if let Some(row) = rows.first() {
             let id = row.id.clone();
             self.open_contact(&id);
@@ -2516,8 +2447,8 @@ impl CareLibreApp {
                     append,
                     result,
                 } => {
-                    let state = self.contact_state_mut(filter);
-                    if request_id != state.generation {
+                    let state = &mut self.contacts;
+                    if request_id != state.generation || filter != state.filter {
                         continue;
                     }
                     state.loading = false;
@@ -2589,7 +2520,7 @@ impl CareLibreApp {
                                 window.apply(detail);
                             }
                             self.refresh_contact_lists();
-                            self.send_contacts_query(ContactFilter::All, false);
+                            self.send_contacts_query(false);
                             self.notify(ctx, "Contact saved to the server.");
                         }
                         Err(error) => {
@@ -3054,12 +2985,67 @@ impl CareLibreApp {
         }
     }
 
+    /// Make a new intake contact a client or worker of the signed-in
+    /// organisation by linking them to it.
+    fn link_intake_to_organisation(&mut self, kind: IntakeKind, contact_id: &str, name: &str) {
+        let (from_role, to_role) = match kind {
+            IntakeKind::Client => pages::contact_editor::CLIENT_ROLES,
+            IntakeKind::Worker => pages::contact_editor::WORKER_ROLES,
+            IntakeKind::Other => return,
+        };
+        let Some(session) = &self.server.session else {
+            return;
+        };
+        let organisation_id = session.auth.organisation.id.clone();
+        let token = session.auth.access_token.clone();
+        if self.remote.is_none() {
+            return;
+        }
+        let request_id = self.next_relationship_request();
+        self.intake_role_links.insert(request_id, name.to_owned());
+        let Some(remote) = &self.remote else {
+            return;
+        };
+        remote.create_relationship(
+            request_id,
+            self.server.base_url.clone(),
+            token,
+            ApiRelationshipWrite {
+                from_kind: PartyKind::Contact,
+                from_id: contact_id.to_owned(),
+                from_role: from_role.to_owned(),
+                to_kind: PartyKind::Organisation,
+                to_id: organisation_id,
+                to_role: to_role.to_owned(),
+                start_date: None,
+                end_date: None,
+                notes: None,
+            },
+        );
+    }
+
     fn handle_relationship_created(
         &mut self,
         ctx: &egui::Context,
         request_id: u64,
         result: Result<ApiRelationship, String>,
     ) {
+        if let Some(name) = self.intake_role_links.remove(&request_id) {
+            match result {
+                Ok(edge) => {
+                    self.relationship_edges.push(edge);
+                    self.refresh_contact_lists();
+                    self.send_contacts_query(false);
+                }
+                Err(error) => self.notify(
+                    ctx,
+                    format!(
+                        "{name} was saved, but linking them to the organisation failed: {error}"
+                    ),
+                ),
+            }
+            return;
+        }
         let Some(window_id) = self.relationship_create_requests.remove(&request_id) else {
             return;
         };
@@ -3178,16 +3164,17 @@ impl CareLibreApp {
             Ok(detail) => {
                 self.remember_contact(&detail);
                 let name = detail.contact.display_name.clone();
-                let kind = kind_from_role(&detail.contact.role);
                 let contact_id = detail.contact.id.clone();
+                let kind = self
+                    .intake
+                    .draft
+                    .as_ref()
+                    .map_or(IntakeKind::Other, |draft| draft.kind);
+                self.link_intake_to_organisation(kind, &contact_id, &name);
                 self.intake.completed = Some(crate::intake::CompletedIntake {
                     contact_id,
                     name: name.clone(),
-                    kind: match kind {
-                        ContactKind::Worker => IntakeKind::Worker,
-                        ContactKind::Other | ContactKind::Dual => IntakeKind::Other,
-                        ContactKind::Client => IntakeKind::Client,
-                    },
+                    kind,
                 });
                 self.intake.view = IntakeView::Completed;
                 self.intake.dirty = false;
@@ -3199,7 +3186,7 @@ impl CareLibreApp {
                 }
                 self.intake.popped_out = false;
                 self.refresh_contact_lists();
-                self.send_contacts_query(ContactFilter::All, false);
+                self.send_contacts_query(false);
 
                 let draft_id = self.intake.draft.as_ref().map(|draft| draft.id.clone());
                 if let Some(draft_id) = draft_id
@@ -3261,7 +3248,7 @@ impl CareLibreApp {
                             self.forget_saved_login();
                         }
                         self.refresh_contact_lists();
-                        self.send_contacts_query(ContactFilter::All, false);
+                        self.send_contacts_query(false);
                         self.notify(ctx, format!("Signed in to {organisation}."));
                     }
                     Err(error) => {
@@ -3294,7 +3281,7 @@ impl CareLibreApp {
                         if was_restoring {
                             self.settings.on_signed_in();
                             self.refresh_contact_lists();
-                            self.send_contacts_query(ContactFilter::All, false);
+                            self.send_contacts_query(false);
                             self.notify(ctx, format!("Welcome back to {organisation}."));
                         }
                     }
@@ -3618,7 +3605,7 @@ impl CareLibreApp {
                         let search = ui.add_sized(
                             [260.0, 34.0],
                             egui::TextEdit::singleline(&mut self.search)
-                                .hint_text("Search clients, workers, shifts…")
+                                .hint_text("Search contacts, shifts…")
                                 .margin(Margin::symmetric(10, 8)),
                         );
                         if search.lost_focus()
@@ -3627,13 +3614,7 @@ impl CareLibreApp {
                         {
                             let query = self.search.trim().to_owned();
                             self.page = Page::Contacts;
-                            let state = &mut self.contacts_all;
-                            state.search = query;
-                            state.generation += 1;
-                            state.search_due = Some(Instant::now());
-                            state.loading = true;
-                            state.next_cursor = None;
-                            state.selected = None;
+                            self.show_contacts(ContactFilter::All, Some(query));
                         }
                     });
                 });
@@ -3660,8 +3641,6 @@ impl CareLibreApp {
                 for page in [
                     Page::Home,
                     Page::Contacts,
-                    Page::Clients,
-                    Page::Workers,
                     Page::Rostering,
                     Page::Relationships,
                 ] {
@@ -4061,12 +4040,6 @@ fn intake_write(draft: &crate::intake::IntakeDraft) -> ApiContactWrite {
     for (key, value) in &draft.fields {
         details.insert(key.clone(), Value::String(value.clone()));
     }
-    let role = match draft.kind {
-        IntakeKind::Client => "client",
-        IntakeKind::Worker => "worker",
-        IntakeKind::Other => "other",
-    };
-    details.insert("contact_role".to_owned(), Value::String(role.to_owned()));
     details.insert(
         "contact_status".to_owned(),
         Value::String("Onboarding".to_owned()),

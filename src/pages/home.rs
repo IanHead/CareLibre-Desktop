@@ -156,7 +156,7 @@ fn quick_actions(ui: &mut Ui, action: &mut Option<Action>) {
             "👤",
             "New client",
             "Participant record",
-            Some(Page::Clients),
+            Some(Page::Contacts),
         ),
         (
             "📅",

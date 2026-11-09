@@ -10,7 +10,7 @@ use eframe::egui::{
 };
 
 use crate::intake::{CompletedIntake, IntakeDraft, IntakeKind, IntakeSummary};
-use crate::pages::Page;
+use crate::store::ContactFilter;
 use crate::theme;
 
 use fields::{FieldKind, FieldSpec, StepSpec};
@@ -114,7 +114,7 @@ pub enum IntakeAction {
     SaveNow,
     BackToPicker,
     Complete,
-    ViewContact { page: Page, name: String },
+    ViewContact { filter: ContactFilter, name: String },
     GoToSettings,
     PopOut,
     Dock,
@@ -959,13 +959,13 @@ fn completed(ui: &mut Ui, state: &mut IntakeState) -> Option<IntakeAction> {
         ui.add_space(20.0);
         ui.horizontal(|ui| {
             if ui.add(theme::primary_button("View contact")).clicked() {
-                let page = match completed.kind {
-                    IntakeKind::Client => Page::Clients,
-                    IntakeKind::Worker => Page::Workers,
-                    IntakeKind::Other => Page::Contacts,
+                let filter = match completed.kind {
+                    IntakeKind::Client => ContactFilter::Clients,
+                    IntakeKind::Worker => ContactFilter::Workers,
+                    IntakeKind::Other => ContactFilter::Other,
                 };
                 action = Some(IntakeAction::ViewContact {
-                    page,
+                    filter,
                     name: completed.name.clone(),
                 });
             }

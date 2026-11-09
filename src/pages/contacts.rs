@@ -24,6 +24,8 @@ const SEARCH_DEBOUNCE: Duration = Duration::from_millis(120);
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ContactsAction {
     SearchChanged,
+    /// The relationship filter changed; reload the list from the start.
+    FilterChanged(ContactFilter),
     LoadMore,
     OpenContact(String),
     GoToSettings,
@@ -91,9 +93,9 @@ pub fn show(
 
     header(ui, state);
     ui.add_space(12.0);
-    stat_chips(ui, state);
+    let filter_action = filter_chips(ui, state);
     ui.add_space(12.0);
-    let mut action = search_row(ui, state);
+    let mut action = search_row(ui, state).or(filter_action);
 
     if let Some(error) = &state.error {
         ui.add_space(8.0);
@@ -118,6 +120,16 @@ pub fn show(
             &format!("No contacts match “{}”.", state.search.trim()),
             theme::muted(),
         );
+    } else if state.total == 0 && !state.loading && state.error.is_none() {
+        message_card(
+            ui,
+            "No contacts in this view",
+            &format!(
+                "No contacts have the “{}” relationship yet.",
+                state.filter.label()
+            ),
+            theme::muted(),
+        );
     } else {
         contacts_table(ui, state, &mut action);
     }
@@ -129,7 +141,7 @@ fn header(ui: &mut Ui, state: &ContactsState) {
     ui.horizontal(|ui| {
         ui.vertical(|ui| {
             ui.horizontal(|ui| {
-                ui.label(RichText::new(state.filter.label()).font(theme::strong_font(26.0)));
+                ui.label(RichText::new("Contacts").font(theme::strong_font(26.0)));
                 theme::pill(ui, &format_count(state.total), theme::accent());
             });
             ui.label(
@@ -147,20 +159,60 @@ fn header(ui: &mut Ui, state: &ContactsState) {
     });
 }
 
-fn stat_chips(ui: &mut Ui, state: &ContactsState) {
-    ui.horizontal(|ui| {
-        chip(ui, "All contacts", state.counts.all, theme::text());
-        chip(ui, "Clients", state.counts.clients, theme::accent_blue());
-        chip(ui, "Workers", state.counts.workers, theme::accent());
-        chip(ui, "Dual role", state.counts.dual, theme::warning());
-        chip(ui, "Other", state.counts.other, theme::faint());
+/// Relationship filter chips. Each chip shows how many contacts it matches;
+/// dual-role contacts count as both clients and workers.
+fn filter_chips(ui: &mut Ui, state: &mut ContactsState) -> Option<ContactsAction> {
+    let mut action = None;
+    let row = vec2(ui.available_width(), 46.0);
+    ui.allocate_ui_with_layout(row, Layout::left_to_right(Align::Center), |ui| {
+        ui.label(
+            RichText::new("Relationship")
+                .color(theme::faint())
+                .size(10.5),
+        );
+        ui.add_space(4.0);
+        for filter in ContactFilter::ALL {
+            let selected = state.filter == filter;
+            let response = chip(
+                ui,
+                filter.label(),
+                state.counts.for_filter(filter),
+                filter_colour(filter),
+                selected,
+            );
+            if response.clicked() && !selected {
+                state.filter = filter;
+                state.selected = None;
+                action = Some(ContactsAction::FilterChanged(filter));
+            }
+        }
+        if state.counts.dual > 0 {
+            ui.add_space(6.0);
+            ui.label(
+                RichText::new(format!(
+                    "{} dual-role contacts appear under both Clients and Workers",
+                    format_count(state.counts.dual)
+                ))
+                .color(theme::faint())
+                .size(10.0),
+            );
+        }
     });
+    action
 }
 
-fn chip(ui: &mut Ui, label: &str, value: usize, colour: Color32) {
-    egui::Frame::new()
-        .fill(theme::surface())
-        .stroke(Stroke::new(1.0, theme::border()))
+fn chip(ui: &mut Ui, label: &str, value: usize, colour: Color32, selected: bool) -> egui::Response {
+    let (fill, stroke) = if selected {
+        (
+            Color32::from_rgba_unmultiplied(colour.r(), colour.g(), colour.b(), 30),
+            Stroke::new(1.5, colour),
+        )
+    } else {
+        (theme::surface(), Stroke::new(1.0, theme::border()))
+    };
+    let response = egui::Frame::new()
+        .fill(fill)
+        .stroke(stroke)
         .corner_radius(CornerRadius::same(8))
         .inner_margin(Margin::symmetric(11, 6))
         .show(ui, |ui| {
@@ -170,9 +222,37 @@ fn chip(ui: &mut Ui, label: &str, value: usize, colour: Color32) {
                         .color(colour)
                         .font(theme::strong_font(14.0)),
                 );
-                ui.label(RichText::new(label).color(theme::muted()).size(10.5));
+                let text = if selected {
+                    theme::text()
+                } else {
+                    theme::muted()
+                };
+                ui.label(RichText::new(label).color(text).size(10.5));
             });
-        });
+        })
+        .response
+        .interact(Sense::click());
+    if response.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    response.widget_info(|| {
+        egui::WidgetInfo::selected(
+            egui::Role::Button,
+            ui.is_enabled(),
+            selected,
+            format!("{label} ({value})"),
+        )
+    });
+    response
+}
+
+fn filter_colour(filter: ContactFilter) -> Color32 {
+    match filter {
+        ContactFilter::All => theme::text(),
+        ContactFilter::Clients => theme::accent_blue(),
+        ContactFilter::Workers => theme::accent(),
+        ContactFilter::Other => theme::faint(),
+    }
 }
 
 fn search_row(ui: &mut Ui, state: &mut ContactsState) -> Option<ContactsAction> {
@@ -284,7 +364,12 @@ fn contacts_table(ui: &mut Ui, state: &mut ContactsState, action: &mut Option<Co
                 "Showing {} of {} {}. Scroll to load more.",
                 format_count(loaded),
                 format_count(state.total),
-                state.filter.label().to_lowercase(),
+                match state.filter {
+                    ContactFilter::All => "contacts",
+                    ContactFilter::Clients => "clients",
+                    ContactFilter::Workers => "workers",
+                    ContactFilter::Other => "other contacts",
+                },
             ))
             .color(theme::faint())
             .size(10.0),
