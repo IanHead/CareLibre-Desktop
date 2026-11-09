@@ -11,7 +11,7 @@ use serde_json::{Map, Value};
 use crate::contact::{
     ApiContactDetail, ApiContactWrite, ApiCustomField, ApiGraphNode, ApiRelationship,
     ApiRelationshipCorrection, ApiRelationshipEvent, END_REASONS, PartyKind, RelationshipChange,
-    end_reason_label, history_action_label, relationship_role_label,
+    RoleOption, category_label, end_reason_label, history_action_label, relationship_role_label,
 };
 use crate::theme;
 
@@ -22,70 +22,77 @@ pub const CLIENT_ROLES: (&str, &str) = ("care_recipient", "provider");
 /// The contact and organisation roles that make a contact a worker.
 pub const WORKER_ROLES: (&str, &str) = ("employee", "employer");
 
-/// A relationship kind as shown in the UI, with the role each endpoint holds.
-pub struct RelationshipKind {
-    pub label: &'static str,
-    pub subject_role: &'static str,
-    pub linked_role: &'static str,
-}
+/// Draw a searchable list of relationship roles from the catalogue, grouped by
+/// category. `describe` turns an option into its text. Returns true when the
+/// selection changed.
+pub fn role_picker(
+    ui: &mut Ui,
+    id: &str,
+    options: &[RoleOption],
+    selected: &mut Option<RoleOption>,
+    describe: impl Fn(&RoleOption) -> String,
+) -> bool {
+    let mut changed = false;
+    let search_id = ui.make_persistent_id((id, "search"));
+    let text = selected
+        .as_ref()
+        .map_or_else(|| "Choose a relationship…".to_owned(), &describe);
+    let combo = egui::ComboBox::from_id_salt(id)
+        .selected_text(text)
+        .width(ui.available_width().min(340.0))
+        .height(340.0)
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .show_ui(ui, |ui| {
+            if options.is_empty() {
+                ui.label(
+                    RichText::new("Loading relationship types…")
+                        .color(theme::muted())
+                        .size(10.5),
+                );
+                return;
+            }
+            let mut search =
+                ui.data_mut(|data| data.get_temp::<String>(search_id).unwrap_or_default());
+            let field = ui.add(
+                egui::TextEdit::singleline(&mut search)
+                    .hint_text("Filter…")
+                    .desired_width(ui.available_width()),
+            );
+            named(&field, "Filter relationship types");
+            ui.data_mut(|data| data.insert_temp(search_id, search.clone()));
 
-pub const RELATIONSHIP_KINDS: [RelationshipKind; 11] = [
-    RelationshipKind {
-        label: "Emergency Contact",
-        subject_role: "person_supported",
-        linked_role: "emergency_contact",
-    },
-    RelationshipKind {
-        label: "Next of Kin",
-        subject_role: "person_supported",
-        linked_role: "next_of_kin",
-    },
-    RelationshipKind {
-        label: "Primary Contact",
-        subject_role: "person_supported",
-        linked_role: "primary_contact",
-    },
-    RelationshipKind {
-        label: "Representative",
-        subject_role: "person_supported",
-        linked_role: "representative",
-    },
-    RelationshipKind {
-        label: "Support Coordinator",
-        subject_role: "participant",
-        linked_role: "support_coordinator",
-    },
-    RelationshipKind {
-        label: "General Practitioner",
-        subject_role: "patient",
-        linked_role: "general_practitioner",
-    },
-    RelationshipKind {
-        label: "Family",
-        subject_role: "person_supported",
-        linked_role: "family",
-    },
-    RelationshipKind {
-        label: "Friend",
-        subject_role: "person_supported",
-        linked_role: "friend",
-    },
-    RelationshipKind {
-        label: "Care Provider",
-        subject_role: CLIENT_ROLES.0,
-        linked_role: CLIENT_ROLES.1,
-    },
-    RelationshipKind {
-        label: "Employer",
-        subject_role: WORKER_ROLES.0,
-        linked_role: WORKER_ROLES.1,
-    },
-    RelationshipKind {
-        label: "Other",
-        subject_role: "person_supported",
-        linked_role: "other",
-    },
-];
+            let mut category = "";
+            let mut shown = 0;
+            for option in options.iter().filter(|option| option.matches(&search)) {
+                if option.category != category {
+                    category = &option.category;
+                    ui.add_space(4.0);
+                    ui.label(
+                        RichText::new(category_label(category))
+                            .color(theme::faint())
+                            .size(9.5),
+                    );
+                }
+                let is_selected = selected.as_ref() == Some(option);
+                if ui.selectable_label(is_selected, describe(option)).clicked() {
+                    *selected = Some(option.clone());
+                    changed = true;
+                    ui.data_mut(|data| data.remove::<String>(search_id));
+                    ui.close();
+                }
+                shown += 1;
+            }
+            if shown == 0 {
+                ui.label(
+                    RichText::new("No relationship types match. An administrator can add one.")
+                        .color(theme::faint())
+                        .size(10.0),
+                );
+            }
+        });
+    named(&combo.response, "Relationship type");
+    changed
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NewRelationshipContact {
@@ -188,8 +195,9 @@ pub struct RelationshipForm {
     /// Index into [`END_REASONS`]. Always chosen explicitly.
     pub reason: Option<usize>,
     pub note: String,
-    /// Index into [`RELATIONSHIP_KINDS`] for Change role.
-    pub role_kind: usize,
+    /// New roles for Change role, or the corrected roles for Correct, read
+    /// from this record's side.
+    pub role: Option<RoleOption>,
     // Correct
     pub from_role: String,
     pub to_role: String,
@@ -214,7 +222,7 @@ impl RelationshipForm {
                 None
             },
             note: String::new(),
-            role_kind: 0,
+            role: None,
             from_role: edge.from_role.clone(),
             to_role: edge.to_role.clone(),
             start_date: edge.start_date.clone().unwrap_or_default(),
@@ -260,7 +268,8 @@ pub struct ContactWindowState {
     pub custom: BTreeMap<String, String>,
     pub relationships: Vec<ApiRelationship>,
     pub relationships_loading: bool,
-    pub relationship_kind: usize,
+    /// The relationship type chosen in the Add form, from this record's side.
+    pub relationship_role: Option<RoleOption>,
     pub relationship_target: Option<ApiGraphNode>,
     pub relationship_notes: String,
     pub relationship_pending: bool,
@@ -301,7 +310,7 @@ impl ContactWindowState {
             custom: BTreeMap::new(),
             relationships: Vec::new(),
             relationships_loading: false,
-            relationship_kind: 0,
+            relationship_role: None,
             relationship_target: None,
             relationship_notes: String::new(),
             relationship_pending: false,
@@ -489,6 +498,7 @@ pub fn show_viewport(
     state: &mut ContactWindowState,
     client_side_decorations: bool,
     catalog: &[ApiGraphNode],
+    roles: &[RoleOption],
 ) -> Option<ContactEditorAction> {
     if ui.ctx().input(|i| i.viewport().close_requested()) {
         state.close_requested = true;
@@ -541,7 +551,7 @@ pub fn show_viewport(
             ui.add_space(6.0);
             ui.separator();
             ui.add_space(8.0);
-            if let Some(next) = body(ui, state, catalog) {
+            if let Some(next) = body(ui, state, catalog, roles) {
                 action = Some(next);
             }
         });
@@ -558,6 +568,7 @@ pub fn show_docked(
     ui: &mut Ui,
     state: &mut ContactWindowState,
     catalog: &[ApiGraphNode],
+    roles: &[RoleOption],
 ) -> Option<ContactEditorAction> {
     let mut action = None;
 
@@ -593,7 +604,7 @@ pub fn show_docked(
             ScrollArea::vertical()
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
-                    if let Some(next) = body(ui, state, catalog) {
+                    if let Some(next) = body(ui, state, catalog, roles) {
                         action = Some(next);
                     }
                 });
@@ -656,6 +667,7 @@ fn body(
     ui: &mut Ui,
     state: &mut ContactWindowState,
     catalog: &[ApiGraphNode],
+    roles: &[RoleOption],
 ) -> Option<ContactEditorAction> {
     if state.loading {
         ui.label(
@@ -673,7 +685,7 @@ fn body(
 
     let mut action = core_card(ui, state);
     ui.add_space(12.0);
-    if let Some(next) = relationships_card(ui, state, catalog) {
+    if let Some(next) = relationships_card(ui, state, catalog, roles) {
         action = Some(next);
     }
     ui.add_space(12.0);
@@ -827,6 +839,7 @@ fn relationships_card(
     ui: &mut Ui,
     state: &mut ContactWindowState,
     catalog: &[ApiGraphNode],
+    roles: &[RoleOption],
 ) -> Option<ContactEditorAction> {
     let mut action = None;
 
@@ -867,7 +880,7 @@ fn relationships_card(
         let edges = state.relationships.clone();
         let (ended, active): (Vec<_>, Vec<_>) = edges.iter().partition(|edge| edge.is_ended());
         for edge in active {
-            if let Some(next) = relationship_row(ui, state, edge, catalog) {
+            if let Some(next) = relationship_row(ui, state, edge, catalog, roles) {
                 action = Some(next);
             }
         }
@@ -897,7 +910,7 @@ fn relationships_card(
             if state.show_ended_relationships {
                 ui.add_space(4.0);
                 for edge in ended {
-                    if let Some(next) = relationship_row(ui, state, edge, catalog) {
+                    if let Some(next) = relationship_row(ui, state, edge, catalog, roles) {
                         action = Some(next);
                     }
                 }
@@ -919,29 +932,25 @@ fn relationships_card(
                 .color(theme::text()),
         );
 
-        let mut kind = state
-            .relationship_kind
-            .min(RELATIONSHIP_KINDS.len().saturating_sub(1));
-        let kind_combo = egui::ComboBox::from_id_salt("relationship-kind")
-            .selected_text(RELATIONSHIP_KINDS[kind].label)
-            .width(ui.available_width().min(220.0))
-            .show_ui(ui, |ui| {
-                for (index, spec) in RELATIONSHIP_KINDS.iter().enumerate() {
-                    ui.selectable_value(&mut kind, index, spec.label);
-                }
-            });
-        named(&kind_combo.response, "Relationship type");
-        state.relationship_kind = kind;
-        let spec = &RELATIONSHIP_KINDS[kind];
-        ui.label(
-            RichText::new(format!(
-                "This record is {} · the linked record is {}",
-                relationship_role_label(spec.subject_role),
-                relationship_role_label(spec.linked_role)
-            ))
-            .color(theme::faint())
-            .size(10.0),
+        role_picker(
+            ui,
+            "relationship-kind",
+            roles,
+            &mut state.relationship_role,
+            RoleOption::describe,
         );
+        let chosen = state.relationship_role.clone();
+        if let Some(role) = &chosen {
+            ui.label(
+                RichText::new(format!(
+                    "This record is {} · the linked record is {}",
+                    relationship_role_label(&role.subject_role),
+                    relationship_role_label(&role.linked_role)
+                ))
+                .color(theme::faint())
+                .size(10.0),
+            );
+        }
 
         party_lookup(ui, state, catalog);
 
@@ -955,23 +964,26 @@ fn relationships_card(
         ui.add_space(4.0);
         ui.horizontal(|ui| {
             let target = state.relationship_target.clone();
-            let can_link = target.is_some() && !state.relationship_pending;
+            let can_link = target.is_some() && chosen.is_some() && !state.relationship_pending;
             if ui
                 .add_enabled(can_link, theme::primary_button("Link relationship"))
                 .clicked()
-                && let Some(target) = target
+                && let (Some(target), Some(role)) = (target, chosen.clone())
             {
                 state.relationship_pending = true;
                 state.relationship_error = None;
                 action = Some(ContactEditorAction::CreateRelationship {
-                    from_role: spec.subject_role.to_owned(),
+                    from_role: role.subject_role,
                     to_kind: target.kind,
                     to_id: target.id,
-                    to_role: spec.linked_role.to_owned(),
+                    to_role: role.linked_role,
                     notes: state.relationship_notes.trim().to_owned(),
                 });
             }
-            if ui.add(theme::secondary_button("+ New contact")).clicked() {
+            if ui
+                .add_enabled(chosen.is_some(), theme::secondary_button("+ New contact"))
+                .clicked()
+            {
                 state.new_relationship_contact = Some(NewRelationshipContact::new());
             }
             if state.relationship_pending {
@@ -987,8 +999,10 @@ fn relationships_card(
         if let Some(mut draft) = state.new_relationship_contact.take() {
             let pending = state.relationship_pending;
             let relationship_error = state.relationship_error.clone();
-            let from_role = spec.subject_role.to_owned();
-            let to_role = spec.linked_role.to_owned();
+            let (from_role, to_role) = chosen
+                .as_ref()
+                .map(|role| (role.subject_role.clone(), role.linked_role.clone()))
+                .unwrap_or_default();
             let notes = state.relationship_notes.trim().to_owned();
 
             ui.add_space(6.0);
@@ -1059,6 +1073,7 @@ fn relationship_row(
     state: &mut ContactWindowState,
     edge: &ApiRelationship,
     catalog: &[ApiGraphNode],
+    roles: &[RoleOption],
 ) -> Option<ContactEditorAction> {
     let view = relationship_view(edge, &state.contact_id)?;
     let mut action = None;
@@ -1176,7 +1191,7 @@ fn relationship_row(
                 .relationship_form
                 .as_ref()
                 .is_some_and(|form| form.edge_id == edge.id)
-                && let Some(next) = relationship_form(ui, state, edge, &view, catalog)
+                && let Some(next) = relationship_form(ui, state, edge, &view, catalog, roles)
             {
                 action = Some(next);
             }
@@ -1222,6 +1237,7 @@ fn relationship_form(
     edge: &ApiRelationship,
     view: &RelationshipView,
     catalog: &[ApiGraphNode],
+    roles: &[RoleOption],
 ) -> Option<ContactEditorAction> {
     let mut action = None;
     let mut cancel = false;
@@ -1265,41 +1281,40 @@ fn relationship_form(
                     reason_select(ui, &mut form.reason, "relationship-transfer-reason");
                 }
                 RelationshipFormKind::ChangeRole => {
-                    let mut kind = form.role_kind.min(RELATIONSHIP_KINDS.len() - 1);
-                    let combo = egui::ComboBox::from_id_salt("relationship-new-role")
-                        .selected_text(RELATIONSHIP_KINDS[kind].label)
-                        .width(ui.available_width().min(220.0))
-                        .show_ui(ui, |ui| {
-                            for (index, spec) in RELATIONSHIP_KINDS.iter().enumerate() {
-                                ui.selectable_value(&mut kind, index, spec.label);
-                            }
-                        });
-                    named(&combo.response, "New relationship type");
-                    form.role_kind = kind;
-                    let spec = &RELATIONSHIP_KINDS[kind];
-                    ui.label(
-                        RichText::new(format!(
-                            "This record becomes {} · {} becomes {}",
-                            relationship_role_label(spec.subject_role),
-                            view.linked_name,
-                            relationship_role_label(spec.linked_role)
-                        ))
-                        .color(theme::faint())
-                        .size(10.0),
+                    role_picker(
+                        ui,
+                        "relationship-new-role",
+                        roles,
+                        &mut form.role,
+                        RoleOption::describe,
                     );
+                    if let Some(role) = &form.role {
+                        ui.label(
+                            RichText::new(format!(
+                                "This record becomes {} · {} becomes {}",
+                                relationship_role_label(&role.subject_role),
+                                view.linked_name,
+                                relationship_role_label(&role.linked_role)
+                            ))
+                            .color(theme::faint())
+                            .size(10.0),
+                        );
+                    }
                     text_field(ui, "New roles from (YYYY-MM-DD)", &mut form.date);
                     reason_select(ui, &mut form.reason, "relationship-role-reason");
                 }
                 RelationshipFormKind::Correct => {
-                    let (this_role, other_role) = if this_is_from {
-                        (&mut form.from_role, &mut form.to_role)
-                    } else {
-                        (&mut form.to_role, &mut form.from_role)
-                    };
-                    ui.columns(2, |cols| {
-                        text_field(&mut cols[0], "This record's role", this_role);
-                        text_field(&mut cols[1], "Linked record's role", other_role);
-                    });
+                    if form.role.is_none() {
+                        form.role = Some(current_role(edge, this_is_from, roles));
+                    }
+                    field_label(ui, "Roles", false);
+                    role_picker(
+                        ui,
+                        "relationship-correct-role",
+                        roles,
+                        &mut form.role,
+                        RoleOption::describe,
+                    );
                     ui.columns(2, |cols| {
                         text_field(&mut cols[0], "Start date (YYYY-MM-DD)", &mut form.start_date);
                         text_field(&mut cols[1], "End date (YYYY-MM-DD)", &mut form.end_date);
@@ -1441,16 +1456,12 @@ fn build_change(
             })
         }
         RelationshipFormKind::ChangeRole => {
-            let spec = &RELATIONSHIP_KINDS[form.role_kind.min(RELATIONSHIP_KINDS.len() - 1)];
-            let (from_role, to_role) = if this_is_from {
-                (spec.subject_role, spec.linked_role)
-            } else {
-                (spec.linked_role, spec.subject_role)
-            };
+            let role = form.role.as_ref().ok_or("Choose the new relationship.")?;
+            let (from_role, to_role) = oriented(role, this_is_from);
             Ok(RelationshipChange::ChangeRole {
                 effective_date: parse_date(&form.date, "The start date")?,
-                from_role: from_role.to_owned(),
-                to_role: to_role.to_owned(),
+                from_role,
+                to_role,
                 reason: reason()?,
                 note,
             })
@@ -1464,14 +1475,18 @@ fn build_change(
                 Some(_) => Some(reason()?),
                 None => None,
             };
+            let (from_role, to_role) = match &form.role {
+                Some(role) => oriented(role, this_is_from),
+                None => (form.from_role.clone(), form.to_role.clone()),
+            };
             Ok(RelationshipChange::Correct {
                 relationship: ApiRelationshipCorrection {
                     from_kind: edge.from_kind,
                     from_id: edge.from_id.clone(),
-                    from_role: form.from_role.trim().to_owned(),
+                    from_role,
                     to_kind: edge.to_kind,
                     to_id: edge.to_id.clone(),
-                    to_role: form.to_role.trim().to_owned(),
+                    to_role,
                     start_date: optional_date(&form.start_date, "The start date")?,
                     end_date,
                     end_reason,
@@ -1487,6 +1502,31 @@ fn build_change(
             Ok(RelationshipChange::Remove { reason: note })
         }
     }
+}
+
+/// A chosen option as stored `(from_role, to_role)`, given which side this
+/// record is on.
+fn oriented(role: &RoleOption, this_is_from: bool) -> (String, String) {
+    if this_is_from {
+        (role.subject_role.clone(), role.linked_role.clone())
+    } else {
+        (role.linked_role.clone(), role.subject_role.clone())
+    }
+}
+
+/// The relationship's current roles as a picker option, keeping its catalogue
+/// group when the pair is still offered.
+fn current_role(edge: &ApiRelationship, this_is_from: bool, roles: &[RoleOption]) -> RoleOption {
+    let (subject, linked) = if this_is_from {
+        (&edge.from_role, &edge.to_role)
+    } else {
+        (&edge.to_role, &edge.from_role)
+    };
+    roles
+        .iter()
+        .find(|role| &role.subject_role == subject && &role.linked_role == linked)
+        .cloned()
+        .unwrap_or_else(|| RoleOption::new(subject, linked, "other"))
 }
 
 fn relationship_history(ui: &mut Ui, history: &RelationshipHistoryView) {
@@ -2063,11 +2103,10 @@ fn stored_value(field: &ApiCustomField, text: &str) -> Value {
 #[cfg(test)]
 mod tests {
     use super::{
-        ContactWindowState, RELATIONSHIP_KINDS, RelationshipForm, RelationshipFormKind,
-        build_change, relationship_view,
+        ContactWindowState, RelationshipForm, RelationshipFormKind, build_change, relationship_view,
     };
     use crate::contact::{
-        ApiGraphNode, ApiRelationship, END_REASONS, PartyKind, RelationshipChange,
+        ApiGraphNode, ApiRelationship, END_REASONS, PartyKind, RelationshipChange, RoleOption,
     };
 
     fn edge() -> ApiRelationship {
@@ -2157,10 +2196,7 @@ mod tests {
     fn change_role_keeps_each_role_on_its_own_side() {
         let mut change = form(RelationshipFormKind::ChangeRole);
         change.reason = reason("circumstances_changed");
-        change.role_kind = RELATIONSHIP_KINDS
-            .iter()
-            .position(|kind| kind.label == "Employer")
-            .unwrap();
+        change.role = Some(RoleOption::new("employee", "employer", "work"));
         // This record is the `to` side, so its new role goes in `to_role`.
         let Ok(RelationshipChange::ChangeRole {
             from_role, to_role, ..

@@ -65,6 +65,7 @@ fn main() {
     // With --relationships: open the first relationship's history or actions menu.
     let history = args.iter().any(|arg| arg == "--history");
     let actions = args.iter().any(|arg| arg == "--actions");
+    let roles = args.iter().any(|arg| arg == "--roles");
     let intake = args.iter().find_map(|arg| match arg.as_str() {
         "--intake=client" => Some(IntakeKind::Client),
         "--intake=worker" => Some(IntakeKind::Worker),
@@ -73,6 +74,7 @@ fn main() {
     });
 
     let server = args.iter().find_map(|arg| arg.strip_prefix("--server="));
+    let search = args.iter().find_map(|arg| arg.strip_prefix("--search="));
 
     let mut app = CareLibreApp::new();
     if let Some(server) = server {
@@ -152,6 +154,13 @@ fn main() {
         }
 
         if page == Page::Contacts {
+            if let Some(search) = search {
+                harness.state_mut().search_contacts(search);
+                for _ in 0..10 {
+                    harness.run();
+                    std::thread::sleep(Duration::from_millis(25));
+                }
+            }
             let deadline = Instant::now() + Duration::from_secs(5);
             while harness.state().contacts_loaded() == 0 && Instant::now() < deadline {
                 harness.run();
@@ -208,6 +217,17 @@ fn main() {
                     .get_by_label_contains("Add relationship")
                     .scroll_to_me();
                 harness.run();
+                if roles {
+                    harness
+                        .get_all_by_label("Relationship type")
+                        .next()
+                        .expect("the add form's relationship picker")
+                        .click_accesskit();
+                    for _ in 0..20 {
+                        harness.run();
+                        std::thread::sleep(Duration::from_millis(25));
+                    }
+                }
                 if history || actions {
                     let label = if history { "History" } else { "Actions…" };
                     let button = harness

@@ -218,6 +218,7 @@ pub(crate) fn map_contact(row: &Row<'_>) -> rusqlite::Result<ContactRow> {
         phone: row.get(4)?,
         division: row.get(5)?,
         status: row.get(6)?,
+        relationship: None,
     })
 }
 

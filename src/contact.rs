@@ -24,6 +24,33 @@ pub struct ApiContact {
     pub details: Value,
     pub role: String,
     pub updated_at: String,
+    /// Set when a search matched one of this contact's relationship roles.
+    #[serde(default)]
+    pub relationship_match: Option<ApiRelationshipMatch>,
+}
+
+/// The relationship role a search matched, and who it is held for.
+#[derive(Clone, Debug, Deserialize)]
+pub struct ApiRelationshipMatch {
+    pub role: String,
+    pub with: Vec<String>,
+    pub total: usize,
+}
+
+impl ApiRelationshipMatch {
+    /// "Support Coordinator for Ian Client, Mia Client +3".
+    pub fn summary(&self) -> String {
+        let mut text = format!(
+            "{} for {}",
+            relationship_role_label(&self.role),
+            self.with.join(", ")
+        );
+        let more = self.total.saturating_sub(self.with.len());
+        if more > 0 {
+            text.push_str(&format!(" +{more}"));
+        }
+        text
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize)]
@@ -126,6 +153,10 @@ pub fn row_from_api(contact: &ApiContact) -> ContactRow {
         phone: contact.phone.clone(),
         division,
         status,
+        relationship: contact
+            .relationship_match
+            .as_ref()
+            .map(ApiRelationshipMatch::summary),
     }
 }
 
@@ -395,5 +426,149 @@ pub fn history_action_label(action: &str) -> &str {
         "corrected" => "Corrected",
         "removed" => "Removed",
         other => other,
+    }
+}
+
+// Relationship type catalogue -------------------------------------------------
+
+/// An allowed role pair from the organisation's catalogue.
+#[derive(Clone, Debug, Deserialize)]
+pub struct ApiRelationshipType {
+    pub id: String,
+    pub from_role: String,
+    pub to_role: String,
+    pub category: String,
+    pub is_active: bool,
+    #[serde(default)]
+    pub in_use: i64,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct ApiRelationshipTypeList {
+    pub items: Vec<ApiRelationshipType>,
+}
+
+/// One way to read a catalogue pair: this record holds `subject_role` and the
+/// linked record holds `linked_role`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RoleOption {
+    pub subject_role: String,
+    pub linked_role: String,
+    pub category: String,
+}
+
+impl RoleOption {
+    pub fn new(subject_role: &str, linked_role: &str, category: &str) -> Self {
+        Self {
+            subject_role: subject_role.to_owned(),
+            linked_role: linked_role.to_owned(),
+            category: category.to_owned(),
+        }
+    }
+
+    /// The other record's role, which is what people look for in a list:
+    /// "General Practitioner".
+    pub fn label(&self) -> String {
+        relationship_role_label(&self.linked_role)
+    }
+
+    /// "General Practitioner (this record: Patient)".
+    pub fn describe(&self) -> String {
+        format!(
+            "{} (this record: {})",
+            relationship_role_label(&self.linked_role),
+            relationship_role_label(&self.subject_role)
+        )
+    }
+
+    pub fn matches(&self, search: &str) -> bool {
+        let search = search.trim().to_lowercase();
+        search.is_empty()
+            || self.describe().to_lowercase().contains(&search)
+            || self.subject_role.contains(&search.replace(' ', "_"))
+            || self.linked_role.contains(&search.replace(' ', "_"))
+    }
+}
+
+/// Every active pair, read both ways round, grouped by category and sorted by
+/// the other record's role.
+pub fn role_options(types: &[ApiRelationshipType]) -> Vec<RoleOption> {
+    let mut options = Vec::new();
+    for item in types.iter().filter(|item| item.is_active) {
+        options.push(RoleOption::new(
+            &item.from_role,
+            &item.to_role,
+            &item.category,
+        ));
+        if item.from_role != item.to_role {
+            options.push(RoleOption::new(
+                &item.to_role,
+                &item.from_role,
+                &item.category,
+            ));
+        }
+    }
+    options.sort_by_key(|option| {
+        (
+            category_rank(&option.category),
+            option.label(),
+            relationship_role_label(&option.subject_role),
+        )
+    });
+    options
+}
+
+fn category_rank(category: &str) -> usize {
+    ["care", "family", "health", "services", "work"]
+        .iter()
+        .position(|key| *key == category)
+        .unwrap_or(5)
+}
+
+pub fn category_label(category: &str) -> &'static str {
+    match category {
+        "care" => "Care and support",
+        "family" => "Family",
+        "health" => "Health",
+        "services" => "Services",
+        "work" => "Work",
+        _ => "Other",
+    }
+}
+
+#[cfg(test)]
+mod role_option_tests {
+    use super::{ApiRelationshipType, role_options};
+
+    fn pair(from: &str, to: &str, category: &str, active: bool) -> ApiRelationshipType {
+        ApiRelationshipType {
+            id: format!("{from}-{to}"),
+            from_role: from.to_owned(),
+            to_role: to.to_owned(),
+            category: category.to_owned(),
+            is_active: active,
+            in_use: 0,
+        }
+    }
+
+    #[test]
+    fn each_pair_reads_both_ways_and_retired_pairs_are_hidden() {
+        let options = role_options(&[
+            pair("patient", "general_practitioner", "health", true),
+            pair("cousin", "cousin", "family", true),
+            pair("patient", "dentist", "health", false),
+        ]);
+        let described: Vec<String> = options.iter().map(|option| option.describe()).collect();
+        assert_eq!(
+            described,
+            [
+                "Cousin (this record: Cousin)",
+                "General Practitioner (this record: Patient)",
+                "Patient (this record: General Practitioner)",
+            ],
+            "family before health; a symmetric pair appears once; retired pairs are left out"
+        );
+        assert!(!options[1].matches("gp") && options[1].matches("general"));
+        assert!(options[2].matches("Patient"));
     }
 }

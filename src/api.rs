@@ -9,7 +9,8 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 use crate::contact::{
     ApiContactDetail, ApiContactList, ApiContactWrite, ApiRelationship, ApiRelationshipGraph,
-    ApiRelationshipHistory, ApiRelationshipList, ApiRelationshipWrite, RelationshipChange,
+    ApiRelationshipHistory, ApiRelationshipList, ApiRelationshipTypeList, ApiRelationshipWrite,
+    RelationshipChange,
 };
 use crate::rostering::{
     ApiAssignment, ApiAssignmentUpdate, ApiAssignmentWrite, ApiBatchShiftWrite, ApiCopyShiftWrite,
@@ -416,6 +417,11 @@ impl ApiClient {
         } else {
             Err(error_from_body(status, &body))
         }
+    }
+
+    /// The organisation's catalogue of allowed role pairs.
+    pub fn relationship_types(&self, access_token: &str) -> ApiResult<ApiRelationshipTypeList> {
+        self.get_json_with_token("/api/v1/relationship-types", access_token)
     }
 
     /// A relationship's history, including the relationships it replaced.

@@ -16,8 +16,9 @@ use crate::{
     api, chrome,
     config::Config,
     contact::{
-        ApiContactDetail, ApiContactWrite, ApiGraphNode, ApiRelationship, ApiRelationshipWrite,
-        PartyKind, RelationshipChange, row_from_api,
+        ApiContactDetail, ApiContactWrite, ApiGraphNode, ApiRelationship, ApiRelationshipType,
+        ApiRelationshipWrite, PartyKind, RelationshipChange, RoleOption, role_options,
+        row_from_api,
     },
     credentials,
     intake::IntakeKind,
@@ -62,6 +63,12 @@ pub struct CareLibreApp {
     /// Lifecycle changes in flight, keyed by request id, holding the editor window id.
     relationship_change_requests: BTreeMap<u64, String>,
     relationship_history_requests: BTreeMap<u64, String>,
+    /// The organisation's relationship type catalogue and the picker options
+    /// built from it, loaded once per signed-in organisation.
+    relationship_types: Vec<ApiRelationshipType>,
+    role_options: Vec<RoleOption>,
+    relationship_types_request: Option<u64>,
+    relationship_types_org: Option<String>,
     relationship_contact_creates: BTreeMap<u64, PendingInlineRelationship>,
     party_catalog: Vec<ApiGraphNode>,
     party_catalog_request: Option<u64>,
@@ -161,6 +168,10 @@ impl CareLibreApp {
             intake_role_links: BTreeMap::new(),
             relationship_change_requests: BTreeMap::new(),
             relationship_history_requests: BTreeMap::new(),
+            relationship_types: Vec::new(),
+            role_options: Vec::new(),
+            relationship_types_request: None,
+            relationship_types_org: None,
             relationship_contact_creates: BTreeMap::new(),
             party_catalog: Vec::new(),
             party_catalog_request: None,
@@ -403,6 +414,7 @@ impl CareLibreApp {
         self.tick_contact_search();
         self.tick_intake_autosave();
         self.ensure_contacts_loaded();
+        self.ensure_relationship_types();
         self.ensure_intake_list();
         self.refresh_session_if_needed();
 
@@ -579,6 +591,7 @@ impl CareLibreApp {
                     &mut self.relationship_form,
                     &self.party_catalog,
                     &self.relationship_edges,
+                    &self.role_options,
                     loading,
                 ) {
                     *relationship_action = Some(action);
@@ -975,6 +988,14 @@ impl CareLibreApp {
         state.selected = None;
     }
 
+    /// Search the contact list. Used by screenshot previews.
+    pub fn search_contacts(&mut self, query: &str) {
+        self.page = Page::Contacts;
+        self.last_page = Page::Contacts;
+        let filter = self.contacts.filter;
+        self.show_contacts(filter, Some(query.to_owned()));
+    }
+
     /// Show the contact list narrowed to a relationship. Used by screenshot previews.
     pub fn set_contact_filter(&mut self, filter: ContactFilter) {
         self.page = Page::Contacts;
@@ -1015,6 +1036,25 @@ impl CareLibreApp {
     fn next_relationship_request(&mut self) -> u64 {
         self.relationship_request_seq += 1;
         self.relationship_request_seq
+    }
+
+    /// Load the relationship type catalogue for the signed-in organisation.
+    fn ensure_relationship_types(&mut self) {
+        let Some(session) = &self.server.session else {
+            return;
+        };
+        let organisation = session.auth.organisation.id.clone();
+        if self.relationship_types_org.as_deref() == Some(organisation.as_str())
+            || self.relationship_types_request.is_some()
+        {
+            return;
+        }
+        let token = session.auth.access_token.clone();
+        let request = self.next_relationship_request();
+        if let Some(remote) = &self.remote {
+            self.relationship_types_request = Some(request);
+            remote.relationship_types(request, self.server.base_url.clone(), token);
+        }
     }
 
     fn ensure_party_catalog(&mut self) {
@@ -1428,6 +1468,7 @@ impl CareLibreApp {
             .cloned()
             .collect();
         let catalog = self.lookup_parties();
+        let roles = self.role_options.clone();
         let mut actions: Vec<(String, ContactEditorAction)> = Vec::new();
 
         for id in popped {
@@ -1444,7 +1485,7 @@ impl CareLibreApp {
 
             let client_side = self.config.client_side_decorations;
             let action = ctx.show_viewport_immediate(viewport_id, builder, |ui, _| {
-                pages::contact_editor::show_viewport(ui, window, client_side, &catalog)
+                pages::contact_editor::show_viewport(ui, window, client_side, &catalog, &roles)
             });
 
             if window.close_requested {
@@ -1521,6 +1562,7 @@ impl CareLibreApp {
         self.active_contact = Some(active.clone());
 
         let catalog = self.lookup_parties();
+        let roles = self.role_options.clone();
         let mut close: Option<String> = None;
         let mut activate: Option<String> = None;
         let mut reorder: Option<(String, String)> = None;
@@ -1567,11 +1609,9 @@ impl CareLibreApp {
                     &mut close_all,
                 );
 
-                if let Some(action) = self
-                    .contact_windows
-                    .get_mut(&active)
-                    .and_then(|window| pages::contact_editor::show_docked(ui, window, &catalog))
-                {
+                if let Some(action) = self.contact_windows.get_mut(&active).and_then(|window| {
+                    pages::contact_editor::show_docked(ui, window, &catalog, &roles)
+                }) {
                     editor_action = Some((active.clone(), action));
                 }
             },
@@ -2572,6 +2612,30 @@ impl CareLibreApp {
                     result,
                 } => {
                     self.handle_relationship_changed(ctx, request_id, id, result);
+                }
+                RemoteEvent::RelationshipTypesLoaded { request_id, result } => {
+                    if self.relationship_types_request == Some(request_id) {
+                        self.relationship_types_request = None;
+                        match result {
+                            Ok(types) => {
+                                self.role_options = role_options(&types);
+                                self.relationship_types = types;
+                                self.relationship_types_org = self
+                                    .server
+                                    .session
+                                    .as_ref()
+                                    .map(|session| session.auth.organisation.id.clone());
+                            }
+                            Err(_) => {
+                                // Pickers stay empty; signing in again retries.
+                                self.relationship_types_org = self
+                                    .server
+                                    .session
+                                    .as_ref()
+                                    .map(|session| session.auth.organisation.id.clone());
+                            }
+                        }
+                    }
                 }
                 RemoteEvent::RelationshipHistoryLoaded {
                     request_id,

@@ -262,7 +262,7 @@ fn search_row(ui: &mut Ui, state: &mut ContactsState) -> Option<ContactsAction> 
         let response = ui.add_sized(
             [400.0, 34.0],
             egui::TextEdit::singleline(&mut state.search)
-                .hint_text("Search name, email or phone…")
+                .hint_text("Search name, email, phone or role…")
                 .margin(Margin::symmetric(10, 8)),
         );
         if response.changed() {
@@ -475,13 +475,28 @@ fn row_row(ui: &mut Ui, row: &ContactRow, index: usize, selected: Option<&str>) 
     // Name
     let name_x = rect.left() + 58.0;
     let name_width = width * 0.34 - 58.0 - 12.0;
+    // A search that matched a relationship says which one under the name.
+    let name_y = if row.relationship.is_some() {
+        centre_y - 7.0
+    } else {
+        centre_y
+    };
     painter.text(
-        pos2(name_x, centre_y),
+        pos2(name_x, name_y),
         Align2::LEFT_CENTER,
         truncate(&row.name, (name_width / 6.7) as usize),
         theme::strong_font(13.0),
         theme::text(),
     );
+    if let Some(relationship) = &row.relationship {
+        painter.text(
+            pos2(name_x, centre_y + 9.0),
+            Align2::LEFT_CENTER,
+            truncate(relationship, (name_width / 5.6) as usize),
+            FontId::proportional(10.0),
+            theme::accent(),
+        );
+    }
 
     // Contact details
     let contact_x = rect.left() + width * 0.36;
@@ -537,7 +552,15 @@ fn row_row(ui: &mut Ui, row: &ContactRow, index: usize, selected: Option<&str>) 
         egui::WidgetInfo::labeled(
             egui::Role::Button,
             ui.is_enabled(),
-            format!("{}, {} — {}", row.name, row.kind.label(), row.status),
+            match &row.relationship {
+                Some(relationship) => format!(
+                    "{}, {} — {} — {relationship}",
+                    row.name,
+                    row.kind.label(),
+                    row.status
+                ),
+                None => format!("{}, {} — {}", row.name, row.kind.label(), row.status),
+            },
         )
     });
 

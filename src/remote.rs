@@ -12,7 +12,8 @@ use crate::{
     api::ApiClient,
     contact::{
         ApiContactDetail, ApiContactList, ApiContactWrite, ApiRelationship, ApiRelationshipEvent,
-        ApiRelationshipGraph, ApiRelationshipList, ApiRelationshipWrite, RelationshipChange,
+        ApiRelationshipGraph, ApiRelationshipList, ApiRelationshipType, ApiRelationshipWrite,
+        RelationshipChange,
     },
     rostering::{
         ApiAssignment, ApiAssignmentUpdate, ApiAssignmentWrite, ApiBatchShiftWrite,
@@ -83,6 +84,11 @@ pub enum RemoteCommand {
         base_url: String,
         token: String,
         id: String,
+    },
+    ListRelationshipTypes {
+        request_id: u64,
+        base_url: String,
+        token: String,
     },
     ListSites {
         request_id: u64,
@@ -220,6 +226,10 @@ pub enum RemoteEvent {
         request_id: u64,
         id: String,
         result: Result<(), String>,
+    },
+    RelationshipTypesLoaded {
+        request_id: u64,
+        result: Result<Vec<ApiRelationshipType>, String>,
     },
     RelationshipHistoryLoaded {
         request_id: u64,
@@ -430,6 +440,14 @@ impl RemoteHandle {
             token,
             id,
             change: Box::new(change),
+        });
+    }
+
+    pub fn relationship_types(&self, request_id: u64, base_url: String, token: String) {
+        let _ = self.commands.send(RemoteCommand::ListRelationshipTypes {
+            request_id,
+            base_url,
+            token,
         });
     }
 
@@ -785,6 +803,17 @@ fn run(ctx: egui::Context, commands: Receiver<RemoteCommand>, events: Sender<Rem
                     id,
                     result,
                 });
+            }
+            RemoteCommand::ListRelationshipTypes {
+                request_id,
+                base_url,
+                token,
+            } => {
+                let result = ApiClient::new(&base_url)
+                    .and_then(|client| client.relationship_types(&token))
+                    .map(|list| list.items)
+                    .map_err(|err| err.to_string());
+                let _ = events.send(RemoteEvent::RelationshipTypesLoaded { request_id, result });
             }
             RemoteCommand::RelationshipHistory {
                 request_id,

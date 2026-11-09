@@ -77,6 +77,9 @@ pub struct ContactRow {
     pub phone: Option<String>,
     pub division: Option<String>,
     pub status: String,
+    /// Why a search found this contact through a relationship, e.g.
+    /// "Support Coordinator for Ian Client, Mia Client".
+    pub relationship: Option<String>,
 }
 
 #[derive(Clone, Debug)]

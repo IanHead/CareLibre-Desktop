@@ -6,34 +6,21 @@ use eframe::egui::{
 };
 
 use crate::{
-    contact::{ApiGraphNode, ApiRelationship, PartyKind, relationship_role_label},
+    contact::{ApiGraphNode, ApiRelationship, PartyKind, RoleOption, relationship_role_label},
+    pages::contact_editor::role_picker,
     theme,
 };
 
+#[derive(Default)]
 pub struct RelationshipsForm {
     pub from: Option<ApiGraphNode>,
     pub to: Option<ApiGraphNode>,
-    pub from_role: String,
-    pub to_role: String,
+    /// The relationship type: `subject_role` is the From side's role.
+    pub role: Option<RoleOption>,
     pub notes: String,
     pub filter: String,
     pub error: Option<String>,
     pub pending: bool,
-}
-
-impl Default for RelationshipsForm {
-    fn default() -> Self {
-        Self {
-            from: None,
-            to: None,
-            from_role: "person_supported".to_owned(),
-            to_role: "emergency_contact".to_owned(),
-            notes: String::new(),
-            filter: String::new(),
-            error: None,
-            pending: false,
-        }
-    }
 }
 
 impl RelationshipsForm {
@@ -65,6 +52,7 @@ pub fn show(
     form: &mut RelationshipsForm,
     nodes: &[ApiGraphNode],
     edges: &[ApiRelationship],
+    roles: &[RoleOption],
     loading: bool,
 ) -> Option<RelationshipsAction> {
     let mut action = None;
@@ -77,7 +65,7 @@ pub fn show(
             header(ui, edges.len(), loading, &mut action);
             ui.add_space(18.0);
 
-            add_card(ui, form, nodes, &mut action);
+            add_card(ui, form, nodes, roles, &mut action);
             ui.add_space(14.0);
             list_card(ui, form, edges, loading, &mut action);
             ui.add_space(24.0);
@@ -127,6 +115,7 @@ fn add_card(
     ui: &mut Ui,
     form: &mut RelationshipsForm,
     nodes: &[ApiGraphNode],
+    roles: &[RoleOption],
     action: &mut Option<RelationshipsAction>,
 ) {
     theme::card().show(ui, |ui| {
@@ -163,7 +152,6 @@ fn add_card(
                 nodes,
                 form.to.as_ref().map(|node| (node.kind, node.id.as_str())),
             );
-            text_field(&mut cols[0], "From role", &mut form.from_role);
 
             cols[1].label(
                 RichText::new("To")
@@ -177,13 +165,19 @@ fn add_card(
                 nodes,
                 form.from.as_ref().map(|node| (node.kind, node.id.as_str())),
             );
-            text_field(&mut cols[1], "To role", &mut form.to_role);
         });
 
-        ui.add_space(4.0);
+        ui.add_space(6.0);
+        role_picker(ui, "relationship-page-role", roles, &mut form.role, |role| {
+            format!(
+                "From is {} · To is {}",
+                relationship_role_label(&role.subject_role),
+                relationship_role_label(&role.linked_role)
+            )
+        });
         ui.label(
             RichText::new(
-                "Example: Jamie Lee is person_supported of Alex Chen, who is emergency_contact.",
+                "Roles come from your organisation's relationship types. An administrator can add more.",
             )
             .color(theme::faint())
             .size(10.0),
@@ -199,23 +193,23 @@ fn add_card(
         ui.add_space(6.0);
         let ready = form.from.is_some()
             && form.to.is_some()
-            && !form.from_role.trim().is_empty()
-            && !form.to_role.trim().is_empty()
+            && form.role.is_some()
             && !form.pending;
         if ui
             .add_enabled(ready, theme::primary_button("Link records"))
             .clicked()
-            && let (Some(from), Some(to)) = (form.from.clone(), form.to.clone())
+            && let (Some(from), Some(to), Some(role)) =
+                (form.from.clone(), form.to.clone(), form.role.clone())
         {
             form.pending = true;
             form.error = None;
             *action = Some(RelationshipsAction::Create {
                 from_kind: from.kind,
                 from_id: from.id,
-                from_role: form.from_role.trim().to_owned(),
+                from_role: role.subject_role,
                 to_kind: to.kind,
                 to_id: to.id,
-                to_role: form.to_role.trim().to_owned(),
+                to_role: role.linked_role,
                 notes: form.notes.trim().to_owned(),
             });
         }

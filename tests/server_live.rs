@@ -232,14 +232,14 @@ fn relationship_graph_round_trip() {
         .find(|node| node.kind == PartyKind::Organisation)
         .expect("an organisation node");
 
-    let suffix = uuid::Uuid::now_v7().simple().to_string();
+    // Roles must come from the organisation's relationship type catalogue.
     let write = ApiRelationshipWrite {
         from_kind: PartyKind::Contact,
         from_id: contact.id.clone(),
-        from_role: format!("verify_from_{suffix}"),
+        from_role: "person_supported".to_owned(),
         to_kind: PartyKind::Organisation,
         to_id: organisation.id.clone(),
-        to_role: format!("verify_to_{suffix}"),
+        to_role: "other".to_owned(),
         start_date: None,
         end_date: None,
         notes: Some("desktop live verification".to_owned()),
