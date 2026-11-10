@@ -79,8 +79,8 @@ pub fn show(ui: &mut Ui, page: Page) -> Option<Action> {
                             ui.label(
                                 RichText::new(
                                     "This build focuses on the native desktop shell and the \
-                                     home dashboard. Each module will be wired up to the \
-                                     shared CareLibre API as it lands.",
+                                     shared contact workspace. Each module will be wired up to \
+                                     the shared CareLibre API as it lands.",
                                 )
                                 .color(theme::muted())
                                 .size(12.5),
@@ -99,7 +99,7 @@ pub fn show(ui: &mut Ui, page: Page) -> Option<Action> {
                         if ui
                             .add(
                                 egui::Button::new(
-                                    RichText::new("←  Back to home")
+                                    RichText::new("←  Back to workspace")
                                         .color(theme::on_accent())
                                         .font(theme::strong_font(13.0)),
                                 )
@@ -109,7 +109,7 @@ pub fn show(ui: &mut Ui, page: Page) -> Option<Action> {
                             )
                             .clicked()
                         {
-                            action = Some(Action::Navigate(Page::Home));
+                            action = Some(Action::Navigate(Page::Contacts));
                         }
                     },
                 );

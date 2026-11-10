@@ -17,7 +17,7 @@ harness exists.
 | Interaction | Budget |
 | --- | --- |
 | Warm start to interactive shell | < 250 ms |
-| Switch main views (Home → Clients → Rostering) | < 50 ms |
+| Switch main views (Contacts → Rostering) | < 50 ms |
 | Rostering week paint, 2,000 visible shifts | < 8 ms/frame (120 Hz headroom) |
 | Scroll a 50,000-row contact list | 60 fps sustained, no allocations spike |
 | Local search as you type | < 30 ms |

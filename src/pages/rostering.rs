@@ -14,8 +14,9 @@ use crate::{
     rostering::{
         ApiAssignment, ApiAssignmentUpdate, ApiCopyShiftWrite, ApiCostCentre, ApiDivision,
         ApiService, ApiShift, ApiShiftDetail, ApiShiftUpdate, ApiShiftWrite, ApiSite, ApiSiteWrite,
-        ApiSuitability, add_days, local_date, local_inputs, local_range, local_time, local_to_utc,
-        monday_of, parse_local_date, parse_utc, shift_kind_label, status_label,
+        ApiSuitability, ApiSuitabilityCandidate, ApiSuitabilityRequirement, add_days, local_date,
+        local_inputs, local_range, local_time, local_to_utc, monday_of, parse_local_date,
+        parse_utc, shift_kind_label, status_label,
     },
     theme,
 };
@@ -349,6 +350,7 @@ pub enum RosteringAction {
     },
     DeleteAssignment(String),
     FindWorkers(String),
+    OpenContact(String),
 }
 
 pub fn show(
@@ -704,12 +706,13 @@ fn cost_centre_filter(ui: &mut Ui, state: &mut RosteringState) {
 
 struct Lane {
     name: String,
+    contact_id: Option<String>,
     shifts: Vec<(ApiShift, usize)>,
     rows: usize,
 }
 
 fn build_lanes(shifts: &[ApiShift], group_by: &str) -> Vec<Lane> {
-    let mut map: BTreeMap<String, Vec<ApiShift>> = BTreeMap::new();
+    let mut map: BTreeMap<String, (Vec<ApiShift>, Option<String>)> = BTreeMap::new();
     for shift in shifts {
         let parties = if group_by == "client" {
             &shift.clients
@@ -718,7 +721,8 @@ fn build_lanes(shifts: &[ApiShift], group_by: &str) -> Vec<Lane> {
         };
         if parties.is_empty() {
             map.entry("Unassigned".to_owned())
-                .or_default()
+                .or_insert_with(|| (Vec::new(), None))
+                .0
                 .push(shift.clone());
             continue;
         }
@@ -726,14 +730,15 @@ fn build_lanes(shifts: &[ApiShift], group_by: &str) -> Vec<Lane> {
         for party in parties {
             if seen.insert(party.id.clone()) {
                 map.entry(party.display_name.clone())
-                    .or_default()
+                    .or_insert_with(|| (Vec::new(), Some(party.id.clone())))
+                    .0
                     .push(shift.clone());
             }
         }
     }
 
     let mut lanes = Vec::new();
-    for (name, mut lane_shifts) in map {
+    for (name, (mut lane_shifts, contact_id)) in map {
         lane_shifts.sort_by(|a, b| a.starts_at.cmp(&b.starts_at));
         let mut ends: Vec<f64> = Vec::new();
         let mut placed = Vec::new();
@@ -757,6 +762,7 @@ fn build_lanes(shifts: &[ApiShift], group_by: &str) -> Vec<Lane> {
         let rows = ends.len().max(1);
         lanes.push(Lane {
             name,
+            contact_id,
             shifts: placed,
             rows,
         });
@@ -823,7 +829,8 @@ fn timeline_card(ui: &mut Ui, state: &RosteringState, action: &mut Option<Roster
         let already_scrolled = ui.data(|data| data.get_temp::<bool>(offset_id).unwrap_or(false));
         let mut scroll = ScrollArea::both()
             .id_salt("roster_timeline")
-            .max_height(440.0);
+            .max_height(440.0)
+            .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible);
         if !already_scrolled {
             scroll = scroll.scroll_offset(vec2(12.0 * PX_PER_HOUR, 0.0));
             ui.data_mut(|data| data.insert_temp(offset_id, true));
@@ -890,13 +897,32 @@ fn timeline_card(ui: &mut Ui, state: &RosteringState, action: &mut Option<Roster
                     CornerRadius::ZERO,
                     theme::sidebar(),
                 );
+                let label_rect = egui::Rect::from_min_size(
+                    egui::pos2(rect.left(), y),
+                    vec2(LABEL_WIDTH, lane_height),
+                );
+                let label_response = ui.interact(
+                    label_rect,
+                    egui::Id::unique(("roster-lane", &lane.name, &lane.contact_id)),
+                    Sense::click(),
+                );
+                let label_colour = if lane.contact_id.is_some() && label_response.hovered() {
+                    theme::accent()
+                } else {
+                    theme::text()
+                };
                 painter.text(
                     egui::pos2(rect.left() + 8.0, y + 6.0),
                     egui::Align2::LEFT_TOP,
                     &lane.name,
                     theme::strong_font(10.5),
-                    theme::text(),
+                    label_colour,
                 );
+                if label_response.clicked()
+                    && let Some(contact_id) = &lane.contact_id
+                {
+                    *action = Some(RosteringAction::OpenContact(contact_id.clone()));
+                }
 
                 for (shift, row) in &lane.shifts {
                     let Some(start) = parse_utc(&shift.starts_at) else {
@@ -1215,10 +1241,12 @@ fn assignment_row(ui: &mut Ui, assignment: &ApiAssignment, action: &mut Option<R
                 } else {
                     "Client"
                 };
-                ui.label(
-                    RichText::new(&assignment.contact_name)
-                        .color(theme::text())
-                        .font(theme::strong_font(11.5)),
+                contact_link(
+                    ui,
+                    &assignment.contact_name,
+                    &assignment.contact_id,
+                    action,
+                    true,
                 );
                 theme::pill(ui, role_label, theme::accent_blue());
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -1471,63 +1499,46 @@ fn suitability_section(
     };
 
     ui.add_space(4.0);
-    for candidate in &suitability.candidates {
-        Frame::new()
-            .fill(theme::surface_raised())
-            .corner_radius(CornerRadius::same(8))
-            .inner_margin(Margin::same(8))
-            .show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                ui.horizontal(|ui| {
-                    ui.label(
-                        RichText::new(&candidate.display_name)
-                            .color(theme::text())
-                            .font(theme::strong_font(11.5)),
-                    );
-                    theme::pill(ui, &format!("{:.0}", candidate.score), theme::success());
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if ui
-                            .add(
-                                egui::Button::new(
-                                    RichText::new("Assign").color(theme::accent()).size(10.0),
-                                )
-                                .frame(false),
-                            )
-                            .clicked()
-                        {
-                            state.assignment_target = Some(ApiGraphNode {
-                                kind: PartyKind::Contact,
-                                id: candidate.contact_id.clone(),
-                                label: candidate.display_name.clone(),
-                                degree: 0,
-                                depth: None,
-                            });
-                            state.assignment_role = "worker".to_owned();
-                            state.assignment_pending = true;
-                            *action = Some(RosteringAction::CreateAssignment {
-                                shift_id: suitability.shift_id.clone(),
-                                contact_id: candidate.contact_id.clone(),
-                                role: "worker".to_owned(),
-                            });
-                        }
-                    });
-                });
-                for reason in &candidate.reasons {
-                    ui.label(
-                        RichText::new(format!("+ {reason}"))
-                            .color(theme::muted())
-                            .size(9.5),
-                    );
-                }
-                for warning in &candidate.warnings {
-                    ui.label(
-                        RichText::new(format!("! {warning}"))
-                            .color(theme::warning())
-                            .size(9.5),
-                    );
-                }
-            });
+    if !suitability.requirements.is_empty() {
+        ui.label(
+            RichText::new("Shift requirements")
+                .color(theme::text())
+                .font(theme::strong_font(10.5)),
+        );
+        for requirement in &suitability.requirements {
+            ui.label(
+                RichText::new(format!(
+                    "• {} — {}",
+                    requirement.client_name,
+                    requirement.summary()
+                ))
+                .color(theme::muted())
+                .size(9.5),
+            );
+        }
         ui.add_space(4.0);
+    }
+
+    let (met, unmet): (Vec<_>, Vec<_>) = suitability
+        .candidates
+        .iter()
+        .partition(|candidate| candidate.meets_requirements);
+    for candidate in &met {
+        suitability_candidate_card(ui, state, action, &suitability.shift_id, candidate);
+        ui.add_space(4.0);
+    }
+    if !unmet.is_empty() {
+        ui.add_space(4.0);
+        ui.label(
+            RichText::new("Does not meet requirements — still assignable")
+                .color(theme::warning())
+                .font(theme::strong_font(10.5)),
+        );
+        ui.add_space(2.0);
+        for candidate in &unmet {
+            suitability_candidate_card(ui, state, action, &suitability.shift_id, candidate);
+            ui.add_space(4.0);
+        }
     }
 
     if !suitability.blocked.is_empty() {
@@ -1548,6 +1559,130 @@ fn suitability_section(
                 .size(10.0),
             );
         }
+    }
+}
+
+fn suitability_candidate_card(
+    ui: &mut Ui,
+    state: &mut RosteringState,
+    action: &mut Option<RosteringAction>,
+    shift_id: &str,
+    candidate: &ApiSuitabilityCandidate,
+) {
+    Frame::new()
+        .fill(theme::surface_raised())
+        .corner_radius(CornerRadius::same(8))
+        .inner_margin(Margin::same(8))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                contact_link(
+                    ui,
+                    &candidate.display_name,
+                    &candidate.contact_id,
+                    action,
+                    true,
+                );
+                theme::pill(
+                    ui,
+                    &format!("{:.0}", candidate.score),
+                    if candidate.meets_requirements {
+                        theme::success()
+                    } else {
+                        theme::warning()
+                    },
+                );
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if ui
+                        .add(
+                            egui::Button::new(
+                                RichText::new("Assign").color(theme::accent()).size(10.0),
+                            )
+                            .frame(false),
+                        )
+                        .clicked()
+                    {
+                        state.assignment_target = Some(ApiGraphNode {
+                            kind: PartyKind::Contact,
+                            id: candidate.contact_id.clone(),
+                            label: candidate.display_name.clone(),
+                            degree: 0,
+                            depth: None,
+                        });
+                        state.assignment_role = "worker".to_owned();
+                        state.assignment_pending = true;
+                        *action = Some(RosteringAction::CreateAssignment {
+                            shift_id: shift_id.to_owned(),
+                            contact_id: candidate.contact_id.clone(),
+                            role: "worker".to_owned(),
+                        });
+                    }
+                });
+            });
+            for requirement in candidate
+                .requirements
+                .iter()
+                .filter(|requirement| !requirement.is_met())
+            {
+                ui.label(
+                    RichText::new(format!(
+                        "! {} — {}",
+                        requirement.quality_name,
+                        requirement_status_label(requirement)
+                    ))
+                    .color(theme::warning())
+                    .size(9.5),
+                );
+            }
+            for reason in &candidate.reasons {
+                ui.label(
+                    RichText::new(format!("+ {reason}"))
+                        .color(theme::muted())
+                        .size(9.5),
+                );
+            }
+            for warning in &candidate.warnings {
+                ui.label(
+                    RichText::new(format!("! {warning}"))
+                        .color(theme::warning())
+                        .size(9.5),
+                );
+            }
+        });
+}
+
+fn contact_link(
+    ui: &mut Ui,
+    name: &str,
+    contact_id: &str,
+    action: &mut Option<RosteringAction>,
+    strong: bool,
+) {
+    let text = if strong {
+        RichText::new(name)
+            .color(theme::accent())
+            .font(theme::strong_font(11.5))
+    } else {
+        RichText::new(name).color(theme::accent())
+    };
+    if ui.add(egui::Button::new(text).frame(false)).clicked() {
+        *action = Some(RosteringAction::OpenContact(contact_id.to_owned()));
+    }
+}
+
+fn requirement_status_label(requirement: &ApiSuitabilityRequirement) -> String {
+    let detail = requirement
+        .detail
+        .as_deref()
+        .filter(|detail| !detail.is_empty())
+        .map(|detail| format!(" ({detail})"))
+        .unwrap_or_default();
+    match requirement.status.as_str() {
+        "expired" => format!("expired{detail}"),
+        "mismatch" => format!("does not match{detail}"),
+        "unknown" => format!("not recorded{detail}"),
+        "expiring" => format!("expires soon{detail}"),
+        _ => format!("required{detail}"),
     }
 }
 

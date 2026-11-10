@@ -11,6 +11,7 @@ fn harness(app: CareLibreApp) -> Harness<'static, CareLibreApp> {
     app.set_theme_mode(ThemeMode::Dark);
     Harness::builder()
         .with_size(egui::vec2(1280.0, 800.0))
+        .with_max_steps(20)
         .with_context_setup(|ctx| theme::apply(ctx, ThemeMode::Dark))
         .build_ui_state(|ui, app| app.show(ui), app)
 }
@@ -18,7 +19,6 @@ fn harness(app: CareLibreApp) -> Harness<'static, CareLibreApp> {
 #[test]
 fn every_page_renders() {
     for page in [
-        Page::Home,
         Page::Contacts,
         Page::Rostering,
         Page::Relationships,
@@ -36,6 +36,34 @@ fn every_page_renders() {
 
         assert_eq!(harness.state().page(), page);
     }
+}
+
+#[test]
+fn launch_opens_no_pages_and_centres_the_menu() {
+    let mut harness = harness(CareLibreApp::new());
+    harness.run();
+
+    assert!(!harness.state().page_column_open());
+    assert!(harness.state().docked_contact_ids().is_empty());
+
+    let menu = harness.get_by_label("WORKSPACE");
+    let centre = menu.rect().center();
+    assert!(
+        centre.x > 400.0,
+        "expected the menu to start centred, got {centre:?}"
+    );
+
+    harness
+        .get_by_role_and_label(egui::Role::Button, "Rostering")
+        .click();
+    harness.run();
+
+    let menu = harness.get_by_label("WORKSPACE");
+    let centre = menu.rect().center();
+    assert!(
+        centre.x < 200.0,
+        "expected the menu to move to the left, got {centre:?}"
+    );
 }
 
 #[test]
@@ -67,26 +95,37 @@ fn settings_offers_all_appearance_modes() {
 #[test]
 fn pointer_clicks_work_across_the_window() {
     let mut app = CareLibreApp::new();
-    app.set_page(Page::Home);
+    app.set_page(Page::Contacts);
     app.set_client_side_decorations(true);
 
     let mut harness = harness(app);
     harness.run();
 
-    let button = harness.get_by_label("Sign in to the server");
+    let button = harness.get_by_label("Sign in");
     let centre = button.rect().center();
     assert!(
-        centre.x > 800.0 && centre.y > 500.0,
-        "expected a button in the lower-right quadrant, got {centre:?}"
+        centre.x > 800.0,
+        "expected a button on the right-hand side, got {centre:?}"
     );
     button.click();
     harness.run();
 
     assert_eq!(harness.state().page(), Page::Settings);
+
+    let contacts = harness.get_by_role_and_label(egui::Role::Button, "Contacts");
+    let centre = contacts.rect().center();
+    assert!(
+        centre.x < 300.0 && centre.y > 80.0,
+        "expected a button in the left-hand pane, got {centre:?}"
+    );
+    contacts.click();
+    harness.run();
+
+    assert_eq!(harness.state().page(), Page::Contacts);
 }
 
 #[test]
-fn multiple_contacts_open_as_dock_tabs() {
+fn multiple_contacts_open_as_columns() {
     let mut app = CareLibreApp::new();
     app.open_contact("first-contact");
     app.open_contact("second-contact");
@@ -100,7 +139,49 @@ fn multiple_contacts_open_as_dock_tabs() {
 }
 
 #[test]
-fn open_contacts_render_the_sliding_dock() {
+fn pages_can_be_closed_and_reopened() {
+    let mut app = CareLibreApp::new();
+    app.set_page(Page::Contacts);
+
+    let mut harness = harness(app);
+    harness.run();
+    assert!(harness.state().page_column_open());
+
+    harness.get_by_label("×").click();
+    harness.run();
+    assert!(!harness.state().page_column_open());
+
+    harness.get_by_label("Contacts").click();
+    harness.run();
+    assert!(harness.state().page_column_open());
+    assert_eq!(harness.state().page(), Page::Contacts);
+}
+
+#[test]
+fn multiple_contact_columns_render_without_id_clashes() {
+    let mut app = CareLibreApp::new();
+    app.open_contact("first-contact");
+    app.open_contact("second-contact");
+    app.open_contact("third-contact");
+
+    let mut harness = harness(app);
+    harness.run_steps(3);
+    assert_eq!(harness.state().docked_contact_ids().len(), 3);
+}
+
+#[test]
+fn open_columns_are_limited() {
+    let mut app = CareLibreApp::new();
+    for index in 0..6 {
+        app.open_contact(&format!("contact-{index}"));
+    }
+
+    // The page counts as one column; three records fill the remaining slots.
+    assert_eq!(app.docked_contact_ids().len(), 3);
+}
+
+#[test]
+fn open_contacts_render_the_column_strip() {
     let mut app = CareLibreApp::new();
     app.open_contact("first-contact");
 
@@ -119,7 +200,11 @@ fn pages_can_pop_out_and_dock() {
     let mut harness = harness(app);
     harness.run();
 
-    harness.get_by_label("Pop out page").click();
+    harness
+        .get_all_by_label("Pop out page")
+        .next()
+        .unwrap()
+        .click();
     harness.run_steps(2);
     assert!(harness.state().page_popped_out(Page::Rostering));
 

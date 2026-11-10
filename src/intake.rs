@@ -7,7 +7,7 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
-use crate::store::ContactKind;
+use crate::{contact::PartyKind, store::ContactKind};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -72,6 +72,20 @@ pub enum IntakeStatus {
     Completed,
 }
 
+/// A relationship selected during intake. The intake contact does not exist on
+/// the server until the wizard is completed, so the target is held here and
+/// linked once the contact has been created.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IntakeRelationship {
+    pub subject_role: String,
+    pub linked_role: String,
+    pub kind: PartyKind,
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub notes: String,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct IntakeDraft {
     pub id: String,
@@ -79,6 +93,8 @@ pub struct IntakeDraft {
     pub status: IntakeStatus,
     pub current_step: usize,
     pub fields: BTreeMap<String, String>,
+    #[serde(default)]
+    pub relationships: BTreeMap<String, IntakeRelationship>,
     pub created_at: i64,
     pub updated_at: i64,
     pub contact_id: Option<String>,
@@ -93,6 +109,7 @@ impl IntakeDraft {
             status: IntakeStatus::Draft,
             current_step: 0,
             fields: BTreeMap::new(),
+            relationships: BTreeMap::new(),
             created_at: now,
             updated_at: now,
             contact_id: None,
@@ -110,6 +127,23 @@ impl IntakeDraft {
 
     pub fn is_checked(&self, key: &str) -> bool {
         self.get(key) == "true"
+    }
+
+    pub fn relationship(&self, key: &str) -> Option<&IntakeRelationship> {
+        self.relationships.get(key)
+    }
+
+    pub fn set_relationship(&mut self, key: &str, relationship: IntakeRelationship) {
+        self.relationships.insert(key.to_owned(), relationship);
+        self.updated_at = now_ms();
+    }
+
+    pub fn remove_relationship(&mut self, key: &str) -> Option<IntakeRelationship> {
+        let removed = self.relationships.remove(key);
+        if removed.is_some() {
+            self.updated_at = now_ms();
+        }
+        removed
     }
 
     pub fn display_name(&self) -> String {

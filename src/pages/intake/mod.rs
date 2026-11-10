@@ -2,24 +2,45 @@
 
 pub(crate) mod fields;
 
-use std::time::{Duration, Instant};
+use std::{
+    collections::BTreeMap,
+    time::{Duration, Instant},
+};
 
+use chrono::NaiveDate;
 use eframe::egui::{
     self, Align, Align2, Color32, CornerRadius, FontId, Frame, Layout, Margin, RichText, Sense,
     Stroke, Ui, vec2,
 };
 
-use crate::intake::{CompletedIntake, IntakeDraft, IntakeKind, IntakeSummary};
+use crate::contact::{ApiGraphNode, RoleOption, relationship_role_label};
+use crate::intake::{CompletedIntake, IntakeDraft, IntakeKind, IntakeRelationship, IntakeSummary};
+use crate::pages::contact_editor::{NewRelationshipContact, party_lookup, role_picker};
 use crate::store::ContactFilter;
 use crate::theme;
 
-use fields::{FieldKind, FieldSpec, StepSpec};
+use fields::{FieldKind, FieldSpec, RelationshipSpec, StepSpec};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum IntakeView {
     Picker,
     Wizard,
     Completed,
+}
+
+#[derive(Clone, Default)]
+pub struct IntakeRelationshipForm {
+    pub role: Option<RoleOption>,
+    pub target: Option<ApiGraphNode>,
+    pub notes: String,
+}
+
+#[derive(Clone)]
+pub struct IntakeNewRelationship {
+    pub slot: String,
+    pub role: RoleOption,
+    pub notes: String,
+    pub contact: NewRelationshipContact,
 }
 
 pub struct IntakeState {
@@ -41,6 +62,10 @@ pub struct IntakeState {
     pub discard_request: Option<u64>,
     pub create_request: Option<u64>,
     pub popped_out: bool,
+    pub relationship_forms: BTreeMap<String, IntakeRelationshipForm>,
+    pub new_relationship: Option<IntakeNewRelationship>,
+    pub relationship_pending: bool,
+    pub relationship_error: Option<String>,
 }
 
 impl IntakeState {
@@ -64,7 +89,18 @@ impl IntakeState {
             discard_request: None,
             create_request: None,
             popped_out: false,
+            relationship_forms: BTreeMap::new(),
+            new_relationship: None,
+            relationship_pending: false,
+            relationship_error: None,
         }
+    }
+
+    pub fn reset_relationships(&mut self) {
+        self.relationship_forms.clear();
+        self.new_relationship = None;
+        self.relationship_pending = false;
+        self.relationship_error = None;
     }
 
     pub fn next_request(&mut self) -> u64 {
@@ -80,6 +116,7 @@ impl IntakeState {
         self.list_requested = false;
         self.loading_draft = false;
         self.popped_out = false;
+        self.reset_relationships();
     }
 
     pub fn start(&mut self, kind: IntakeKind) {
@@ -92,6 +129,7 @@ impl IntakeState {
         self.dirty = true;
         self.save_due = Some(Instant::now());
         self.popped_out = false;
+        self.reset_relationships();
     }
 
     pub fn mark_edited(&mut self) {
@@ -114,7 +152,16 @@ pub enum IntakeAction {
     SaveNow,
     BackToPicker,
     Complete,
-    ViewContact { filter: ContactFilter, name: String },
+    CreateRelationshipContact {
+        slot: String,
+        role: RoleOption,
+        notes: String,
+        draft: Box<NewRelationshipContact>,
+    },
+    ViewContact {
+        filter: ContactFilter,
+        name: String,
+    },
     GoToSettings,
     PopOut,
     Dock,
@@ -125,6 +172,8 @@ pub fn show(
     state: &mut IntakeState,
     store_ready: bool,
     signed_in: bool,
+    catalog: &[ApiGraphNode],
+    roles: &[RoleOption],
 ) -> Option<IntakeAction> {
     if !signed_in {
         header(
@@ -193,7 +242,7 @@ pub fn show(
         IntakeView::Wizard => {
             egui::ScrollArea::vertical()
                 .auto_shrink([false, false])
-                .show(ui, |ui| wizard(ui, state, store_ready))
+                .show(ui, |ui| wizard(ui, state, store_ready, catalog, roles))
                 .inner
         }
         IntakeView::Completed => completed(ui, state),
@@ -393,6 +442,8 @@ pub fn show_wizard_viewport(
     ui: &mut Ui,
     state: &mut IntakeState,
     client_side_decorations: bool,
+    catalog: &[ApiGraphNode],
+    roles: &[RoleOption],
 ) -> Option<IntakeAction> {
     if state.view != IntakeView::Wizard {
         return Some(IntakeAction::Dock);
@@ -430,7 +481,7 @@ pub fn show_wizard_viewport(
             egui::ScrollArea::vertical()
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
-                    action = wizard(ui, state, true);
+                    action = wizard(ui, state, true, catalog, roles);
                 });
         });
 
@@ -441,7 +492,13 @@ pub fn show_wizard_viewport(
     action
 }
 
-fn wizard(ui: &mut Ui, state: &mut IntakeState, store_ready: bool) -> Option<IntakeAction> {
+fn wizard(
+    ui: &mut Ui,
+    state: &mut IntakeState,
+    store_ready: bool,
+    catalog: &[ApiGraphNode],
+    roles: &[RoleOption],
+) -> Option<IntakeAction> {
     if !store_ready {
         message_card(
             ui,
@@ -587,6 +644,12 @@ fn wizard(ui: &mut Ui, state: &mut IntakeState, store_ready: bool) -> Option<Int
                 ui.add_space(14.0);
 
                 changed |= render_fields(ui, &mut draft, step, state.step_error);
+                let (relationship_changed, relationship_action) =
+                    render_relationships(ui, &mut draft, step, state, catalog, roles);
+                changed |= relationship_changed;
+                if relationship_action.is_some() {
+                    action = relationship_action;
+                }
 
                 if let Some(error) = &state.error {
                     ui.add_space(8.0);
@@ -617,12 +680,22 @@ fn wizard(ui: &mut Ui, state: &mut IntakeState, store_ready: bool) -> Option<Int
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         let last = step_index + 1 == steps.len();
                         let label = if last { "Finish intake" } else { "Continue" };
-                        if ui.add(theme::primary_button(label)).clicked() {
-                            if let Some(error) = validate(step, &draft) {
+                        if ui
+                            .add_enabled(!state.relationship_pending, theme::primary_button(label))
+                            .clicked()
+                        {
+                            if last {
+                                if let Some((index, error)) = validate_all(&draft) {
+                                    draft.current_step = index;
+                                    state.error = Some(error);
+                                    state.step_error = true;
+                                    state.mark_edited();
+                                } else {
+                                    action = Some(IntakeAction::Complete);
+                                }
+                            } else if let Some(error) = validate(step, &draft) {
                                 state.error = Some(error);
                                 state.step_error = true;
-                            } else if last {
-                                action = Some(IntakeAction::Complete);
                             } else {
                                 draft.current_step += 1;
                                 state.step_error = false;
@@ -630,6 +703,13 @@ fn wizard(ui: &mut Ui, state: &mut IntakeState, store_ready: bool) -> Option<Int
                                 state.mark_edited();
                                 action = Some(IntakeAction::Edited);
                             }
+                        }
+                        if state.relationship_pending {
+                            ui.label(
+                                RichText::new("Creating contact…")
+                                    .color(theme::warning())
+                                    .size(10.5),
+                            );
                         }
                     });
                 });
@@ -645,7 +725,7 @@ fn wizard(ui: &mut Ui, state: &mut IntakeState, store_ready: bool) -> Option<Int
 
     if changed {
         state.mark_edited();
-        if !matches!(action, Some(IntakeAction::Complete)) {
+        if action.is_none() {
             action = Some(IntakeAction::Edited);
         }
     }
@@ -757,6 +837,347 @@ fn render_fields(ui: &mut Ui, draft: &mut IntakeDraft, step: &StepSpec, show_err
     changed
 }
 
+fn render_relationships(
+    ui: &mut Ui,
+    draft: &mut IntakeDraft,
+    step: &StepSpec,
+    state: &mut IntakeState,
+    catalog: &[ApiGraphNode],
+    roles: &[RoleOption],
+) -> (bool, Option<IntakeAction>) {
+    if step.relationships.is_empty() {
+        return (false, None);
+    }
+
+    let mut changed = false;
+    let mut action = None;
+
+    ui.add_space(4.0);
+    ui.separator();
+    ui.add_space(8.0);
+    ui.label(RichText::new("Linked contacts").font(theme::strong_font(13.0)));
+    ui.label(
+        RichText::new(
+            "Search the directory or create a new contact. Relationships are linked when the intake is completed.",
+        )
+        .color(theme::muted())
+        .size(10.5),
+    );
+
+    if let Some(error) = &state.relationship_error {
+        ui.add_space(6.0);
+        message_inline(ui, error, theme::danger());
+    }
+    ui.add_space(8.0);
+
+    for spec in step.relationships {
+        let current = draft.relationship(spec.key).cloned();
+        let invalid = state.step_error && spec.required && current.is_none();
+        relationship_label(ui, spec, invalid);
+
+        if let Some(current) = current {
+            Frame::new()
+                .fill(theme::surface_raised())
+                .stroke(Stroke::new(1.0, theme::border()))
+                .corner_radius(CornerRadius::same(10))
+                .inner_margin(Margin::same(10))
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            RichText::new(relationship_role_label(&current.linked_role))
+                                .font(theme::strong_font(12.0)),
+                        );
+                        theme::pill(ui, current.kind.label(), theme::accent_blue());
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            if ui
+                                .add(
+                                    egui::Button::new(
+                                        RichText::new("Remove").color(theme::danger()).size(10.5),
+                                    )
+                                    .frame(false),
+                                )
+                                .clicked()
+                            {
+                                draft.remove_relationship(spec.key);
+                                state.relationship_forms.remove(spec.key);
+                                changed = true;
+                            }
+                        });
+                    });
+                    ui.label(RichText::new(&current.name).color(theme::text()).size(12.0));
+                    if !current.notes.trim().is_empty() {
+                        ui.label(
+                            RichText::new(&current.notes)
+                                .color(theme::muted())
+                                .size(10.5),
+                        );
+                    }
+                });
+            ui.add_space(6.0);
+            continue;
+        }
+
+        let mut open_new = None;
+        {
+            let form = state
+                .relationship_forms
+                .entry(spec.key.to_owned())
+                .or_insert_with(|| IntakeRelationshipForm {
+                    role: preferred_role(spec, roles),
+                    target: None,
+                    notes: String::new(),
+                });
+            if form.role.is_none() {
+                form.role = preferred_role(spec, roles);
+            }
+
+            if let Some(role) = form.role.clone() {
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new(format!(
+                            "{} · this record is {}",
+                            relationship_role_label(&role.linked_role),
+                            relationship_role_label(&role.subject_role)
+                        ))
+                        .color(theme::faint())
+                        .size(10.0),
+                    );
+                    if ui
+                        .add(
+                            egui::Button::new(
+                                RichText::new("Change role")
+                                    .color(theme::accent())
+                                    .size(10.0),
+                            )
+                            .frame(false),
+                        )
+                        .clicked()
+                    {
+                        form.role = None;
+                    }
+                });
+            } else {
+                role_picker(
+                    ui,
+                    &format!("intake-role-{}", spec.key),
+                    roles,
+                    &mut form.role,
+                    RoleOption::describe,
+                );
+            }
+
+            party_lookup(
+                ui,
+                &format!("intake-party-{}", spec.key),
+                &mut form.target,
+                None,
+                catalog,
+            );
+
+            ui.add(
+                egui::TextEdit::singleline(&mut form.notes)
+                    .hint_text("Relationship or notes (optional)")
+                    .desired_width(ui.available_width())
+                    .margin(Margin::symmetric(8, 6)),
+            );
+
+            ui.horizontal(|ui| {
+                let can_add =
+                    form.target.is_some() && form.role.is_some() && !state.relationship_pending;
+                if ui
+                    .add_enabled(can_add, theme::secondary_button("Add relationship"))
+                    .clicked()
+                    && let (Some(target), Some(role)) = (form.target.take(), form.role.clone())
+                {
+                    draft.set_relationship(
+                        spec.key,
+                        IntakeRelationship {
+                            subject_role: role.subject_role,
+                            linked_role: role.linked_role,
+                            kind: target.kind,
+                            id: target.id,
+                            name: target.label,
+                            notes: form.notes.trim().to_owned(),
+                        },
+                    );
+                    form.notes.clear();
+                    changed = true;
+                }
+
+                if ui
+                    .add_enabled(
+                        form.role.is_some() && !state.relationship_pending,
+                        theme::secondary_button("+ New contact"),
+                    )
+                    .clicked()
+                    && let Some(role) = form.role.clone()
+                {
+                    open_new = Some(IntakeNewRelationship {
+                        slot: spec.key.to_owned(),
+                        role,
+                        notes: form.notes.trim().to_owned(),
+                        contact: NewRelationshipContact::new(),
+                    });
+                }
+            });
+        }
+
+        if let Some(new_rel) = open_new {
+            state.new_relationship = Some(new_rel);
+        }
+
+        if state
+            .new_relationship
+            .as_ref()
+            .is_some_and(|new_rel| new_rel.slot == spec.key)
+            && let Some(next) = new_relationship_form(ui, state, spec)
+        {
+            action = Some(next);
+        }
+
+        ui.add_space(6.0);
+    }
+
+    (changed, action)
+}
+
+fn preferred_role(spec: &RelationshipSpec, roles: &[RoleOption]) -> Option<RoleOption> {
+    roles
+        .iter()
+        .find(|role| role.subject_role == spec.subject_role && role.linked_role == spec.linked_role)
+        .or_else(|| {
+            roles
+                .iter()
+                .find(|role| role.linked_role == spec.linked_role)
+        })
+        .cloned()
+}
+
+fn relationship_label(ui: &mut Ui, spec: &RelationshipSpec, invalid: bool) {
+    ui.horizontal(|ui| {
+        ui.label(
+            RichText::new(spec.label)
+                .color(if invalid {
+                    theme::danger()
+                } else {
+                    theme::muted()
+                })
+                .size(10.5),
+        );
+        if spec.required {
+            ui.label(
+                RichText::new("*")
+                    .color(if invalid {
+                        theme::danger()
+                    } else {
+                        theme::accent()
+                    })
+                    .size(10.5),
+            );
+        }
+    });
+    ui.add_space(3.0);
+}
+
+fn new_relationship_form(
+    ui: &mut Ui,
+    state: &mut IntakeState,
+    spec: &RelationshipSpec,
+) -> Option<IntakeAction> {
+    let mut new_rel = state.new_relationship.take()?;
+    if new_rel.slot != spec.key {
+        state.new_relationship = Some(new_rel);
+        return None;
+    }
+
+    let pending = state.relationship_pending;
+    let error = state.relationship_error.clone();
+    let mut action = None;
+    let mut cancelled = false;
+
+    ui.add_space(6.0);
+    Frame::new()
+        .fill(theme::input())
+        .stroke(Stroke::new(1.0, theme::accent().gamma_multiply(0.5)))
+        .corner_radius(CornerRadius::same(10))
+        .inner_margin(Margin::same(10))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.label(
+                RichText::new(format!("New contact for {}", spec.label))
+                    .font(theme::strong_font(12.5))
+                    .color(theme::text()),
+            );
+            ui.add_space(4.0);
+            ui.columns(2, |cols| {
+                text_field(&mut cols[0], "Given name", &mut new_rel.contact.given_name);
+                text_field(
+                    &mut cols[1],
+                    "Family name",
+                    &mut new_rel.contact.family_name,
+                );
+            });
+            ui.columns(2, |cols| {
+                text_field(&mut cols[0], "Email", &mut new_rel.contact.email);
+                text_field(&mut cols[1], "Phone", &mut new_rel.contact.phone);
+            });
+
+            if let Some(problem) = new_contact_error(&new_rel.contact) {
+                ui.label(RichText::new(problem).color(theme::danger()).size(10.0));
+            } else if let Some(error) = &error {
+                ui.label(RichText::new(error).color(theme::danger()).size(10.0));
+            }
+
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                let valid = new_contact_error(&new_rel.contact).is_none();
+                if ui
+                    .add_enabled(valid && !pending, theme::primary_button("Create & link"))
+                    .clicked()
+                {
+                    state.relationship_pending = true;
+                    state.relationship_error = None;
+                    action = Some(IntakeAction::CreateRelationshipContact {
+                        slot: new_rel.slot.clone(),
+                        role: new_rel.role.clone(),
+                        notes: new_rel.notes.clone(),
+                        draft: Box::new(new_rel.contact.clone()),
+                    });
+                }
+                if ui.add(theme::secondary_button("Cancel")).clicked() {
+                    cancelled = true;
+                    state.relationship_error = None;
+                }
+                if pending {
+                    ui.label(
+                        RichText::new("Creating contact…")
+                            .color(theme::warning())
+                            .size(10.0),
+                    );
+                }
+            });
+        });
+
+    if !cancelled {
+        state.new_relationship = Some(new_rel);
+    }
+    action
+}
+
+fn new_contact_error(contact: &NewRelationshipContact) -> Option<&'static str> {
+    if contact.given_name.trim().is_empty() && contact.family_name.trim().is_empty() {
+        return Some("A given or family name is required.");
+    }
+    if !contact.email.trim().is_empty() && !valid_email(contact.email.trim()) {
+        return Some("Enter a valid email address.");
+    }
+    if !contact.phone.trim().is_empty() && !valid_phone(contact.phone.trim()) {
+        return Some("Enter a valid phone number.");
+    }
+    None
+}
+
 fn render_field(
     ui: &mut Ui,
     draft: &mut IntakeDraft,
@@ -764,7 +1185,8 @@ fn render_field(
     show_errors: bool,
 ) -> bool {
     let value = draft.get(field.key).to_owned();
-    let invalid = show_errors && field.required && !field_filled(draft, field);
+    let error = show_errors.then(|| field_error(draft, field)).flatten();
+    let invalid = error.is_some();
 
     if field.kind == FieldKind::Checkbox {
         let mut checked = value == "true";
@@ -786,6 +1208,9 @@ fn render_field(
         let changed = response.inner.changed();
         if changed {
             draft.set(field.key, checked.to_string());
+        }
+        if let Some(error) = &error {
+            ui.label(RichText::new(error).color(theme::danger()).size(10.0));
         }
         ui.add_space(6.0);
         return changed;
@@ -855,8 +1280,22 @@ fn render_field(
         }
     };
 
+    if let Some(error) = &error {
+        ui.label(RichText::new(error).color(theme::danger()).size(10.0));
+    }
+
     ui.add_space(6.0);
     changed
+}
+
+fn text_field(ui: &mut Ui, label: &str, text: &mut String) {
+    ui.label(RichText::new(label).color(theme::muted()).size(10.5));
+    ui.add(
+        egui::TextEdit::singleline(text)
+            .desired_width(ui.available_width())
+            .margin(Margin::symmetric(8, 6)),
+    );
+    ui.add_space(4.0);
 }
 
 fn field_label(ui: &mut Ui, field: &FieldSpec, invalid: bool) {
@@ -886,26 +1325,144 @@ fn field_label(ui: &mut Ui, field: &FieldSpec, invalid: bool) {
 }
 
 fn validate(step: &StepSpec, draft: &IntakeDraft) -> Option<String> {
-    let missing: Vec<&str> = step
-        .fields
-        .iter()
-        .filter(|field| field.required && !field_filled(draft, field))
-        .map(|field| field.label)
-        .collect();
+    let mut errors = Vec::new();
 
-    if missing.is_empty() {
+    for field in step.fields {
+        if let Some(error) = field_error(draft, field) {
+            errors.push(format!("{}: {error}", field.label));
+        }
+    }
+
+    for relationship in step.relationships {
+        if relationship.required && draft.relationship(relationship.key).is_none() {
+            errors.push(format!(
+                "{}: choose a contact or create a new one.",
+                relationship.label
+            ));
+        }
+    }
+
+    errors.extend(cross_field_errors(draft));
+
+    if errors.is_empty() {
         None
     } else {
-        Some(format!("Complete required fields: {}", missing.join(", ")))
+        Some(errors.join(" · "))
     }
 }
 
-fn field_filled(draft: &IntakeDraft, field: &FieldSpec) -> bool {
-    if field.kind == FieldKind::Checkbox {
-        draft.is_checked(field.key)
-    } else {
-        !draft.get(field.key).trim().is_empty()
+fn validate_all(draft: &IntakeDraft) -> Option<(usize, String)> {
+    for (index, step) in fields::steps(draft.kind).iter().enumerate() {
+        if let Some(error) = validate(step, draft) {
+            return Some((index, error));
+        }
     }
+    None
+}
+
+fn field_error(draft: &IntakeDraft, field: &FieldSpec) -> Option<String> {
+    if field.kind == FieldKind::Checkbox {
+        return (field.required && !draft.is_checked(field.key)).then(|| "Required.".to_owned());
+    }
+
+    let value = draft.get(field.key).trim();
+    if value.is_empty() {
+        return field.required.then(|| "Required.".to_owned());
+    }
+
+    match field.kind {
+        FieldKind::Email if !valid_email(value) => Some("Enter a valid email address.".to_owned()),
+        FieldKind::Phone if !valid_phone(value) => Some("Enter a valid phone number.".to_owned()),
+        FieldKind::Date if parse_date(value).is_none() => Some("Use DD/MM/YYYY.".to_owned()),
+        FieldKind::Number => match value.parse::<f64>() {
+            Err(_) => Some("Enter a number.".to_owned()),
+            Ok(number) if !number.is_finite() => Some("Enter a finite number.".to_owned()),
+            Ok(number) if number < 0.0 => Some("Enter a positive number.".to_owned()),
+            Ok(number) if field.key == "superannuation" && number > 100.0 => {
+                Some("Enter a percentage between 0 and 100.".to_owned())
+            }
+            Ok(_) => None,
+        },
+        FieldKind::Postcode if value.len() != 4 || !value.chars().all(|ch| ch.is_ascii_digit()) => {
+            Some("Enter a 4-digit postcode.".to_owned())
+        }
+        FieldKind::Select if !field.options.contains(&value) => {
+            Some("Choose one of the listed options.".to_owned())
+        }
+        _ => None,
+    }
+}
+
+fn cross_field_errors(draft: &IntakeDraft) -> Vec<String> {
+    let mut errors = Vec::new();
+
+    if let Some(date_of_birth) = parse_date(draft.get("date_of_birth"))
+        && date_of_birth > chrono::Local::now().date_naive()
+    {
+        errors.push("Date of birth cannot be in the future.".to_owned());
+    }
+
+    date_order(
+        draft,
+        "start_date",
+        "end_date",
+        "Contract end must be on or after contract start.",
+        &mut errors,
+    );
+    date_order(
+        draft,
+        "plan_start",
+        "plan_end",
+        "Plan end must be on or after plan start.",
+        &mut errors,
+    );
+
+    errors
+}
+
+fn date_order(
+    draft: &IntakeDraft,
+    start_key: &str,
+    end_key: &str,
+    message: &str,
+    errors: &mut Vec<String>,
+) {
+    if let (Some(start), Some(end)) = (
+        parse_date(draft.get(start_key)),
+        parse_date(draft.get(end_key)),
+    ) && end < start
+    {
+        errors.push(message.to_owned());
+    }
+}
+
+fn parse_date(value: &str) -> Option<NaiveDate> {
+    NaiveDate::parse_from_str(value.trim(), "%d/%m/%Y").ok()
+}
+
+fn valid_email(value: &str) -> bool {
+    let Some((local, domain)) = value.split_once('@') else {
+        return false;
+    };
+    !local.is_empty()
+        && !domain.is_empty()
+        && domain.contains('.')
+        && !domain.starts_with('.')
+        && !domain.ends_with('.')
+        && !value.chars().any(char::is_whitespace)
+        && !domain.contains('@')
+}
+
+fn valid_phone(value: &str) -> bool {
+    let mut digits = 0;
+    for ch in value.chars() {
+        if ch.is_ascii_digit() {
+            digits += 1;
+        } else if !matches!(ch, ' ' | '+' | '-' | '(' | ')' | '.') {
+            return false;
+        }
+    }
+    (8..=15).contains(&digits)
 }
 
 // Completed ----------------------------------------------------------------
@@ -1067,5 +1624,83 @@ fn relative_time(updated_at: i64) -> String {
         60..=3599 => format!("{}m ago", seconds / 60),
         3600..=86_399 => format!("{}h ago", seconds / 3600),
         _ => format!("{}d ago", seconds / 86_400),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::contact::PartyKind;
+    use crate::intake::IntakeKind;
+
+    fn field(key: &str) -> &'static FieldSpec {
+        fields::CLIENT_STEPS
+            .iter()
+            .flat_map(|step| step.fields)
+            .find(|field| field.key == key)
+            .expect("field exists")
+    }
+
+    #[test]
+    fn validates_common_formats() {
+        assert!(valid_email("owner@example.com"));
+        assert!(!valid_email("owner@example"));
+        assert!(!valid_email("owner example.com"));
+
+        assert!(valid_phone("0400 000 000"));
+        assert!(valid_phone("+61 400 000 000"));
+        assert!(!valid_phone("call me"));
+        assert!(!valid_phone("123"));
+    }
+
+    #[test]
+    fn reports_invalid_field_values() {
+        let mut draft = IntakeDraft::new(IntakeKind::Client);
+        draft.set("email", "not-an-email".to_owned());
+        assert!(field_error(&draft, field("email")).is_some());
+
+        draft.set("email", "owner@example.com".to_owned());
+        assert!(field_error(&draft, field("email")).is_none());
+
+        draft.set("date_of_birth", "31/02/2020".to_owned());
+        assert!(field_error(&draft, field("date_of_birth")).is_some());
+
+        draft.set("postcode", "200".to_owned());
+        assert!(field_error(&draft, field("postcode")).is_some());
+        draft.set("postcode", "2000".to_owned());
+        assert!(field_error(&draft, field("postcode")).is_none());
+    }
+
+    #[test]
+    fn requires_the_emergency_contact_relationship() {
+        let mut draft = IntakeDraft::new(IntakeKind::Client);
+        let step = &fields::CLIENT_STEPS[3];
+
+        let error = validate(step, &draft).expect("missing emergency contact");
+        assert!(error.contains("Emergency contact"));
+
+        draft.set_relationship(
+            "emergency_contact",
+            IntakeRelationship {
+                subject_role: "person_supported".to_owned(),
+                linked_role: "emergency_contact".to_owned(),
+                kind: PartyKind::Contact,
+                id: "contact-1".to_owned(),
+                name: "Alex Chen".to_owned(),
+                notes: String::new(),
+            },
+        );
+        assert!(validate(step, &draft).is_none());
+    }
+
+    #[test]
+    fn rejects_future_dates_of_birth() {
+        let mut draft = IntakeDraft::new(IntakeKind::Client);
+        draft.set("first_name", "Margaret".to_owned());
+        draft.set("last_name", "Chen".to_owned());
+        draft.set("date_of_birth", "01/01/2999".to_owned());
+
+        let error = validate(&fields::CLIENT_STEPS[0], &draft).expect("future date");
+        assert!(error.contains("future"));
     }
 }

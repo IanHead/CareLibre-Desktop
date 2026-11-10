@@ -215,6 +215,14 @@ pub fn lerp_color(from: Color32, to: Color32, t: f32) -> Color32 {
     )
 }
 
+/// Symmetric quintic ease used by transitions. Compared with a simple
+/// smoothstep, the extra curvature keeps acceleration near zero at both ends,
+/// which reads as a softer start and a gentler stop.
+pub fn ease_in_out(t: f32) -> f32 {
+    let t = t.clamp(0.0, 1.0);
+    t * t * t * (t * (t * 6.0 - 15.0) + 10.0)
+}
+
 /// Decelerating ease used by short UI transitions.
 pub fn ease_out(t: f32) -> f32 {
     let t = t.clamp(0.0, 1.0);

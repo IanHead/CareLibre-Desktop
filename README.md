@@ -3,12 +3,12 @@
 A fast, native desktop client for [CareLibre](https://github.com/IanHead/CareLibre), the
 open-source care management platform for disability and aged care providers.
 
-> **Status: prototype.** The native application shell, home dashboard and server
+> **Status: prototype.** The native application shell, contact workspace and server
 > authentication are in place. Contacts, clients and workers are read live from the
 > CareLibre server through a background worker and displayed in virtualised, paged lists.
-> Every contact opens in the right-hand record dock, where several records can stay open as
-> draggable tabs — each can be reordered, closed or popped out into a native free-floating
-> window. Edits, custom-field values and linked relationships are saved back to the server.
+> Every contact opens as a column in the main work area, alongside the current page. Columns
+> can be reordered, resized, closed or popped out into a native free-floating window. Edits,
+> custom-field values and linked relationships are saved back to the server.
 > Guided intake wizards persist drafts locally and create onboarding contacts on the server.
 > Rostering is live with a worker/client timeline, recurrence and explainable suitability, and
 > every workspace page can pop out into its own native window. Services, documents and
@@ -16,7 +16,7 @@ open-source care management platform for disability and aged care providers.
 
 <table>
   <tr>
-    <td align="center"><a href="docs/home.png"><img src="docs/thumbs/home.png" alt="CareLibre home dashboard"></a><br><sub><b>Home</b> — live workload at a glance</sub></td>
+    <td align="center"><a href="docs/contacts.png"><img src="docs/thumbs/contacts.png" alt="CareLibre contacts workspace"></a><br><sub><b>Contacts</b> — live workload at a glance</sub></td>
     <td align="center"><a href="docs/contact-editor.png"><img src="docs/thumbs/contact-editor.png" alt="CareLibre contact record and linked relationships"></a><br><sub><b>Records</b> — docked, with linked relationships</sub></td>
     <td align="center"><a href="docs/rostering.png"><img src="docs/thumbs/rostering.png" alt="CareLibre rostering timeline"></a><br><sub><b>Rostering</b> — timeline by worker or client</sub></td>
   </tr>
@@ -36,11 +36,11 @@ open-source care management platform for disability and aged care providers.
 - **GPU first, CPU fallback.** wgpu selects Vulkan, Metal, DX12 or OpenGL at runtime and
   can fall back to software adapters (for example lavapipe or llvmpipe) on machines
   without a usable GPU.
-- **Neat by default, multitasking on demand.** Contact records open in a right-hand dock
-  with an eased slide; keep as many open as you need as reorderable tabs, and pop any record,
-  wizard or workspace page into an independent native OS window that can be moved, resized,
-  docked back and kept alongside the app.
-- **Delightful, GPU-rendered motion.** Page transitions, dock and tab states, navigation
+- **Neat by default, multitasking on demand.** Contact records and the current page open as
+  side-by-side columns that can be reordered, resized and closed. The column count is capped
+  so the workspace stays readable, and any record, wizard or page can be popped out into an
+  independent native OS window.
+- **Delightful, GPU-rendered motion.** Page transitions, column and window states, navigation
   hover and toast notifications animate on the wgpu-rendered UI at display refresh rate.
 - **Relationships are first class.** The server stores two-sided links with a role for
   each endpoint, and any contact can be connected to any other contact or organisation.
@@ -137,19 +137,30 @@ right to work on an intake in its own native window; **Dock** brings it back to 
 contact columns; the rest of the intake data is stored in the contact's server-side
 `details` JSON. Completed records appear immediately in the server-backed Contacts list.
 
+Contact-detail areas such as the client **Support network** step are relationship slots rather
+than free text: search the directory for an existing contact or organisation, or choose
+**+ New contact** to create one inline. Picked relationships are stored on the draft and
+linked on the server when the intake completes. Fields are validated as you go — emails,
+phones, dates, numbers, postcodes and fixed-choice lists must be well formed, required
+fields must be filled, and **Finish intake** rechecks every step and jumps to the first
+problem.
+
 ## Contact records and custom fields
 
-Click any row in Contacts, Clients or Workers to open the contact editor in the right-hand
-record dock. Open as many records as you like: they appear as tabs above the editor and can
-be reordered by dragging, closed with **×**, or detached into an independent native OS
-window with **Pop out**; **Dock** brings a popped-out record back into the tab strip. Tabs
-stay in place while you navigate the rest of the app.
+Click any row in Contacts, Clients or Workers to open the contact editor as a new column.
+The current page is also a column, so you can close pages you do not need and let a single
+record fill the workspace. Columns are reordered by dragging anywhere in the title bar,
+resized by dragging the divider between them, and closed with **×**. While dragging, the
+column previews its landing slot; press **Esc** before releasing to cancel the move.
+Columns animate in and reflow smoothly as they open, close or the window resizes. **Pop out**
+detaches a record or page into its own native window; **Dock** brings it back. The number of
+columns is capped so the workspace cannot become an unmanageable horizontal strip.
 
 The editor loads the contact, its extended `details` profile and every active custom-field
 definition from the server. Nothing is hardcoded in the UI:
 
-- **Stock fields** are the server's contact columns: display name, given/family/preferred
-  name, pronouns, date of birth, email, phone, notes, role and status.
+- **Stock fields** are the server's contact columns: given/family/preferred name (the
+  display name is calculated), pronouns, date of birth, email, phone, notes, role and status.
 - **Custom fields are metadata.** Definitions live in the server's
   `custom_field_definitions` table and values in `custom_field_values`. The editor renders
   them with the same labels and inputs as stock fields, in the same form — they are not
@@ -163,7 +174,7 @@ definition from the server. Nothing is hardcoded in the UI:
 The editor's **Relationships** card links records instead of retyping their details. Pick a
 relationship such as **Emergency Contact**, **Next of Kin** or **Support Coordinator**, then
 search the relationship graph by name and select the record — contacts and organisations are
-both listed. Linked records can be opened in their own dock tab with **Open**.
+both listed. Linked records can be opened in their own column with **Open**.
 
 If the person is not on file yet, choose **+ New contact**, enter their core details and
 press **Create & link**. The contact is created on the server and linked immediately — no
@@ -203,6 +214,16 @@ care: Regular program lead”. Hard `blocked` constraints are listed separately 
 reasons, and the coordinator decides; nothing is auto-assigned. See the server's
 [ADR 0011](https://github.com/IanHead/CareLibre-Server/blob/main/docs/adr/0011-rostering-suitability-graph.md)
 for the evidence model.
+
+**Skills, training and client requirements** feed the same advisory score. A worker's
+skills and training are recorded only when held, with an optional expiry and evidence
+reference. Gender, languages and cultural identity are ordinary profile fields on the
+contact, entered once, so a requirement reads the same value without duplicate entry.
+A client can require a quality — for example PEG feeding training, or a female worker for
+personal care — and each requirement is evaluated as `met`, `expiring`, `expired`,
+`mismatch` or `unknown`. Unmet requirements warn and rank the worker lower but leave them
+assignable; choosing **Block** is the explicit opt-in hard exclusion. Sensitive
+requirements ask for a reason or legal basis.
 
 ## Appearance, window decorations and sign-in
 
@@ -289,7 +310,7 @@ cargo run --example screenshot -- docs/contact-editor.png contacts --live --cont
 The desktop client tracks the wider CareLibre requirements:
 
 - [x] Native egui/wgpu application shell
-- [x] Home dashboard and navigation
+- [x] Contacts workspace and navigation
 - [x] Live server connection, account authentication and organisation onboarding
 - [x] PostgreSQL-backed CareLibre server (via REST API)
 - [x] Server-backed contacts, background API worker and virtualised lists
@@ -307,6 +328,8 @@ The desktop client tracks the wider CareLibre requirements:
 - [ ] Server-side rostering, services and other care-domain modules
 - [ ] Services, rates and effective-dated rate versions
 - [x] Timeline rostering grouped by worker/client with recurrence, copy/paste and explainable suitability
+- [x] Funding sources, client packages, quotes/service agreements and finalise-to-roster generation
+- [ ] Learned worker–client preference affinity and relationship-aware recommendations
 - [ ] Natural-language quoting and document merge templates
 - [ ] Configurable forms, fields and cost-centre inheritance
 - [ ] Configurable SMS and email communications

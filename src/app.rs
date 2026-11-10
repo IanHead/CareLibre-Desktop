@@ -16,12 +16,13 @@ use crate::{
     api, chrome,
     config::Config,
     contact::{
-        ApiContactDetail, ApiContactWrite, ApiGraphNode, ApiRelationship, ApiRelationshipType,
-        ApiRelationshipWrite, PartyKind, RelationshipChange, RoleOption, role_options,
-        row_from_api,
+        ApiAgreementLineWrite, ApiAgreementWrite, ApiClientRequirementWrite, ApiContactDetail,
+        ApiContactWrite, ApiFundingPackageWrite, ApiGraphNode, ApiRelationship,
+        ApiRelationshipType, ApiRelationshipWrite, ApiWorkerQualityValueWrite, PartyKind,
+        RelationshipChange, RoleOption, relationship_role_label, role_options, row_from_api,
     },
     credentials,
-    intake::IntakeKind,
+    intake::{IntakeKind, IntakeRelationship},
     pages::{
         self, Action, Page,
         contact_editor::{ContactEditorAction, ContactWindowState, NewRelationshipContact},
@@ -38,7 +39,51 @@ use crate::{
     theme,
 };
 
-const DOCK_ANIM_SECS: f32 = 0.20;
+const MAX_RECORD_COLUMNS: usize = 5;
+const COLUMN_MIN_WIDTH: f32 = 240.0;
+const SIDEBAR_WIDTH: f32 = 232.0;
+const COLUMN_ANIM_DURATION: f64 = 0.32;
+const SIDEBAR_ANIM_DURATION: f64 = 0.36;
+const PAGE_ANIM_DURATION: f64 = 0.24;
+const NOTICE_ENTER_DURATION: f32 = 0.24;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum ColumnKind {
+    Page(Page),
+    Contact(String),
+}
+
+#[derive(Clone, Debug)]
+struct ColumnState {
+    kind: ColumnKind,
+    /// Target width after fitting the available space.
+    width: f32,
+    /// Relative share of the available width. New columns start at 1.0 so
+    /// every column receives an equal percentage of the window.
+    weight: f32,
+    /// Animated width used for layout.
+    display_width: f32,
+    anim_from: f32,
+    anim_to: f32,
+    anim_start: f64,
+    /// Animated horizontal position inside the column strip.
+    position_x: f32,
+    pos_from: f32,
+    pos_to: f32,
+    pos_start: f64,
+    /// A closing column stays in the strip while it shrinks to zero width.
+    closing: bool,
+    close_start: f64,
+}
+
+impl ColumnKind {
+    fn key(&self) -> String {
+        match self {
+            Self::Page(page) => format!("__page_{}__", page.label()),
+            Self::Contact(id) => id.clone(),
+        }
+    }
+}
 
 pub struct CareLibreApp {
     page: Page,
@@ -51,15 +96,29 @@ pub struct CareLibreApp {
     contacts: ContactsState,
     intake: IntakeState,
     contact_windows: BTreeMap<String, ContactWindowState>,
-    contact_order: Vec<String>,
+    columns: Vec<ColumnState>,
+    columns_initialised: bool,
+    column_rects: Vec<(usize, egui::Rect)>,
+    last_column_order: Vec<usize>,
+    max_record_columns: usize,
     active_contact: Option<String>,
-    drag_tab: Option<String>,
+    drag_column: Option<String>,
+    sidebar_width: f32,
+    sidebar_target: f32,
+    sidebar_anim_from: f32,
+    sidebar_anim_start: f64,
+    sidebar_initialised: bool,
     relationship_request_seq: u64,
     relationship_list_requests: BTreeMap<u64, String>,
     relationship_create_requests: BTreeMap<u64, Option<String>>,
     /// Client/worker links to the organisation requested after an intake,
     /// keyed by request id, holding the new contact's name.
     intake_role_links: BTreeMap<u64, String>,
+    /// Contacts created from an intake relationship slot, keyed by request id.
+    intake_contact_creates: BTreeMap<u64, PendingIntakeContact>,
+    /// Support-network relationships requested after an intake, keyed by
+    /// request id, holding a human-readable label for the notice.
+    intake_relationship_links: BTreeMap<u64, String>,
     /// Lifecycle changes in flight, keyed by request id, holding the editor window id.
     relationship_change_requests: BTreeMap<u64, String>,
     relationship_history_requests: BTreeMap<u64, String>,
@@ -81,8 +140,7 @@ pub struct CareLibreApp {
     known_contacts: BTreeMap<String, ContactRow>,
     last_page: Page,
     page_changed_at: f64,
-    dock_closing: Option<String>,
-    dock_close_started: Option<f64>,
+    frame_time: f64,
     popped_pages: BTreeSet<Page>,
     remote: Option<RemoteHandle>,
     app_ctx: Option<egui::Context>,
@@ -125,10 +183,15 @@ struct PendingInlineRelationship {
     notes: String,
 }
 
+struct PendingIntakeContact {
+    slot: String,
+    role: RoleOption,
+    notes: String,
+}
+
 struct AccountBadge {
     initials: String,
     name: String,
-    first_name: String,
     organisation: String,
     role: String,
     edition: String,
@@ -147,7 +210,7 @@ impl CareLibreApp {
         );
 
         Self {
-            page: Page::Home,
+            page: Page::Contacts,
             search: String::new(),
             notice: None,
             config,
@@ -157,15 +220,26 @@ impl CareLibreApp {
             contacts: ContactsState::new(ContactFilter::All),
             intake: IntakeState::new(),
             contact_windows: BTreeMap::new(),
-            contact_order: Vec::new(),
+            columns: Vec::new(),
+            columns_initialised: false,
+            column_rects: Vec::new(),
+            last_column_order: Vec::new(),
+            max_record_columns: 3,
             active_contact: None,
-            drag_tab: None,
+            drag_column: None,
+            sidebar_width: 0.0,
+            sidebar_target: 0.0,
+            sidebar_anim_from: 0.0,
+            sidebar_anim_start: 0.0,
+            sidebar_initialised: false,
             // Keep relationship request ids in a separate range so they can
             // never collide with intake creation request ids.
             relationship_request_seq: 1 << 32,
             relationship_list_requests: BTreeMap::new(),
             relationship_create_requests: BTreeMap::new(),
             intake_role_links: BTreeMap::new(),
+            intake_contact_creates: BTreeMap::new(),
+            intake_relationship_links: BTreeMap::new(),
             relationship_change_requests: BTreeMap::new(),
             relationship_history_requests: BTreeMap::new(),
             relationship_types: Vec::new(),
@@ -183,10 +257,9 @@ impl CareLibreApp {
             rostering_request_seq: 1 << 40,
             rostering_requests: BTreeMap::new(),
             known_contacts: BTreeMap::new(),
-            last_page: Page::Home,
+            last_page: Page::Contacts,
             page_changed_at: f64::NEG_INFINITY,
-            dock_closing: None,
-            dock_close_started: None,
+            frame_time: 0.0,
             popped_pages: BTreeSet::new(),
             remote: None,
             app_ctx: None,
@@ -306,26 +379,110 @@ impl CareLibreApp {
         }
     }
 
-    /// Navigate to a page. Useful for deep links and headless previews.
+    /// Navigate to a page. Useful for deep links and headless previews. This
+    /// replaces any other page columns, unlike the sidebar which opens each
+    /// page as its own column.
     pub fn set_page(&mut self, page: Page) {
-        self.page = page;
+        self.columns.retain(|column| match &column.kind {
+            ColumnKind::Page(open) => *open == page,
+            ColumnKind::Contact(_) => true,
+        });
+        self.open_page(page);
+        self.reset_column_weights();
         self.last_page = page;
     }
 
-    pub fn docked_contact_ids(&self) -> Vec<String> {
-        self.contact_order
+    /// Show a page and make sure it has a column in the work area.
+    fn open_page(&mut self, page: Page) {
+        self.page = page;
+        if let Some(index) = self
+            .columns
             .iter()
-            .filter(|id| {
-                self.contact_windows
-                    .get(*id)
-                    .is_some_and(|window| !window.popped_out)
+            .position(|column| matches!(column.kind, ColumnKind::Page(open) if open == page))
+        {
+            if self.columns[index].closing {
+                self.cancel_column_close(index);
+            }
+            return;
+        }
+        self.columns.insert(
+            0,
+            ColumnState {
+                kind: ColumnKind::Page(page),
+                width: 760.0,
+                weight: 1.0,
+                display_width: 0.0,
+                anim_from: 0.0,
+                anim_to: 760.0,
+                anim_start: 0.0,
+                position_x: -1.0,
+                pos_from: 0.0,
+                pos_to: 0.0,
+                pos_start: 0.0,
+                closing: false,
+                close_start: 0.0,
+            },
+        );
+        self.reset_column_weights();
+    }
+
+    /// Give every open column the same share of the window. Called whenever a
+    /// column is added or removed so the remaining columns redistribute evenly.
+    fn reset_column_weights(&mut self) {
+        for column in &mut self.columns {
+            column.weight = 1.0;
+        }
+    }
+
+    fn begin_column_close(&mut self, index: usize, now: f64) {
+        let column = &mut self.columns[index];
+        if column.closing {
+            return;
+        }
+        column.closing = true;
+        column.close_start = now;
+        column.anim_from = column.display_width;
+        column.anim_to = 0.0;
+        column.anim_start = now;
+    }
+
+    fn cancel_column_close(&mut self, index: usize) {
+        let column = &mut self.columns[index];
+        column.closing = false;
+        column.close_start = 0.0;
+        column.anim_from = column.display_width;
+        column.anim_to = column.width.max(1.0);
+        column.anim_start = 0.0;
+    }
+
+    pub fn docked_contact_ids(&self) -> Vec<String> {
+        self.columns
+            .iter()
+            .enumerate()
+            .filter_map(|(index, column)| match &column.kind {
+                ColumnKind::Contact(id)
+                    if !self.columns[index].closing
+                        && self
+                            .contact_windows
+                            .get(id)
+                            .is_some_and(|window| !window.popped_out) =>
+                {
+                    Some(id.clone())
+                }
+                _ => None,
             })
-            .cloned()
             .collect()
     }
 
     pub fn page(&self) -> Page {
         self.page
+    }
+
+    /// Whether the current page currently has a column in the work area.
+    pub fn page_column_open(&self) -> bool {
+        self.columns.iter().any(|column| {
+            matches!(column.kind, ColumnKind::Page(open) if open == self.page) && !column.closing
+        })
     }
 
     /// Sign in programmatically. Used by headless previews and live tests.
@@ -369,7 +526,7 @@ impl CareLibreApp {
 
     /// Open the intake picker (or the current draft, if one is in progress).
     pub fn open_intake(&mut self) {
-        self.page = Page::Intake;
+        self.open_page(Page::Intake);
         if self.intake.view == IntakeView::Completed {
             self.intake.open_picker();
         }
@@ -380,7 +537,7 @@ impl CareLibreApp {
 
     /// Begin a scenario directly. Useful for deep links and previews.
     pub fn start_intake(&mut self, kind: IntakeKind) {
-        self.page = Page::Intake;
+        self.open_page(Page::Intake);
         self.intake.start(kind);
     }
 
@@ -399,11 +556,13 @@ impl CareLibreApp {
     pub fn show(&mut self, ui: &mut Ui) {
         theme::sync(ui.ctx(), self.config.theme);
         let now = ui.ctx().input(|i| i.time);
+        self.frame_time = now;
         if self.page != self.last_page {
             self.last_page = self.page;
             self.page_changed_at = now;
         }
-        let page_progress = ((now - self.page_changed_at) / 0.18).clamp(0.0, 1.0) as f32;
+        let page_progress =
+            ((now - self.page_changed_at) / PAGE_ANIM_DURATION).clamp(0.0, 1.0) as f32;
         if page_progress < 1.0 {
             ui.ctx().request_repaint();
         }
@@ -415,6 +574,9 @@ impl CareLibreApp {
         self.tick_intake_autosave();
         self.ensure_contacts_loaded();
         self.ensure_relationship_types();
+        if self.intake.view == IntakeView::Wizard {
+            self.ensure_party_catalog();
+        }
         self.ensure_intake_list();
         self.refresh_session_if_needed();
 
@@ -434,42 +596,23 @@ impl CareLibreApp {
         }
 
         self.top_bar(ui);
-        self.sidebar(ui);
         self.status_bar(ui);
-        self.render_contact_dock(ui);
+        self.sidebar(ui);
 
         let mut contacts_action: Option<ContactsAction> = None;
         let mut intake_action: Option<IntakeAction> = None;
         let mut relationship_action: Option<RelationshipsAction> = None;
         let mut rostering_action: Option<RosteringAction> = None;
-        let page_popped = self.page_popped_out(self.page);
         let action = egui::CentralPanel::default()
-            .frame(
-                Frame::new()
-                    .fill(theme::bg())
-                    .inner_margin(Margin::same(24)),
-            )
+            .frame(Frame::new().fill(theme::bg()).inner_margin(Margin::ZERO))
             .show(ui, |ui| {
-                self.page_toolbar(ui);
-                ui.add_space(10.0);
-                if page_progress < 1.0 {
-                    let enter = theme::ease_out(page_progress);
-                    ui.multiply_opacity(0.35 + 0.65 * enter);
-                    ui.add_space((1.0 - enter) * 8.0);
-                }
-                if page_popped {
-                    self.detached_page_placeholder(ui);
-                    None
-                } else {
-                    self.page_contents(
-                        ui,
-                        self.page,
-                        &mut contacts_action,
-                        &mut intake_action,
-                        &mut relationship_action,
-                        &mut rostering_action,
-                    )
-                }
+                self.render_column_strip(
+                    ui,
+                    &mut contacts_action,
+                    &mut intake_action,
+                    &mut relationship_action,
+                    &mut rostering_action,
+                )
             })
             .inner;
 
@@ -528,33 +671,19 @@ impl CareLibreApp {
         }
         match page {
             Page::Settings => pages::settings::show(ui, &mut self.settings, &self.server),
-            Page::Home => {
-                let account = self.account_badge();
-                let counts = self.cache_counts;
-                let signed_in = self.access_token().is_some();
-                let server_label = match &self.server.connection {
-                    ConnectionState::Online { version, .. } => {
-                        format!("Online · v{version}")
-                    }
-                    ConnectionState::Connecting => "Connecting…".to_owned(),
-                    ConnectionState::Offline { .. } => "Offline".to_owned(),
-                    ConnectionState::NotConnected => "Not connected".to_owned(),
-                };
-                pages::home::show(
-                    ui,
-                    account.as_ref().map(|a| a.first_name.as_str()),
-                    account.as_ref().map(|a| a.organisation.as_str()),
-                    counts,
-                    signed_in,
-                    &server_label,
-                )
-            }
             Page::Intake => {
                 let signed_in = self.access_token().is_some();
                 let store_ready = self.store_ready;
-                if let Some(action) =
-                    pages::intake::show(ui, &mut self.intake, store_ready, signed_in)
-                {
+                let catalog = self.lookup_parties();
+                let roles = self.role_options.clone();
+                if let Some(action) = pages::intake::show(
+                    ui,
+                    &mut self.intake,
+                    store_ready,
+                    signed_in,
+                    &catalog,
+                    &roles,
+                ) {
                     *intake_action = Some(action);
                 }
                 None
@@ -607,7 +736,6 @@ impl CareLibreApp {
         Some(AccountBadge {
             initials: session.initials(),
             name: session.auth.user.full_name.clone(),
-            first_name: session.first_name().to_owned(),
             organisation: session.auth.organisation.name.clone(),
             role: session.role().to_owned(),
             edition: session.auth.organisation.edition.clone(),
@@ -828,7 +956,7 @@ impl CareLibreApp {
             }
             ContactsAction::OpenContact(id) => self.open_contact(&id),
             ContactsAction::LoadMore => self.send_contacts_query(true),
-            ContactsAction::GoToSettings => self.page = Page::Settings,
+            ContactsAction::GoToSettings => self.open_page(Page::Settings),
             ContactsAction::StartIntake => self.open_intake(),
         }
     }
@@ -898,6 +1026,7 @@ impl CareLibreApp {
                 self.intake.load_request = Some(request_id);
                 self.intake.loading_draft = true;
                 self.intake.error = None;
+                self.intake.reset_relationships();
                 if let Some(store) = &self.store {
                     store.load_intake(request_id, id);
                 }
@@ -953,9 +1082,15 @@ impl CareLibreApp {
                 self.intake.error = None;
                 remote.create_contact(request_id, self.server.base_url.clone(), token, payload);
             }
-            IntakeAction::GoToSettings => self.page = Page::Settings,
+            IntakeAction::CreateRelationshipContact {
+                slot,
+                role,
+                notes,
+                draft,
+            } => self.create_intake_relationship_contact(ctx, slot, role, notes, *draft),
+            IntakeAction::GoToSettings => self.open_page(Page::Settings),
             IntakeAction::ViewContact { filter, name } => {
-                self.page = Page::Contacts;
+                self.open_page(Page::Contacts);
                 self.show_contacts(filter, Some(name));
                 let _ = ctx;
             }
@@ -990,7 +1125,7 @@ impl CareLibreApp {
 
     /// Search the contact list. Used by screenshot previews.
     pub fn search_contacts(&mut self, query: &str) {
-        self.page = Page::Contacts;
+        self.open_page(Page::Contacts);
         self.last_page = Page::Contacts;
         let filter = self.contacts.filter;
         self.show_contacts(filter, Some(query.to_owned()));
@@ -998,14 +1133,21 @@ impl CareLibreApp {
 
     /// Show the contact list narrowed to a relationship. Used by screenshot previews.
     pub fn set_contact_filter(&mut self, filter: ContactFilter) {
-        self.page = Page::Contacts;
+        self.open_page(Page::Contacts);
         self.last_page = Page::Contacts;
         self.contacts.filter = filter;
         self.refresh_contact_lists();
     }
 
     pub fn open_contact(&mut self, id: &str) {
-        self.dock_closing = None;
+        if let Some(index) = self
+            .columns
+            .iter()
+            .position(|column| matches!(&column.kind, ColumnKind::Contact(open) if open == id))
+            && self.columns[index].closing
+        {
+            self.cancel_column_close(index);
+        }
         if let Some(window) = self.contact_windows.get(id) {
             if window.popped_out
                 && let Some(ctx) = &self.app_ctx
@@ -1025,8 +1167,49 @@ impl CareLibreApp {
 
         let state = ContactWindowState::new(id.to_owned());
         let request_id = state.request_id.unwrap_or(1);
+        let visible_contacts = self
+            .columns
+            .iter()
+            .filter(|column| match &column.kind {
+                ColumnKind::Page(_) => false,
+                ColumnKind::Contact(open) => {
+                    !column.closing
+                        && self
+                            .contact_windows
+                            .get(open)
+                            .is_some_and(|window| !window.popped_out)
+                }
+            })
+            .count();
+        if visible_contacts >= self.max_record_columns {
+            if let Some(ctx) = self.app_ctx.clone() {
+                self.notify(
+                    &ctx,
+                    format!(
+                        "Close a column before opening another. Up to {} record columns can be open at once in this window; pop a record out for more.",
+                        self.max_record_columns
+                    ),
+                );
+            }
+            return;
+        }
         self.contact_windows.insert(id.to_owned(), state);
-        self.contact_order.push(id.to_owned());
+        self.columns.push(ColumnState {
+            kind: ColumnKind::Contact(id.to_owned()),
+            width: 520.0,
+            weight: 1.0,
+            display_width: 0.0,
+            anim_from: 0.0,
+            anim_to: 520.0,
+            anim_start: 0.0,
+            position_x: -1.0,
+            pos_from: 0.0,
+            pos_to: 0.0,
+            pos_start: 0.0,
+            closing: false,
+            close_start: 0.0,
+        });
+        self.reset_column_weights();
         self.active_contact = Some(id.to_owned());
         self.load_contact_window(id, request_id);
         self.ensure_party_catalog();
@@ -1160,35 +1343,251 @@ impl CareLibreApp {
         }
     }
 
-    /// Close a record. If it is the last docked record, keep it around for the
-    /// dock's slide-out animation before removing it.
-    fn close_contact_window(&mut self, id: &str) {
-        let is_docked = self
-            .contact_windows
-            .get(id)
-            .is_some_and(|window| !window.popped_out);
-        let docked_count = self
-            .contact_order
-            .iter()
-            .filter(|open| {
-                self.contact_windows
-                    .get(*open)
-                    .is_some_and(|window| !window.popped_out)
-            })
-            .count();
-
-        if is_docked && docked_count <= 1 && self.dock_closing.is_none() {
-            self.dock_closing = Some(id.to_owned());
-            self.dock_close_started = self
-                .app_ctx
-                .as_ref()
-                .map(|ctx| ctx.input(|input| input.time));
-            if let Some(ctx) = &self.app_ctx {
-                ctx.request_repaint();
+    fn set_contact_quality(&mut self, id: &str, payload: ApiWorkerQualityValueWrite) {
+        let Some(token) = self.access_token() else {
+            if let Some(window) = self.contact_windows.get_mut(id) {
+                window.quality_pending = false;
+                window.quality_error = Some("Sign in to save skills.".to_owned());
             }
             return;
+        };
+        let request = self.next_relationship_request();
+        let Some(remote) = &self.remote else {
+            if let Some(window) = self.contact_windows.get_mut(id) {
+                window.quality_pending = false;
+                window.quality_error = Some("The server connection is not available.".to_owned());
+            }
+            return;
+        };
+        if let Some(window) = self.contact_windows.get_mut(id) {
+            window.quality_pending = true;
+            window.quality_error = None;
         }
+        remote.set_contact_quality(
+            request,
+            self.server.base_url.clone(),
+            token,
+            id.to_owned(),
+            payload,
+        );
+    }
 
+    fn delete_contact_quality(&mut self, id: &str, quality_id: String) {
+        let Some(token) = self.access_token() else {
+            return;
+        };
+        let request = self.next_relationship_request();
+        let Some(remote) = &self.remote else {
+            return;
+        };
+        if let Some(window) = self.contact_windows.get_mut(id) {
+            window.quality_pending = true;
+            window.quality_error = None;
+        }
+        remote.delete_contact_quality(
+            request,
+            self.server.base_url.clone(),
+            token,
+            id.to_owned(),
+            quality_id,
+        );
+    }
+
+    fn set_contact_requirement(&mut self, id: &str, payload: ApiClientRequirementWrite) {
+        let Some(token) = self.access_token() else {
+            if let Some(window) = self.contact_windows.get_mut(id) {
+                window.requirement_pending = false;
+                window.requirement_error = Some("Sign in to save requirements.".to_owned());
+            }
+            return;
+        };
+        let request = self.next_relationship_request();
+        let Some(remote) = &self.remote else {
+            if let Some(window) = self.contact_windows.get_mut(id) {
+                window.requirement_pending = false;
+                window.requirement_error =
+                    Some("The server connection is not available.".to_owned());
+            }
+            return;
+        };
+        if let Some(window) = self.contact_windows.get_mut(id) {
+            window.requirement_pending = true;
+            window.requirement_error = None;
+        }
+        remote.set_contact_requirement(
+            request,
+            self.server.base_url.clone(),
+            token,
+            id.to_owned(),
+            payload,
+        );
+    }
+
+    fn delete_contact_requirement(&mut self, id: &str, requirement_id: String) {
+        let Some(token) = self.access_token() else {
+            return;
+        };
+        let request = self.next_relationship_request();
+        let Some(remote) = &self.remote else {
+            return;
+        };
+        if let Some(window) = self.contact_windows.get_mut(id) {
+            window.requirement_pending = true;
+            window.requirement_error = None;
+        }
+        remote.delete_contact_requirement(
+            request,
+            self.server.base_url.clone(),
+            token,
+            id.to_owned(),
+            requirement_id,
+        );
+    }
+
+    fn add_contact_funding_package(&mut self, id: &str, payload: ApiFundingPackageWrite) {
+        let Some(token) = self.access_token() else {
+            if let Some(window) = self.contact_windows.get_mut(id) {
+                window.funding_pending = false;
+                window.funding_error = Some("Sign in to save funding.".to_owned());
+            }
+            return;
+        };
+        let request = self.next_relationship_request();
+        let Some(remote) = &self.remote else {
+            if let Some(window) = self.contact_windows.get_mut(id) {
+                window.funding_pending = false;
+                window.funding_error = Some("The server connection is not available.".to_owned());
+            }
+            return;
+        };
+        if let Some(window) = self.contact_windows.get_mut(id) {
+            window.funding_pending = true;
+            window.funding_error = None;
+        }
+        remote.create_funding_package(
+            request,
+            self.server.base_url.clone(),
+            token,
+            id.to_owned(),
+            payload,
+        );
+    }
+
+    fn add_contact_agreement(&mut self, id: &str, payload: ApiAgreementWrite) {
+        let Some(token) = self.access_token() else {
+            if let Some(window) = self.contact_windows.get_mut(id) {
+                window.funding_pending = false;
+                window.funding_error = Some("Sign in to save agreements.".to_owned());
+            }
+            return;
+        };
+        let request = self.next_relationship_request();
+        let Some(remote) = &self.remote else {
+            if let Some(window) = self.contact_windows.get_mut(id) {
+                window.funding_pending = false;
+                window.funding_error = Some("The server connection is not available.".to_owned());
+            }
+            return;
+        };
+        if let Some(window) = self.contact_windows.get_mut(id) {
+            window.funding_pending = true;
+            window.funding_error = None;
+        }
+        remote.create_agreement(
+            request,
+            self.server.base_url.clone(),
+            token,
+            id.to_owned(),
+            payload,
+        );
+    }
+
+    fn add_contact_agreement_line(
+        &mut self,
+        id: &str,
+        agreement_id: String,
+        payload: ApiAgreementLineWrite,
+    ) {
+        let Some(token) = self.access_token() else {
+            return;
+        };
+        let request = self.next_relationship_request();
+        let Some(remote) = &self.remote else {
+            return;
+        };
+        if let Some(window) = self.contact_windows.get_mut(id) {
+            window.funding_pending = true;
+            window.funding_error = None;
+        }
+        remote.add_agreement_line(
+            request,
+            self.server.base_url.clone(),
+            token,
+            id.to_owned(),
+            agreement_id,
+            payload,
+        );
+    }
+
+    fn delete_contact_agreement_line(&mut self, id: &str, agreement_id: String, line_id: String) {
+        let Some(token) = self.access_token() else {
+            return;
+        };
+        let request = self.next_relationship_request();
+        let Some(remote) = &self.remote else {
+            return;
+        };
+        if let Some(window) = self.contact_windows.get_mut(id) {
+            window.funding_pending = true;
+            window.funding_error = None;
+        }
+        remote.delete_agreement_line(
+            request,
+            self.server.base_url.clone(),
+            token,
+            id.to_owned(),
+            agreement_id,
+            line_id,
+        );
+    }
+
+    fn finalise_contact_agreement(&mut self, id: &str, agreement_id: String) {
+        let Some(token) = self.access_token() else {
+            return;
+        };
+        let request = self.next_relationship_request();
+        let Some(remote) = &self.remote else {
+            return;
+        };
+        if let Some(window) = self.contact_windows.get_mut(id) {
+            window.funding_pending = true;
+            window.funding_error = None;
+        }
+        remote.finalise_agreement(
+            request,
+            self.server.base_url.clone(),
+            token,
+            id.to_owned(),
+            agreement_id,
+        );
+    }
+
+    fn close_contact_window(&mut self, id: &str) {
+        let now = self.frame_time;
+        if let Some(index) = self
+            .columns
+            .iter()
+            .position(|column| matches!(&column.kind, ColumnKind::Contact(open) if open == id))
+        {
+            let popped_out = self
+                .contact_windows
+                .get(id)
+                .is_some_and(|window| window.popped_out);
+            if !popped_out {
+                self.begin_column_close(index, now);
+                return;
+            }
+        }
         self.remove_contact_window(id);
     }
 
@@ -1199,7 +1598,8 @@ impl CareLibreApp {
             .map(|window| window.popped_out)
             .unwrap_or(false);
         self.contact_windows.remove(id);
-        self.contact_order.retain(|open| open != id);
+        self.columns
+            .retain(|column| !matches!(&column.kind, ColumnKind::Contact(open) if open == id));
         self.relationship_list_requests
             .retain(|_, contact_id| contact_id != id);
         self.relationship_create_requests
@@ -1207,15 +1607,7 @@ impl CareLibreApp {
         self.relationship_contact_creates
             .retain(|_, pending| pending.window_id != id);
         if self.active_contact.as_deref() == Some(id) {
-            self.active_contact = self
-                .contact_order
-                .iter()
-                .find(|open| {
-                    self.contact_windows
-                        .get(*open)
-                        .is_some_and(|window| !window.popped_out)
-                })
-                .cloned();
+            self.active_contact = self.docked_contact_ids().first().cloned();
         }
         if popped_out && let Some(ctx) = &self.app_ctx {
             ctx.send_viewport_cmd_to(contact_viewport_id(id), egui::ViewportCommand::Close);
@@ -1229,62 +1621,9 @@ impl CareLibreApp {
         }
     }
 
-    /// The pane toolbar: identifies the open page and offers the page-level
-    /// pop-out control.
-    fn page_toolbar(&mut self, ui: &mut Ui) {
-        let page = self.page;
-        let popped = self.popped_pages.contains(&page);
-        let mut toggle = false;
-
-        Frame::new()
-            .fill(theme::surface())
-            .stroke(Stroke::new(1.0, theme::border()))
-            .corner_radius(CornerRadius::same(10))
-            .inner_margin(Margin::symmetric(12, 6))
-            .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label(
-                        RichText::new(format!("{}  {}", page.icon(), page.label()))
-                            .color(theme::muted())
-                            .font(theme::strong_font(11.5)),
-                    );
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        let label = if popped { "Dock page" } else { "Pop out page" };
-                        let glyph = if popped { "↙" } else { "↗" };
-                        let button = egui::Button::new(
-                            RichText::new(format!("{glyph}  {label}"))
-                                .color(theme::accent())
-                                .font(theme::strong_font(11.5)),
-                        )
-                        .fill(theme::surface_raised())
-                        .stroke(Stroke::new(1.0, theme::border()))
-                        .corner_radius(CornerRadius::same(8))
-                        .min_size(vec2(0.0, 30.0));
-                        let response = ui.add(button);
-                        response.widget_info(|| {
-                            egui::WidgetInfo::labeled(egui::Role::Button, true, label)
-                        });
-                        if response.clicked() {
-                            toggle = true;
-                        }
-                        response.on_hover_text(if popped {
-                            "Bring this page back into the main window"
-                        } else {
-                            "Open this page in its own native window"
-                        });
-                    });
-                });
-            });
-
-        if toggle {
-            self.toggle_page_popout(ui.ctx(), page);
-        }
-    }
-
     /// Placeholder shown in the main window when the current page lives in its
     /// own native window.
-    fn detached_page_placeholder(&mut self, ui: &mut Ui) {
-        let page = self.page;
+    fn detached_page_placeholder(&mut self, ui: &mut Ui, page: Page) {
         let mut focus = false;
         let mut dock = false;
         ui.vertical_centered(|ui| {
@@ -1458,14 +1797,19 @@ impl CareLibreApp {
 
     fn render_contact_windows(&mut self, ctx: &egui::Context) {
         let popped: Vec<String> = self
-            .contact_order
+            .columns
             .iter()
-            .filter(|id| {
-                self.contact_windows
-                    .get(*id)
-                    .is_some_and(|window| window.popped_out)
+            .filter_map(|column| match &column.kind {
+                ColumnKind::Contact(id)
+                    if self
+                        .contact_windows
+                        .get(id)
+                        .is_some_and(|window| window.popped_out) =>
+                {
+                    Some(id.clone())
+                }
+                _ => None,
             })
-            .cloned()
             .collect();
         let catalog = self.lookup_parties();
         let roles = self.role_options.clone();
@@ -1502,241 +1846,844 @@ impl CareLibreApp {
 
         self.contact_windows
             .retain(|_, window| !window.close_requested);
+        let open_ids: BTreeSet<String> = self.contact_windows.keys().cloned().collect();
+        self.columns.retain(|column| match &column.kind {
+            ColumnKind::Page(_) => true,
+            ColumnKind::Contact(id) => open_ids.contains(id),
+        });
     }
 
-    /// The right-hand record dock: tabs for every open record, a draggable tab
-    /// strip, and the active contact editor.
-    fn render_contact_dock(&mut self, ui: &mut Ui) {
-        let mut docked: Vec<String> = self
-            .contact_order
+    /// The main work area: the open page and every docked record as resizable,
+    /// reorderable columns. The page itself is simply the first column.
+    fn render_column_strip(
+        &mut self,
+        ui: &mut Ui,
+        contacts_action: &mut Option<ContactsAction>,
+        intake_action: &mut Option<IntakeAction>,
+        relationship_action: &mut Option<RelationshipsAction>,
+        rostering_action: &mut Option<RosteringAction>,
+    ) -> Option<Action> {
+        let mut page_action = None;
+        let mut close: Option<String> = None;
+        let mut close_page: Option<Page> = None;
+        let mut close_all = false;
+        let mut resize: Option<(usize, usize, f32)> = None;
+        let mut editor_actions: Vec<(String, ContactEditorAction)> = Vec::new();
+
+        let visible: Vec<usize> = self
+            .columns
             .iter()
-            .filter(|id| {
-                self.contact_windows
-                    .get(*id)
-                    .is_some_and(|window| !window.popped_out)
+            .enumerate()
+            .filter_map(|(index, column)| match &column.kind {
+                ColumnKind::Page(_) => Some(index),
+                ColumnKind::Contact(id) => (column.closing
+                    || self
+                        .contact_windows
+                        .get(id)
+                        .is_some_and(|window| !window.popped_out))
+                .then_some(index),
             })
-            .cloned()
             .collect();
-        for (id, window) in &self.contact_windows {
-            if !window.popped_out && !self.contact_order.contains(id) {
-                docked.push(id.clone());
-            }
+        if visible.is_empty() {
+            ui.vertical_centered(|ui| {
+                ui.add_space(80.0);
+                ui.label(RichText::new("No columns open").font(theme::strong_font(18.0)));
+                ui.label(
+                    RichText::new("Choose a page from the sidebar or open a contact.")
+                        .color(theme::muted())
+                        .size(11.5),
+                );
+            });
+            return page_action;
         }
+        let has_contact_columns = visible
+            .iter()
+            .any(|index| matches!(self.columns[*index].kind, ColumnKind::Contact(_)));
 
-        if let Some(closing) = self.dock_closing.clone()
-            && !docked.iter().any(|id| id == &closing)
-        {
-            self.dock_closing = None;
-            self.dock_close_started = None;
-        }
-
-        if docked.is_empty() {
-            // Keep the slide animation seeded at 0 while closed so the first
-            // record opens with an eased 0 → 1 slide instead of jumping open.
-            let animation_id = ui.scope_id().with("contact_dock").with("animation");
-            let _ = ui.ctx().animate_bool_responsive(animation_id, false);
-            self.active_contact = None;
-            self.dock_closing = None;
-            self.dock_close_started = None;
-            return;
-        }
-
+        let viewport_width = ui.available_width();
         let now = ui.ctx().input(|input| input.time);
-        if let Some(closing) = self.dock_closing.clone() {
-            let started = *self.dock_close_started.get_or_insert(now);
-            if now - started >= DOCK_ANIM_SECS as f64 {
-                self.dock_closing = None;
-                self.dock_close_started = None;
-                self.remove_contact_window(&closing);
-                ui.ctx().request_repaint();
-                return;
-            }
-            ui.ctx().request_repaint();
+        let page_columns = visible
+            .iter()
+            .filter(|index| {
+                matches!(self.columns[**index].kind, ColumnKind::Page(_))
+                    && !self.columns[**index].closing
+            })
+            .count();
+        let max_total_columns = (((viewport_width + 7.0) / (COLUMN_MIN_WIDTH + 7.0)).floor()
+            as usize)
+            .clamp(1, MAX_RECORD_COLUMNS + 1);
+        self.max_record_columns = max_total_columns
+            .saturating_sub(page_columns)
+            .clamp(1, MAX_RECORD_COLUMNS);
+        let visible_contacts = visible
+            .iter()
+            .filter(|index| {
+                matches!(self.columns[**index].kind, ColumnKind::Contact(_))
+                    && !self.columns[**index].closing
+            })
+            .count();
+        let over_limit = visible_contacts > self.max_record_columns;
+        let content_width = self.normalise_column_widths(&visible, viewport_width, now);
+        let overflow = content_width > viewport_width + 0.5;
+        let handle_width = 7.0;
+
+        if has_contact_columns || over_limit || overflow {
+            Frame::new()
+                .fill(theme::sidebar())
+                .inner_margin(Margin::symmetric(12, 6))
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            RichText::new("OPEN RECORDS")
+                                .color(theme::faint())
+                                .font(theme::strong_font(9.0)),
+                        );
+                        ui.label(
+                            RichText::new(format!(
+                                "Drag :: to reorder · drag a divider to resize · up to {} record columns",
+                                self.max_record_columns
+                            ))
+                            .color(theme::faint())
+                            .size(9.0),
+                        );
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            if ui
+                                .add(
+                                    egui::Button::new(
+                                        RichText::new("Close all").color(theme::faint()).size(10.0),
+                                    )
+                                    .frame(false),
+                                )
+                                .clicked()
+                            {
+                                close_all = true;
+                            }
+                        });
+                    });
+                    if over_limit || overflow {
+                        ui.label(
+                            RichText::new(if overflow {
+                                "Window too small for these columns — scroll sideways or close one."
+                            } else {
+                                "Window too small for these columns — close one or widen the window."
+                            })
+                            .color(theme::warning())
+                            .size(9.0),
+                        );
+                    }
+                });
         }
 
-        let active = self
-            .active_contact
-            .clone()
-            .filter(|id| docked.iter().any(|open| open == id))
-            .unwrap_or_else(|| docked[0].clone());
-        self.active_contact = Some(active.clone());
+        let height = ui.available_height();
 
         let catalog = self.lookup_parties();
         let roles = self.role_options.clone();
-        let mut close: Option<String> = None;
-        let mut activate: Option<String> = None;
-        let mut reorder: Option<(String, String)> = None;
-        let mut close_all = false;
-        let mut editor_action: Option<(String, ContactEditorAction)> = None;
 
-        let collapsed = egui::Panel::right("contact_dock_collapsed")
-            .exact_size(0.0)
-            .resizable(false)
-            .show_separator_line(false)
-            .frame(Frame::new());
-        let expanded = egui::Panel::right("contact_dock")
-            .resizable(true)
-            .default_size(520.0)
-            .size_range(380.0..=780.0)
-            .show_separator_line(false)
-            .frame(
-                Frame::new()
-                    .fill(theme::surface())
-                    .stroke(Stroke::new(1.0, theme::border()))
-                    .inner_margin(Margin::ZERO),
-            );
+        if ui.ctx().input(|input| input.key_pressed(egui::Key::Escape))
+            && self.drag_column.is_some()
+        {
+            self.drag_column = None;
+            ui.ctx().request_repaint();
+        }
 
-        // `show_switched` animates the expanded panel toward its edge and clips
-        // it, using egui's responsive cubic-out easing. Closing keeps the last
-        // record in place until the slide-out completes.
-        let mut is_expanded = self.dock_closing.is_none();
-        egui::Panel::show_switched(
-            ui,
-            &mut is_expanded,
-            collapsed,
-            expanded,
-            |ui, show_expanded| {
-                if !show_expanded {
-                    return;
-                }
+        let order = self.column_order_for_drag(&visible, ui);
+        let mut new_column_rects: Vec<(usize, egui::Rect)> = Vec::new();
+        let mut rendered_columns: Vec<(usize, f32, f32)> = Vec::new();
 
-                self.dock_tab_strip(
-                    ui,
-                    &docked,
-                    &mut close,
-                    &mut activate,
-                    &mut reorder,
-                    &mut close_all,
-                );
+        // Target positions in the preview order, based on animated widths.
+        let mut target_x = 0.0;
+        let mut target_positions: std::collections::HashMap<usize, f32> =
+            std::collections::HashMap::new();
+        for index in &order {
+            target_positions.insert(*index, target_x);
+            target_x += self.columns[*index].display_width.max(1.0) + handle_width;
+        }
+        let order_changed = self.last_column_order != order;
 
-                if let Some(action) = self.contact_windows.get_mut(&active).and_then(|window| {
-                    pages::contact_editor::show_docked(ui, window, &catalog, &roles)
-                }) {
-                    editor_action = Some((active.clone(), action));
-                }
-            },
-        );
-
-        if let Some((dragged, target)) = reorder {
-            let from = self.contact_order.iter().position(|id| id == &dragged);
-            let to = self.contact_order.iter().position(|id| id == &target);
-            if let (Some(from), Some(to)) = (from, to)
-                && dragged != target
-            {
-                let target = if from < to { to - 1 } else { to };
-                let id = self.contact_order.remove(from);
-                let target = target.min(self.contact_order.len());
-                self.contact_order.insert(target, id);
+        for &index in &order {
+            let target = *target_positions.get(&index).unwrap_or(&0.0);
+            let column = &mut self.columns[index];
+            if column.position_x < 0.0 {
+                column.position_x = target;
+                column.pos_from = target;
+                column.pos_to = target;
+                column.pos_start = now;
+            } else if order_changed || column.pos_start <= 0.0 {
+                column.pos_from = column.position_x;
+                column.pos_to = target;
+                column.pos_start = now;
+            } else {
+                column.pos_to = target;
             }
         }
 
-        if let Some(id) = activate {
-            self.active_contact = Some(id);
+        let mut strip_scroll = egui::ScrollArea::horizontal()
+            .id_salt("column-strip-scroll")
+            .auto_shrink([false, false]);
+        if !overflow {
+            strip_scroll = strip_scroll
+                .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden);
+        }
+        strip_scroll.show(ui, |ui| {
+            let height = if overflow {
+                (height - 16.0).max(120.0)
+            } else {
+                height
+            };
+            let (strip_rect, _) =
+                ui.allocate_exact_size(vec2(content_width, height), Sense::hover());
+
+            for index in order.iter().copied() {
+                let (kind, display_width, target_x, closing, close_progress) = {
+                    let column = &self.columns[index];
+                    let close_progress = if column.closing {
+                        ((now - column.close_start) / COLUMN_ANIM_DURATION).clamp(0.0, 1.0) as f32
+                    } else {
+                        0.0
+                    };
+                    (
+                        column.kind.clone(),
+                        column.display_width.max(1.0),
+                        *target_positions.get(&index).unwrap_or(&0.0),
+                        column.closing,
+                        close_progress,
+                    )
+                };
+                let column = &mut self.columns[index];
+                let t = ((now - column.pos_start) / COLUMN_ANIM_DURATION).clamp(0.0, 1.0);
+                let eased = theme::ease_in_out(t as f32);
+                let x = if t >= 1.0 {
+                    column.pos_to
+                } else {
+                    column.pos_from + (column.pos_to - column.pos_from) * eased
+                };
+                column.position_x = x;
+                rendered_columns.push((index, x, display_width));
+
+                let rect = egui::Rect::from_min_size(
+                    strip_rect.min + vec2(x, 0.0),
+                    vec2(display_width, height),
+                );
+                let mut column_ui = ui.new_child(
+                    egui::UiBuilder::new()
+                        .id_salt(("column", kind.key()))
+                        .max_rect(rect)
+                        .layout(Layout::top_down(Align::Min)),
+                );
+                column_ui.set_clip_rect(rect);
+                if closing {
+                    column_ui.multiply_opacity(1.0 - theme::ease_in_out(close_progress));
+                }
+                let is_dragging = self.drag_column.as_deref() == Some(kind.key().as_str());
+                Frame::new()
+                    .fill(if is_dragging {
+                        theme::surface_raised()
+                    } else {
+                        theme::surface()
+                    })
+                    .stroke(if is_dragging {
+                        Stroke::new(2.0, theme::accent())
+                    } else {
+                        Stroke::new(1.0, theme::border())
+                    })
+                    .corner_radius(CornerRadius::same(10))
+                    .inner_margin(Margin::ZERO)
+                    .show(&mut column_ui, |ui| {
+                        ui.set_min_height(height);
+                        let column_page = match &kind {
+                            ColumnKind::Page(open) => *open,
+                            ColumnKind::Contact(_) => self.page,
+                        };
+                        let column_popped = self.page_popped_out(column_page);
+                        let (drag, close_clicked, pop_out, toggle_page) =
+                            Self::column_header(ui, &kind, column_popped, &self.contact_windows);
+                        if !closing {
+                            match &kind {
+                                ColumnKind::Page(open) => {
+                                    if close_clicked {
+                                        close_page = Some(*open);
+                                    }
+                                }
+                                ColumnKind::Contact(id) => {
+                                    if close_clicked {
+                                        close = Some(id.clone());
+                                    }
+                                    if pop_out {
+                                        editor_actions
+                                            .push((id.clone(), ContactEditorAction::PopOut));
+                                    }
+                                }
+                            }
+                            if toggle_page {
+                                self.toggle_page_popout(ui.ctx(), column_page);
+                            }
+                            if drag.drag_started() {
+                                self.drag_column = Some(kind.key());
+                            }
+                            if drag.dragged() {
+                                ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+                            }
+                        }
+                        ui.separator();
+
+                        match &kind {
+                            ColumnKind::Page(open_page) => {
+                                Frame::new()
+                                    .fill(theme::bg())
+                                    .inner_margin(Margin::same(16))
+                                    .show(ui, |ui| {
+                                        ui.set_min_height((height - 40.0).max(120.0));
+                                        if column_popped {
+                                            self.detached_page_placeholder(ui, *open_page);
+                                        } else {
+                                            let now = ui.ctx().input(|input| input.time);
+                                            let progress = if *open_page == self.page {
+                                                ((now - self.page_changed_at) / PAGE_ANIM_DURATION)
+                                                    .clamp(0.0, 1.0)
+                                                    as f32
+                                            } else {
+                                                1.0
+                                            };
+                                            if progress < 1.0 {
+                                                let enter = theme::ease_in_out(progress);
+                                                ui.multiply_opacity(0.35 + 0.65 * enter);
+                                                ui.add_space((1.0 - enter) * 8.0);
+                                            }
+                                            if let Some(action) = self.page_contents(
+                                                ui,
+                                                *open_page,
+                                                contacts_action,
+                                                intake_action,
+                                                relationship_action,
+                                                rostering_action,
+                                            ) {
+                                                page_action = Some(action);
+                                            }
+                                        }
+                                    });
+                            }
+                            ColumnKind::Contact(id) => {
+                                Frame::new()
+                                        .fill(theme::bg())
+                                        .inner_margin(Margin::same(12))
+                                        .show(ui, |ui| {
+                                            ui.set_min_height((height - 40.0).max(120.0));
+                                            if let Some(window) = self.contact_windows.get_mut(id)
+                                                && let Some(action) =
+                                                    pages::contact_editor::show_column(
+                                                        ui, window, &catalog, &roles,
+                                                    )
+                                            {
+                                                editor_actions.push((id.clone(), action));
+                                            }
+                                        });
+                            }
+                        }
+                    });
+
+                new_column_rects.push((
+                    index,
+                    egui::Rect::from_min_size(
+                        strip_rect.min + vec2(target_x, 0.0),
+                        vec2(display_width, height),
+                    ),
+                ));
+            }
+
+            for (position, index) in order.iter().copied().enumerate() {
+                if position + 1 == order.len() {
+                    break;
+                }
+                let next_index = order[position + 1];
+                let (left_x, left_width) = rendered_columns
+                    .iter()
+                    .find(|(column_index, _, _)| *column_index == index)
+                    .map(|(_, x, width)| (*x, *width))
+                    .unwrap_or((
+                        *target_positions.get(&index).unwrap_or(&0.0),
+                        self.columns[index].display_width.max(1.0),
+                    ));
+                let boundary = left_x + left_width;
+                if boundary >= content_width - 4.0 {
+                    continue;
+                }
+                let hit_width = 10.0;
+                let handle_rect = egui::Rect::from_min_size(
+                    strip_rect.min + vec2(boundary - (hit_width - handle_width) / 2.0, 0.0),
+                    vec2(hit_width, height),
+                );
+                let left_key = self.columns[index].kind.key();
+                let right_key = self.columns[next_index].kind.key();
+                let handle = ui.interact(
+                    handle_rect,
+                    ui.scope_id().with(("column-resize", left_key, right_key)),
+                    Sense::click_and_drag(),
+                );
+                if handle.hovered() || handle.dragged() {
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+                    ui.painter().vline(
+                        strip_rect.min.x + boundary + handle_width / 2.0,
+                        handle_rect.y_range(),
+                        Stroke::new(2.0, theme::accent()),
+                    );
+                }
+                if handle.dragged() {
+                    resize = Some((index, next_index, handle.drag_delta().x));
+                }
+            }
+            self.column_rects = new_column_rects;
+            self.last_column_order = order.clone();
+        });
+
+        if let Some((left_index, right_index, delta)) = resize {
+            self.apply_column_resize(left_index, right_index, delta, now);
+        }
+
+        if ui.ctx().input(|input| input.pointer.any_released()) && self.drag_column.take().is_some()
+        {
+            self.apply_column_order(&visible, &order);
+        }
+
+        if let Some(page) = close_page
+            && let Some(index) = self
+                .columns
+                .iter()
+                .position(|column| matches!(column.kind, ColumnKind::Page(open) if open == page))
+        {
+            self.begin_column_close(index, now);
         }
         if let Some(id) = close {
             self.close_contact_window(&id);
         }
         if close_all {
-            let ids: Vec<String> = docked.clone();
+            let ids = self.docked_contact_ids();
             for id in ids {
                 self.close_contact_window(&id);
             }
         }
-        if let Some((id, action)) = editor_action {
+        for (id, action) in editor_actions {
             let ctx = ui.ctx().clone();
             self.handle_editor_action(&ctx, &id, action);
         }
+
+        let finished: Vec<ColumnKind> = self
+            .columns
+            .iter()
+            .filter(|column| column.closing && now - column.close_start >= COLUMN_ANIM_DURATION)
+            .map(|column| column.kind.clone())
+            .collect();
+        let mut removed_any = false;
+        for kind in finished {
+            match kind {
+                ColumnKind::Page(page) => {
+                    self.dock_page(ui.ctx(), page);
+                    let before = self.columns.len();
+                    self.columns.retain(
+                        |column| !matches!(column.kind, ColumnKind::Page(open) if open == page),
+                    );
+                    removed_any |= self.columns.len() != before;
+                    if self.page == page {
+                        self.page = self
+                            .columns
+                            .iter()
+                            .find_map(|column| match &column.kind {
+                                ColumnKind::Page(open) if !column.closing => Some(*open),
+                                _ => None,
+                            })
+                            .unwrap_or(self.page);
+                    }
+                }
+                ColumnKind::Contact(id) => {
+                    let had_column = self.columns.iter().any(
+                        |column| matches!(&column.kind, ColumnKind::Contact(open) if open == &id),
+                    );
+                    self.remove_contact_window(&id);
+                    removed_any |= had_column;
+                }
+            }
+        }
+        if removed_any {
+            self.reset_column_weights();
+        }
+
+        let animating = self.columns.iter().any(|column| {
+            column.closing
+                || (now - column.anim_start) < COLUMN_ANIM_DURATION
+                || (now - column.pos_start) < COLUMN_ANIM_DURATION
+        });
+        if animating {
+            ui.ctx().request_repaint();
+        }
+
+        page_action
     }
 
-    fn dock_tab_strip(
-        &mut self,
+    fn column_header(
         ui: &mut Ui,
-        docked: &[String],
-        close: &mut Option<String>,
-        activate: &mut Option<String>,
-        reorder: &mut Option<(String, String)>,
-        close_all: &mut bool,
-    ) {
-        Frame::new()
+        kind: &ColumnKind,
+        page_popped: bool,
+        windows: &BTreeMap<String, ContactWindowState>,
+    ) -> (egui::Response, bool, bool, bool) {
+        let mut close_clicked = false;
+        let mut pop_out = false;
+        let mut toggle_page = false;
+
+        let frame = Frame::new()
             .fill(theme::sidebar())
-            .inner_margin(Margin::symmetric(10, 7))
+            .inner_margin(Margin::symmetric(10, 6))
             .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label(
-                        RichText::new("OPEN RECORDS")
-                            .color(theme::faint())
-                            .font(theme::strong_font(9.0)),
-                    );
-                    ui.add_space(4.0);
+                let width = ui.available_width();
+                let (rect, _) = ui.allocate_exact_size(vec2(width, 34.0), Sense::hover());
 
-                    let mut rects: Vec<(String, egui::Rect)> = Vec::new();
-                    egui::ScrollArea::horizontal()
-                        .id_salt("contact_dock_tabs")
-                        .max_height(34.0)
-                        .show(ui, |ui| {
-                            ui.horizontal(|ui| {
-                                ui.spacing_mut().item_spacing.x = 4.0;
-                                for id in docked {
-                                    let name = self
-                                        .contact_windows
-                                        .get(id)
-                                        .map(|window| {
-                                            if window.display_name.is_empty() {
-                                                "Loading…".to_owned()
-                                            } else {
-                                                window.display_name.clone()
-                                            }
-                                        })
-                                        .unwrap_or_else(|| "Contact".to_owned());
-                                    let selected =
-                                        self.active_contact.as_deref() == Some(id.as_str());
-                                    let (response, close_clicked) =
-                                        dock_tab(ui, id, &name, selected);
-                                    rects.push((id.clone(), response.rect));
+                let mut control_rects: Vec<egui::Rect> = Vec::new();
+                let mut controls = ui.new_child(
+                    egui::UiBuilder::new()
+                        .id_salt(("column-controls", kind.key()))
+                        .max_rect(rect)
+                        .layout(Layout::right_to_left(Align::Center)),
+                );
+                let close_response = controls.add(
+                    egui::Button::new(RichText::new("×").color(theme::muted()).size(15.0))
+                        .frame(false),
+                );
+                if close_response.clicked() {
+                    close_clicked = true;
+                }
+                control_rects.push(close_response.rect);
 
-                                    if close_clicked {
-                                        *close = Some(id.clone());
-                                    } else if response.clicked() {
-                                        *activate = Some(id.clone());
-                                    }
-                                    if response.drag_started() {
-                                        self.drag_tab = Some(id.clone());
-                                    }
-                                    if response.dragged() {
-                                        ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
-                                    }
-                                }
-                            });
-                        });
-
-                    if let Some(dragged) = self.drag_tab.clone() {
-                        if let Some(pointer) = ui.ctx().input(|i| i.pointer.interact_pos())
-                            && let Some((target, _)) =
-                                rects.iter().find(|(_, rect)| rect.contains(pointer))
-                            && target != &dragged
-                        {
-                            *reorder = Some((dragged.clone(), target.clone()));
-                        }
-                        if ui.ctx().input(|i| i.pointer.any_released()) {
-                            self.drag_tab = None;
-                        }
-                    }
-
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if ui
-                            .add(
-                                egui::Button::new(
-                                    RichText::new("Close all").color(theme::faint()).size(10.0),
-                                )
-                                .frame(false),
+                match kind {
+                    ColumnKind::Page(_) => {
+                        let label = if page_popped {
+                            "Dock page"
+                        } else {
+                            "Pop out page"
+                        };
+                        let response = controls.add(
+                            egui::Button::new(
+                                RichText::new(label).color(theme::accent()).size(10.5),
                             )
-                            .clicked()
-                        {
-                            *close_all = true;
+                            .frame(false),
+                        );
+                        if response.clicked() {
+                            toggle_page = true;
                         }
-                    });
-                });
+                        control_rects.push(response.rect);
+                    }
+                    ColumnKind::Contact(_) => {
+                        let response = controls.add(
+                            egui::Button::new(
+                                RichText::new("Pop out").color(theme::accent()).size(10.5),
+                            )
+                            .frame(false),
+                        );
+                        if response.clicked() {
+                            pop_out = true;
+                        }
+                        control_rects.push(response.rect);
+                    }
+                }
+
+                let controls_left = control_rects
+                    .iter()
+                    .map(|rect| rect.left())
+                    .fold(rect.right(), f32::min);
+                let title_rect = egui::Rect::from_min_max(
+                    rect.min,
+                    egui::pos2((controls_left - 8.0).max(rect.left()), rect.bottom()),
+                );
+
+                let (icon, title, subtitle) = match kind {
+                    ColumnKind::Page(page) => {
+                        (page.icon(), page.label().to_owned(), "Page".to_owned())
+                    }
+                    ColumnKind::Contact(id) => {
+                        let (name, subtitle) = windows
+                            .get(id)
+                            .map(|window| {
+                                let name = window.computed_display_name();
+                                let name = if name.is_empty() {
+                                    "Loading…".to_owned()
+                                } else {
+                                    name
+                                };
+                                (
+                                    name,
+                                    format!("{} · {}", window.role.to_uppercase(), window.status),
+                                )
+                            })
+                            .unwrap_or_else(|| ("Contact".to_owned(), "CONTACT".to_owned()));
+                        ("👤", name, subtitle)
+                    }
+                };
+
+                let mut title_ui = ui.new_child(
+                    egui::UiBuilder::new()
+                        .id_salt(("column-title", kind.key()))
+                        .max_rect(title_rect)
+                        .layout(Layout::left_to_right(Align::Center)),
+                );
+                title_ui.add(
+                    egui::Label::new(RichText::new("::").color(theme::faint()).size(12.0))
+                        .selectable(false),
+                );
+                title_ui.add(
+                    egui::Label::new(
+                        RichText::new(format!("{icon}  {title}"))
+                            .color(theme::text())
+                            .font(theme::strong_font(11.5)),
+                    )
+                    .truncate()
+                    .selectable(false),
+                );
+                title_ui.add(
+                    egui::Label::new(RichText::new(subtitle).color(theme::faint()).size(9.5))
+                        .truncate()
+                        .selectable(false),
+                );
+                if let ColumnKind::Contact(id) = kind
+                    && windows.get(id).is_some_and(|window| window.saving)
+                {
+                    title_ui.add(
+                        egui::Label::new(
+                            RichText::new("Saving…").color(theme::warning()).size(9.5),
+                        )
+                        .selectable(false),
+                    );
+                }
+
+                let drag = ui.interact(
+                    title_rect,
+                    ui.scope_id().with(("column-drag", kind.key())),
+                    Sense::click_and_drag(),
+                );
+                if drag.hovered() {
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+                }
+                drag.clone().on_hover_text("Drag to reorder this column");
+
+                drag
             });
+        (frame.inner, close_clicked, pop_out, toggle_page)
+    }
+
+    /// Build the order used while dragging: the dragged column is shown in its
+    /// prospective landing slot, without committing the move yet.
+    fn column_order_for_drag(&self, visible: &[usize], ui: &Ui) -> Vec<usize> {
+        let mut order = visible.to_vec();
+        let Some(dragged_key) = self.drag_column.as_ref() else {
+            return order;
+        };
+        let Some(dragged_pos) = order
+            .iter()
+            .position(|index| self.columns[*index].kind.key() == *dragged_key)
+        else {
+            return order;
+        };
+        let Some(pointer_x) = ui
+            .ctx()
+            .input(|input| input.pointer.interact_pos())
+            .map(|position| position.x)
+        else {
+            return order;
+        };
+
+        let mut target = order.len();
+        for (position, index) in order.iter().enumerate() {
+            if let Some((_, rect)) = self
+                .column_rects
+                .iter()
+                .find(|(column_index, _)| column_index == index)
+                && pointer_x < rect.center().x
+            {
+                target = position;
+                break;
+            }
+        }
+
+        let dragged = order.remove(dragged_pos);
+        let insert = if target > dragged_pos {
+            target - 1
+        } else {
+            target
+        };
+        order.insert(insert.min(order.len()), dragged);
+        order
+    }
+
+    fn apply_column_order(&mut self, visible: &[usize], order: &[usize]) {
+        if order.len() != visible.len() {
+            return;
+        }
+        let ordered: Vec<ColumnState> = order
+            .iter()
+            .map(|index| self.columns[*index].clone())
+            .collect();
+        for (slot, column) in visible.iter().copied().zip(ordered) {
+            self.columns[slot] = column;
+        }
+    }
+
+    fn apply_column_resize(&mut self, left_index: usize, right_index: usize, delta: f32, now: f64) {
+        let left = self.columns[left_index].width;
+        let right = self.columns[right_index].width;
+        let min_delta = (COLUMN_MIN_WIDTH - left).min(0.0);
+        let max_delta = (right - COLUMN_MIN_WIDTH).max(0.0);
+        let delta = delta.clamp(min_delta, max_delta);
+        let left_width = left + delta;
+        let right_width = right - delta;
+        let pair_width = left + right;
+        let pair_weight = self.columns[left_index].weight + self.columns[right_index].weight;
+        let left_weight = if pair_width > 0.0 {
+            pair_weight * left_width / pair_width
+        } else {
+            self.columns[left_index].weight
+        };
+        let right_weight = if pair_width > 0.0 {
+            pair_weight * right_width / pair_width
+        } else {
+            self.columns[right_index].weight
+        };
+        for (index, width, weight) in [
+            (left_index, left_width, left_weight),
+            (right_index, right_width, right_weight),
+        ] {
+            let column = &mut self.columns[index];
+            column.width = width;
+            column.weight = weight;
+            column.display_width = width;
+            // Keep the animation target in sync, otherwise the next
+            // normalise pass restores the pre-resize width.
+            column.anim_from = width;
+            column.anim_to = width;
+            column.anim_start = now;
+        }
+    }
+
+    /// Fit the visible columns into the viewport. Columns share the available
+    /// width by weight, so a fresh set of columns is split evenly. If they
+    /// cannot all fit at a readable minimum, keep the minimum widths and return
+    /// a wider content width so the caller can offer horizontal overflow
+    /// scrolling.
+    fn normalise_column_widths(&mut self, visible: &[usize], viewport_width: f32, now: f64) -> f32 {
+        if visible.is_empty() {
+            return viewport_width;
+        }
+        let handle_total = 7.0 * visible.len().saturating_sub(1) as f32;
+
+        // While a column is collapsing, leave the remaining columns at their
+        // current widths so nothing overlaps. They reflow once the close
+        // animation has finished and the column is removed.
+        if visible.iter().any(|index| self.columns[*index].closing) {
+            for &index in visible {
+                let column = &mut self.columns[index];
+                if column.closing && column.anim_to > 0.0 {
+                    column.anim_from = column.display_width;
+                    column.anim_to = 0.0;
+                    column.anim_start = now;
+                }
+                if column.anim_start <= 0.0 {
+                    column.anim_start = now;
+                }
+                let t = ((now - column.anim_start) / COLUMN_ANIM_DURATION).clamp(0.0, 1.0);
+                let eased = theme::ease_in_out(t as f32);
+                column.display_width = if t >= 1.0 {
+                    column.anim_to
+                } else {
+                    column.anim_from + (column.anim_to - column.anim_from) * eased
+                };
+            }
+            let content = visible
+                .iter()
+                .map(|index| self.columns[*index].display_width.max(0.0))
+                .sum::<f32>()
+                + handle_total;
+            return content.max(viewport_width);
+        }
+
+        let count = visible.len() as f32;
+        let min_total = COLUMN_MIN_WIDTH * count + handle_total;
+        let overflow = min_total > viewport_width + 0.5;
+        let available = if overflow { min_total } else { viewport_width };
+        let usable = (available - handle_total).max(1.0);
+
+        let mut targets: Vec<f32> = if overflow {
+            vec![COLUMN_MIN_WIDTH; visible.len()]
+        } else {
+            let weight_total: f32 = visible
+                .iter()
+                .map(|index| self.columns[*index].weight.max(0.001))
+                .sum();
+            visible
+                .iter()
+                .map(|index| usable * self.columns[*index].weight.max(0.001) / weight_total)
+                .collect()
+        };
+
+        // Keep every column readable, redistributing any shortfall from the
+        // columns that still have room.
+        for _ in 0..visible.len() {
+            let deficit: f32 = targets
+                .iter()
+                .map(|target| (COLUMN_MIN_WIDTH - *target).max(0.0))
+                .sum();
+            if deficit <= 0.5 {
+                break;
+            }
+            let flexible: f32 = targets
+                .iter()
+                .map(|target| (*target - COLUMN_MIN_WIDTH).max(0.0))
+                .sum();
+            if flexible <= 0.5 {
+                break;
+            }
+            for target in &mut targets {
+                if *target < COLUMN_MIN_WIDTH {
+                    *target = COLUMN_MIN_WIDTH;
+                } else {
+                    *target -= deficit * (*target - COLUMN_MIN_WIDTH) / flexible;
+                }
+            }
+        }
+
+        let initialise = !self.columns_initialised;
+        for (slot, &index) in visible.iter().enumerate() {
+            let target = targets[slot];
+            let column = &mut self.columns[index];
+            if initialise {
+                column.width = target;
+                column.display_width = target;
+                column.anim_from = target;
+                column.anim_to = target;
+                column.anim_start = now;
+            } else if (column.width - target).abs() > 0.5 {
+                column.width = target;
+                column.anim_from = column.display_width;
+                column.anim_to = target;
+                column.anim_start = now;
+            } else if column.anim_start <= 0.0 {
+                column.anim_start = now;
+                column.anim_from = column.display_width;
+                column.anim_to = target;
+            }
+        }
+        self.columns_initialised = true;
+
+        const DURATION: f64 = COLUMN_ANIM_DURATION;
+        for &index in visible {
+            let column = &mut self.columns[index];
+            if column.anim_start <= 0.0 {
+                column.anim_start = now;
+            }
+            let t = ((now - column.anim_start) / DURATION).clamp(0.0, 1.0);
+            let eased = theme::ease_in_out(t as f32);
+            column.display_width = if t >= 1.0 {
+                column.anim_to
+            } else {
+                column.anim_from + (column.anim_to - column.anim_from) * eased
+            };
+        }
+
+        available
     }
 
     fn next_rostering_request(&mut self) -> u64 {
@@ -2016,6 +2963,9 @@ impl CareLibreApp {
                 self.rostering.suitability_error = None;
                 self.load_roster_suitability(id);
             }
+            RosteringAction::OpenContact(id) => {
+                self.open_contact(&id);
+            }
         }
         let _ = ctx;
     }
@@ -2029,16 +2979,9 @@ impl CareLibreApp {
                     window.popped_out = true;
                     window.close_requested = false;
                 }
+                self.reset_column_weights();
                 if self.active_contact.as_deref() == Some(id) {
-                    self.active_contact = self
-                        .contact_order
-                        .iter()
-                        .find(|open| {
-                            self.contact_windows
-                                .get(*open)
-                                .is_some_and(|window| !window.popped_out)
-                        })
-                        .cloned();
+                    self.active_contact = self.docked_contact_ids().first().cloned();
                 }
             }
             ContactEditorAction::Dock => {
@@ -2046,6 +2989,7 @@ impl CareLibreApp {
                     window.popped_out = false;
                     window.close_requested = false;
                 }
+                self.reset_column_weights();
                 self.active_contact = Some(id.to_owned());
                 ctx.send_viewport_cmd_to(contact_viewport_id(id), egui::ViewportCommand::Close);
             }
@@ -2077,6 +3021,39 @@ impl CareLibreApp {
                 draft,
             } => {
                 self.create_relationship_contact(ctx, id, from_role, to_role, notes, draft);
+            }
+            ContactEditorAction::SetQualityValue(payload) => {
+                self.set_contact_quality(id, payload);
+            }
+            ContactEditorAction::DeleteQualityValue(quality_id) => {
+                self.delete_contact_quality(id, quality_id);
+            }
+            ContactEditorAction::SetRequirement(payload) => {
+                self.set_contact_requirement(id, payload);
+            }
+            ContactEditorAction::DeleteRequirement(requirement_id) => {
+                self.delete_contact_requirement(id, requirement_id);
+            }
+            ContactEditorAction::AddFundingPackage(payload) => {
+                self.add_contact_funding_package(id, payload);
+            }
+            ContactEditorAction::AddAgreement(payload) => {
+                self.add_contact_agreement(id, payload);
+            }
+            ContactEditorAction::AddAgreementLine {
+                agreement_id,
+                payload,
+            } => {
+                self.add_contact_agreement_line(id, agreement_id, payload);
+            }
+            ContactEditorAction::DeleteAgreementLine {
+                agreement_id,
+                line_id,
+            } => {
+                self.delete_contact_agreement_line(id, agreement_id, line_id);
+            }
+            ContactEditorAction::FinaliseAgreement(agreement_id) => {
+                self.finalise_contact_agreement(id, agreement_id);
             }
         }
     }
@@ -2266,20 +3243,7 @@ impl CareLibreApp {
             return;
         };
 
-        let payload = ApiContactWrite {
-            display_name: draft.display_name.trim().to_owned(),
-            given_name: optional_str(&draft.given_name),
-            family_name: optional_str(&draft.family_name),
-            preferred_name: None,
-            pronouns: None,
-            date_of_birth: None,
-            email: optional_str(&draft.email),
-            phone: optional_str(&draft.phone),
-            notes: None,
-            details: Value::Object(Default::default()),
-            is_active: true,
-            custom_fields: BTreeMap::new(),
-        };
+        let payload = relationship_contact_write(&draft);
 
         let request = self.next_relationship_request();
         self.relationship_contact_creates.insert(
@@ -2303,6 +3267,38 @@ impl CareLibreApp {
                         .relationship_failed("The server connection is not available.".to_owned());
                 }
             }
+        }
+        let _ = ctx;
+    }
+
+    fn create_intake_relationship_contact(
+        &mut self,
+        ctx: &egui::Context,
+        slot: String,
+        role: RoleOption,
+        notes: String,
+        draft: NewRelationshipContact,
+    ) {
+        let Some(token) = self.access_token() else {
+            self.intake.relationship_pending = false;
+            self.intake.relationship_error = Some("Sign in to create a contact record.".to_owned());
+            return;
+        };
+        if self.remote.is_none() {
+            self.intake.relationship_pending = false;
+            self.intake.relationship_error =
+                Some("The server connection is not available.".to_owned());
+            return;
+        }
+
+        let payload = relationship_contact_write(&draft);
+        let request = self.next_relationship_request();
+        self.intake_contact_creates
+            .insert(request, PendingIntakeContact { slot, role, notes });
+        self.intake.relationship_pending = true;
+        self.intake.relationship_error = None;
+        if let Some(remote) = &self.remote {
+            remote.create_contact(request, self.server.base_url.clone(), token, payload);
         }
         let _ = ctx;
     }
@@ -2382,8 +3378,16 @@ impl CareLibreApp {
                 .with_min_inner_size([720.0, 560.0]);
 
             let client_side = self.config.client_side_decorations;
+            let catalog = self.lookup_parties();
+            let roles = self.role_options.clone();
             let action = ctx.show_viewport_immediate(intake_viewport_id(), builder, |ui, _| {
-                pages::intake::show_wizard_viewport(ui, &mut self.intake, client_side)
+                pages::intake::show_wizard_viewport(
+                    ui,
+                    &mut self.intake,
+                    client_side,
+                    &catalog,
+                    &roles,
+                )
             });
 
             if let Some(action) = action {
@@ -2586,6 +3590,114 @@ impl CareLibreApp {
                 }
                 RemoteEvent::ContactCreated { request_id, result } => {
                     self.handle_contact_created(ctx, request_id, result);
+                }
+                RemoteEvent::ContactQualitySaved {
+                    contact_id, result, ..
+                } => {
+                    if let Some(window) = self.contact_windows.get_mut(&contact_id) {
+                        match result {
+                            Ok(value) => window.quality_value_saved(value),
+                            Err(error) => window.quality_value_failed(error),
+                        }
+                    }
+                }
+                RemoteEvent::ContactQualityDeleted {
+                    contact_id,
+                    quality_id,
+                    result,
+                    ..
+                } => {
+                    if let Some(window) = self.contact_windows.get_mut(&contact_id) {
+                        match result {
+                            Ok(()) => window.quality_value_deleted(&quality_id),
+                            Err(error) => window.quality_value_failed(error),
+                        }
+                    }
+                }
+                RemoteEvent::ContactRequirementSaved {
+                    contact_id, result, ..
+                } => {
+                    if let Some(window) = self.contact_windows.get_mut(&contact_id) {
+                        match result {
+                            Ok(requirement) => window.requirement_saved(requirement),
+                            Err(error) => window.requirement_failed(error),
+                        }
+                    }
+                }
+                RemoteEvent::ContactRequirementDeleted {
+                    contact_id,
+                    requirement_id,
+                    result,
+                    ..
+                } => {
+                    if let Some(window) = self.contact_windows.get_mut(&contact_id) {
+                        match result {
+                            Ok(()) => window.requirement_deleted(&requirement_id),
+                            Err(error) => window.requirement_failed(error),
+                        }
+                    }
+                }
+                RemoteEvent::FundingPackageSaved {
+                    contact_id, result, ..
+                } => {
+                    if let Some(window) = self.contact_windows.get_mut(&contact_id) {
+                        match result {
+                            Ok(package) => window.funding_package_saved(package),
+                            Err(error) => window.funding_failed(error),
+                        }
+                    }
+                }
+                RemoteEvent::AgreementSaved {
+                    contact_id, result, ..
+                } => {
+                    if let Some(window) = self.contact_windows.get_mut(&contact_id) {
+                        match result {
+                            Ok(agreement) => window.agreement_saved(agreement),
+                            Err(error) => window.funding_failed(error),
+                        }
+                    }
+                }
+                RemoteEvent::AgreementLineSaved {
+                    contact_id,
+                    agreement_id,
+                    result,
+                    ..
+                } => {
+                    if let Some(window) = self.contact_windows.get_mut(&contact_id) {
+                        match result {
+                            Ok(line) => window.agreement_line_saved(&agreement_id, line),
+                            Err(error) => window.funding_failed(error),
+                        }
+                    }
+                }
+                RemoteEvent::AgreementLineDeleted {
+                    contact_id,
+                    agreement_id,
+                    line_id,
+                    result,
+                    ..
+                } => {
+                    if let Some(window) = self.contact_windows.get_mut(&contact_id) {
+                        match result {
+                            Ok(()) => window.agreement_line_deleted(&agreement_id, &line_id),
+                            Err(error) => window.funding_failed(error),
+                        }
+                    }
+                }
+                RemoteEvent::AgreementFinalised {
+                    contact_id, result, ..
+                } => {
+                    if let Some(window) = self.contact_windows.get_mut(&contact_id) {
+                        match result {
+                            Ok(finalised) => {
+                                window.agreement_finalised(
+                                    finalised.agreement,
+                                    finalised.generated_shifts,
+                                );
+                            }
+                            Err(error) => window.funding_failed(error),
+                        }
+                    }
                 }
                 RemoteEvent::RelationshipsListed {
                     request_id,
@@ -3112,12 +4224,82 @@ impl CareLibreApp {
         );
     }
 
+    fn link_intake_relationships(
+        &mut self,
+        contact_id: &str,
+        relationships: BTreeMap<String, IntakeRelationship>,
+    ) {
+        let Some(session) = &self.server.session else {
+            return;
+        };
+        let token = session.auth.access_token.clone();
+        if self.remote.is_none() {
+            return;
+        }
+
+        for relationship in relationships.into_values() {
+            if relationship.kind == PartyKind::Contact && relationship.id == contact_id {
+                continue;
+            }
+            if relationship.subject_role.is_empty() || relationship.linked_role.is_empty() {
+                continue;
+            }
+            let request = self.next_relationship_request();
+            self.intake_relationship_links.insert(
+                request,
+                format!(
+                    "{} as {}",
+                    relationship.name,
+                    relationship_role_label(&relationship.linked_role)
+                ),
+            );
+            if let Some(remote) = &self.remote {
+                remote.create_relationship(
+                    request,
+                    self.server.base_url.clone(),
+                    token.clone(),
+                    ApiRelationshipWrite {
+                        from_kind: PartyKind::Contact,
+                        from_id: contact_id.to_owned(),
+                        from_role: relationship.subject_role,
+                        to_kind: relationship.kind,
+                        to_id: relationship.id,
+                        to_role: relationship.linked_role,
+                        start_date: None,
+                        end_date: None,
+                        notes: (!relationship.notes.trim().is_empty())
+                            .then(|| relationship.notes.trim().to_owned()),
+                    },
+                );
+            }
+        }
+    }
+
     fn handle_relationship_created(
         &mut self,
         ctx: &egui::Context,
         request_id: u64,
         result: Result<ApiRelationship, String>,
     ) {
+        if let Some(label) = self.intake_relationship_links.remove(&request_id) {
+            match result {
+                Ok(edge) => {
+                    if !self
+                        .relationship_edges
+                        .iter()
+                        .any(|existing| existing.id == edge.id)
+                    {
+                        self.relationship_edges.push(edge);
+                    }
+                    self.refresh_contact_lists();
+                    self.send_contacts_query(false);
+                    self.notify(ctx, format!("Linked {label}."));
+                }
+                Err(error) => self.notify(ctx, format!("Could not link {label}: {error}")),
+            }
+            return;
+        }
+
         if let Some(name) = self.intake_role_links.remove(&request_id) {
             match result {
                 Ok(edge) => {
@@ -3220,6 +4402,44 @@ impl CareLibreApp {
         request_id: u64,
         result: Result<ApiContactDetail, String>,
     ) {
+        if let Some(pending) = self.intake_contact_creates.remove(&request_id) {
+            self.intake.relationship_pending = false;
+            match result {
+                Ok(detail) => {
+                    let contact_id = detail.contact.id.clone();
+                    let name = detail.contact.display_name.clone();
+                    self.remember_contact(&detail);
+                    if let Some(draft) = &mut self.intake.draft {
+                        draft.set_relationship(
+                            &pending.slot,
+                            IntakeRelationship {
+                                subject_role: pending.role.subject_role,
+                                linked_role: pending.role.linked_role,
+                                kind: PartyKind::Contact,
+                                id: contact_id,
+                                name: name.clone(),
+                                notes: pending.notes,
+                            },
+                        );
+                    }
+                    self.intake.new_relationship = None;
+                    self.intake.relationship_error = None;
+                    self.intake.mark_edited();
+                    if self.intake.view != IntakeView::Wizard {
+                        self.save_intake_now();
+                    }
+                    self.notify(
+                        ctx,
+                        format!("{name} created. It will be linked when the intake is completed."),
+                    );
+                }
+                Err(error) => {
+                    self.intake.relationship_error = Some(error);
+                }
+            }
+            return;
+        }
+
         if let Some(pending) = self.relationship_contact_creates.remove(&request_id) {
             match result {
                 Ok(detail) => {
@@ -3261,7 +4481,14 @@ impl CareLibreApp {
                     .draft
                     .as_ref()
                     .map_or(IntakeKind::Other, |draft| draft.kind);
+                let relationships = self
+                    .intake
+                    .draft
+                    .as_ref()
+                    .map(|draft| draft.relationships.clone())
+                    .unwrap_or_default();
                 self.link_intake_to_organisation(kind, &contact_id, &name);
+                self.link_intake_relationships(&contact_id, relationships);
                 self.intake.completed = Some(crate::intake::CompletedIntake {
                     contact_id,
                     name: name.clone(),
@@ -3425,7 +4652,7 @@ impl CareLibreApp {
 
     fn handle_action(&mut self, ctx: &egui::Context, action: Action) {
         match action {
-            Action::Navigate(page) => self.page = page,
+            Action::Navigate(page) => self.open_page(page),
             Action::Notice(message) => self.notify(ctx, message),
             Action::SaveServer { base_url } => self.save_server(ctx, &base_url),
             Action::TestServer => self.test_server(),
@@ -3644,11 +4871,12 @@ impl CareLibreApp {
                         .rect_filled(separator, CornerRadius::ZERO, theme::border());
                     ui.add_space(14.0);
 
-                    ui.label(
-                        RichText::new(format!("{}  {}", self.page.icon(), self.page.label()))
-                            .color(theme::muted())
-                            .size(13.0),
-                    );
+                    let page_label = if self.page_column_open() {
+                        format!("{}  {}", self.page.icon(), self.page.label())
+                    } else {
+                        "Workspace".to_owned()
+                    };
+                    ui.label(RichText::new(page_label).color(theme::muted()).size(13.0));
 
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         match &account {
@@ -3660,7 +4888,7 @@ impl CareLibreApp {
                                     theme::accent_blue(),
                                 );
                                 if response.clicked() {
-                                    self.page = Page::Settings;
+                                    self.open_page(Page::Settings);
                                 }
                                 response.on_hover_text(format!(
                                     "{}\n{} · {}",
@@ -3669,7 +4897,7 @@ impl CareLibreApp {
                             }
                             None => {
                                 if ui.add(theme::secondary_button("Sign in")).clicked() {
-                                    self.page = Page::Settings;
+                                    self.open_page(Page::Settings);
                                 }
                             }
                         }
@@ -3713,7 +4941,7 @@ impl CareLibreApp {
                             && !self.search.trim().is_empty()
                         {
                             let query = self.search.trim().to_owned();
-                            self.page = Page::Contacts;
+                            self.open_page(Page::Contacts);
                             self.show_contacts(ContactFilter::All, Some(query));
                         }
                     });
@@ -3723,64 +4951,119 @@ impl CareLibreApp {
 
     fn sidebar(&mut self, ui: &mut Ui) {
         let account = self.account_badge();
+        let now = ui.ctx().input(|input| input.time);
+        let full_width = ui.available_width().max(1.0);
+        let target = if self.columns.is_empty() {
+            full_width
+        } else {
+            SIDEBAR_WIDTH.min(full_width)
+        };
+
+        if !self.sidebar_initialised {
+            self.sidebar_width = target;
+            self.sidebar_target = target;
+            self.sidebar_anim_from = target;
+            self.sidebar_anim_start = now;
+            self.sidebar_initialised = true;
+        } else if (self.sidebar_target - target).abs() > 0.5 {
+            self.sidebar_anim_from = self.sidebar_width;
+            self.sidebar_target = target;
+            self.sidebar_anim_start = now;
+        }
+
+        let progress =
+            ((now - self.sidebar_anim_start) / SIDEBAR_ANIM_DURATION).clamp(0.0, 1.0) as f32;
+        if progress < 1.0 {
+            let eased = theme::ease_in_out(progress);
+            self.sidebar_width =
+                self.sidebar_anim_from + (self.sidebar_target - self.sidebar_anim_from) * eased;
+            ui.ctx().request_repaint();
+        } else {
+            self.sidebar_width = self.sidebar_target;
+        }
+
+        let panel_width = self.sidebar_width.clamp(1.0, full_width);
+        let menu_width = SIDEBAR_WIDTH.min(panel_width);
+        let menu_x = ((panel_width - menu_width) / 2.0).max(0.0);
+        let active_page = self.page_column_open().then_some(self.page);
 
         egui::Panel::left("sidebar")
-            .exact_size(232.0)
+            .exact_size(panel_width)
             .resizable(false)
             .show_separator_line(false)
-            .frame(
+            .frame(Frame::new().fill(theme::bg()))
+            .show(ui, |ui| {
+                let rect = egui::Rect::from_min_size(
+                    ui.min_rect().min + vec2(menu_x, 0.0),
+                    vec2(menu_width, ui.available_height()),
+                );
+                let mut menu_ui = ui.new_child(
+                    egui::UiBuilder::new()
+                        .max_rect(rect)
+                        .layout(Layout::top_down(Align::Min)),
+                );
+                menu_ui.set_clip_rect(rect);
                 Frame::new()
                     .fill(theme::sidebar())
                     .inner_margin(Margin::symmetric(12, 16))
-                    .stroke(Stroke::new(1.0, theme::border())),
-            )
-            .show(ui, |ui| {
-                ui.set_width(ui.available_width());
+                    .stroke(Stroke::new(1.0, theme::border()))
+                    .show(&mut menu_ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.set_min_height(ui.available_height());
 
-                group_label(ui, "WORKSPACE");
-                for page in [
-                    Page::Home,
-                    Page::Contacts,
-                    Page::Rostering,
-                    Page::Relationships,
-                ] {
-                    if nav_item(ui, self.page == page, page).clicked() {
-                        self.page = page;
-                    }
-                }
+                        group_label(ui, "WORKSPACE");
+                        if nav_button(
+                            ui,
+                            active_page == Some(Page::Intake),
+                            "📝",
+                            "Start intake",
+                            "Guided onboarding for clients, workers and other contacts.",
+                        )
+                        .clicked()
+                        {
+                            self.open_intake();
+                        }
+                        for page in [Page::Contacts, Page::Rostering, Page::Relationships] {
+                            if nav_item(ui, active_page == Some(page), page).clicked() {
+                                self.open_page(page);
+                            }
+                        }
 
-                ui.add_space(14.0);
-                group_label(ui, "OPERATIONS");
-                for page in [
-                    Page::Services,
-                    Page::Documents,
-                    Page::Communications,
-                    Page::Reports,
-                ] {
-                    if nav_item(ui, self.page == page, page).clicked() {
-                        self.page = page;
-                    }
-                }
+                        ui.add_space(14.0);
+                        group_label(ui, "OPERATIONS");
+                        for page in [
+                            Page::Services,
+                            Page::Documents,
+                            Page::Communications,
+                            Page::Reports,
+                        ] {
+                            if nav_item(ui, active_page == Some(page), page).clicked() {
+                                self.open_page(page);
+                            }
+                        }
 
-                ui.with_layout(Layout::bottom_up(Align::Min), |ui| {
-                    if user_row(ui, account.as_ref()) {
-                        self.page = Page::Settings;
-                    }
-                    ui.add_space(8.0);
-                    ui.separator();
-                    ui.add_space(8.0);
-                    if nav_item(ui, self.page == Page::Settings, Page::Settings).clicked() {
-                        self.page = Page::Settings;
-                    }
-                    ui.add_space(10.0);
-                    edition_card(
-                        ui,
-                        account.as_ref().map(|a| a.edition.as_str()),
-                        self.access_token().is_some(),
-                        self.cache_counts.all,
-                        matches!(self.server.connection, ConnectionState::Offline { .. }),
-                    );
-                });
+                        ui.with_layout(Layout::bottom_up(Align::Min), |ui| {
+                            if user_row(ui, account.as_ref()) {
+                                self.open_page(Page::Settings);
+                            }
+                            ui.add_space(8.0);
+                            ui.separator();
+                            ui.add_space(8.0);
+                            if nav_item(ui, active_page == Some(Page::Settings), Page::Settings)
+                                .clicked()
+                            {
+                                self.open_page(Page::Settings);
+                            }
+                            ui.add_space(10.0);
+                            edition_card(
+                                ui,
+                                account.as_ref().map(|a| a.edition.as_str()),
+                                self.access_token().is_some(),
+                                self.cache_counts.all,
+                                matches!(self.server.connection, ConnectionState::Offline { .. }),
+                            );
+                        });
+                    });
             });
     }
 
@@ -3875,13 +5158,15 @@ impl CareLibreApp {
 
         let text = notice.text.clone();
         let remaining = (notice.expires_at - now) as f32;
-        let exit = (remaining.min(0.45) / 0.45).clamp(0.0, 1.0);
-        let enter = (((now - notice.created_at) / 0.18) as f32).clamp(0.0, 1.0);
+        let exit = theme::ease_in_out((remaining.min(0.45) / 0.45).clamp(0.0, 1.0));
+        let enter = theme::ease_in_out(
+            (((now - notice.created_at) as f32) / NOTICE_ENTER_DURATION).clamp(0.0, 1.0),
+        );
         let alpha = enter * exit;
-        if enter < 1.0 {
+        if enter < 1.0 || remaining < 0.45 {
             ctx.request_repaint();
         }
-        let slide = (1.0 - theme::ease_out(enter)) * 10.0;
+        let slide = (1.0 - enter) * 10.0;
 
         egui::Area::new(egui::Id::unique("notice_toast"))
             .anchor(Align2::CENTER_BOTTOM, vec2(0.0, -46.0 + slide))
@@ -3927,6 +5212,16 @@ fn group_label(ui: &mut Ui, text: &str) {
 }
 
 fn nav_item(ui: &mut Ui, selected: bool, page: Page) -> egui::Response {
+    nav_button(ui, selected, page.icon(), page.label(), page.blurb())
+}
+
+fn nav_button(
+    ui: &mut Ui,
+    selected: bool,
+    icon: &str,
+    label: &str,
+    tooltip: &str,
+) -> egui::Response {
     let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), 38.0), Sense::click());
 
     let hover =
@@ -3960,14 +5255,14 @@ fn nav_item(ui: &mut Ui, selected: bool, page: Page) -> egui::Response {
     ui.painter().text(
         rect.left_center() + vec2(24.0, 0.0),
         Align2::LEFT_CENTER,
-        page.icon(),
+        icon,
         FontId::proportional(14.0),
         icon_colour,
     );
     ui.painter().text(
         rect.left_center() + vec2(50.0, 0.0),
         Align2::LEFT_CENTER,
-        page.label(),
+        label,
         if selected {
             theme::strong_font(13.0)
         } else {
@@ -3980,11 +5275,9 @@ fn nav_item(ui: &mut Ui, selected: bool, page: Page) -> egui::Response {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
 
-    response.widget_info(|| {
-        egui::WidgetInfo::labeled(egui::Role::Button, ui.is_enabled(), page.label())
-    });
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, ui.is_enabled(), label));
 
-    response.on_hover_text(page.blurb())
+    response.on_hover_text(tooltip)
 }
 
 fn user_row(ui: &mut Ui, account: Option<&AccountBadge>) -> bool {
@@ -4133,11 +5426,34 @@ fn capitalize(value: &str) -> String {
     }
 }
 
+fn relationship_contact_write(draft: &NewRelationshipContact) -> ApiContactWrite {
+    ApiContactWrite {
+        given_name: optional_str(&draft.given_name),
+        family_name: optional_str(&draft.family_name),
+        preferred_name: None,
+        pronouns: None,
+        date_of_birth: None,
+        gender: None,
+        languages: Vec::new(),
+        cultural_identity: None,
+        email: optional_str(&draft.email),
+        phone: optional_str(&draft.phone),
+        notes: None,
+        details: Value::Object(Default::default()),
+        is_active: true,
+        custom_fields: BTreeMap::new(),
+    }
+}
+
 fn intake_write(draft: &crate::intake::IntakeDraft) -> ApiContactWrite {
     use serde_json::Value;
 
     let mut details = serde_json::Map::new();
     for (key, value) in &draft.fields {
+        // Intrinsic profile data now has first-class contact fields.
+        if matches!(key.as_str(), "gender" | "languages" | "cultural_identity") {
+            continue;
+        }
         details.insert(key.clone(), Value::String(value.clone()));
     }
     details.insert(
@@ -4149,6 +5465,28 @@ fn intake_write(draft: &crate::intake::IntakeDraft) -> ApiContactWrite {
         .ok()
         .map(|date| date.format("%Y-%m-%d").to_string());
 
+    let gender = match draft
+        .get("gender")
+        .trim()
+        .to_ascii_lowercase()
+        .replace(['-', ' '], "_")
+        .as_str()
+    {
+        "female" => Some("female".to_owned()),
+        "male" => Some("male".to_owned()),
+        "non_binary" => Some("non_binary".to_owned()),
+        "prefer_not_to_say" => Some("prefer_not_to_say".to_owned()),
+        _ => None,
+    };
+    let languages = draft
+        .get("languages")
+        .split(',')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    let cultural_identity = optional_str(draft.get("cultural_identity"));
+
     let notes = ["intake_notes", "worker_notes", "notes"]
         .iter()
         .map(|key| draft.get(key).trim())
@@ -4156,12 +5494,14 @@ fn intake_write(draft: &crate::intake::IntakeDraft) -> ApiContactWrite {
         .map(str::to_owned);
 
     ApiContactWrite {
-        display_name: draft.display_name(),
         given_name: optional_str(draft.get("first_name")),
         family_name: optional_str(draft.get("last_name")),
         preferred_name: optional_str(draft.get("preferred_name")),
         pronouns: optional_str(draft.get("pronouns")),
         date_of_birth,
+        gender,
+        languages,
+        cultural_identity,
         email: optional_str(draft.get("email")),
         phone: optional_str(draft.get("phone")),
         notes,
@@ -4188,90 +5528,106 @@ fn page_viewport_id(page: Page) -> egui::ViewportId {
     egui::ViewportId::from_hash_of(("carelibre-page", page.label()))
 }
 
-/// A draggable tab in the record dock. Returns the tab response and whether
-/// its close button was clicked.
-fn dock_tab(ui: &mut Ui, id: &str, name: &str, active: bool) -> (egui::Response, bool) {
-    let font = theme::strong_font(11.5);
-    let label = if name.chars().count() > 26 {
-        let mut short: String = name.chars().take(25).collect();
-        short.push('…');
-        short
-    } else {
-        name.to_owned()
-    };
-    let text_width = ui
-        .painter()
-        .layout_no_wrap(label.clone(), font.clone(), theme::text())
-        .size()
-        .x;
-    let width = (text_width + 44.0).clamp(96.0, 200.0);
-    let stable_id = ui.scope_id().with(("dock_tab", id));
-    let (rect, _) = ui.allocate_exact_size(vec2(width, 30.0), Sense::hover());
-    let response = ui.interact(rect, stable_id, Sense::click_and_drag());
-
-    let hover = ui
-        .ctx()
-        .animate_bool_with_time(stable_id.with("hover"), response.hovered(), 0.12);
-    let selected = ui
-        .ctx()
-        .animate_bool_with_time(stable_id.with("selected"), active, 0.16);
-
-    let base = if active {
-        theme::surface_raised()
-    } else {
-        theme::sidebar()
-    };
-    let fill = theme::lerp_color(base, theme::hover(), hover * 0.8);
-    ui.painter().rect_filled(rect, CornerRadius::same(8), fill);
-    if selected > 0.0 {
-        let underline = egui::Rect::from_min_size(
-            egui::pos2(rect.left() + 8.0, rect.bottom() - 2.0),
-            vec2((rect.width() - 16.0) * selected, 2.0),
-        );
-        ui.painter()
-            .rect_filled(underline, CornerRadius::same(1), theme::accent());
-    }
-
-    let ink = theme::lerp_color(theme::muted(), theme::text(), selected.max(hover * 0.5));
-    ui.painter().text(
-        egui::pos2(rect.left() + 10.0, rect.center().y),
-        Align2::LEFT_CENTER,
-        label,
-        font,
-        ink,
-    );
-
-    let close_rect = egui::Rect::from_center_size(
-        egui::pos2(rect.right() - 13.0, rect.center().y),
-        vec2(18.0, 18.0),
-    );
-    let close = ui.interact(close_rect, stable_id.with("close"), Sense::click());
-    if close.hovered() {
-        ui.painter()
-            .circle_filled(close_rect.center(), 8.0, theme::hover());
-        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-    }
-    ui.painter().text(
-        close_rect.center(),
-        Align2::CENTER_CENTER,
-        "×",
-        FontId::proportional(13.0),
-        if close.hovered() {
-            theme::text()
-        } else {
-            theme::faint()
-        },
-    );
-
-    if response.hovered() {
-        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-    }
-
-    (response, close.clicked())
-}
-
 fn dot(ui: &mut Ui, colour: Color32) {
     let (rect, _) = ui.allocate_exact_size(vec2(6.0, 6.0), Sense::hover());
     ui.painter()
         .rect_filled(rect, CornerRadius::same(3), colour);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_column(kind: ColumnKind, width: f32) -> ColumnState {
+        ColumnState {
+            kind,
+            width,
+            weight: 1.0,
+            display_width: width,
+            anim_from: width,
+            anim_to: width,
+            anim_start: 0.0,
+            position_x: 0.0,
+            pos_from: 0.0,
+            pos_to: 0.0,
+            pos_start: 0.0,
+            closing: false,
+            close_start: 0.0,
+        }
+    }
+
+    #[test]
+    fn resizing_columns_keeps_the_animation_target_in_sync() {
+        let mut app = CareLibreApp::new();
+        app.columns
+            .push(test_column(ColumnKind::Page(Page::Contacts), 760.0));
+        app.columns
+            .push(test_column(ColumnKind::Contact("test".to_owned()), 420.0));
+        app.columns_initialised = true;
+
+        app.apply_column_resize(0, 1, 40.0, 1.0);
+
+        assert_eq!(app.columns[0].width, 800.0);
+        assert_eq!(app.columns[1].width, 380.0);
+        assert_eq!(app.columns[0].anim_to, 800.0);
+        assert_eq!(app.columns[1].anim_to, 380.0);
+
+        // Simulate the next frame: the settled animation must not restore the
+        // pre-resize widths.
+        let viewport = app.columns[0].width + app.columns[1].width + 7.0;
+        app.normalise_column_widths(&[0, 1], viewport, 2.0);
+
+        assert!((app.columns[0].display_width - 800.0).abs() < 0.01);
+        assert!((app.columns[1].display_width - 380.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn columns_share_the_window_evenly() {
+        let mut app = CareLibreApp::new();
+        app.columns
+            .push(test_column(ColumnKind::Page(Page::Contacts), 760.0));
+        app.columns
+            .push(test_column(ColumnKind::Contact("test".to_owned()), 520.0));
+        app.columns_initialised = true;
+
+        let viewport = 1128.0;
+        app.normalise_column_widths(&[0, 1], viewport, 1.0);
+
+        let expected = (viewport - 7.0) / 2.0;
+        assert!((app.columns[0].width - expected).abs() < 0.01);
+        assert!((app.columns[1].width - expected).abs() < 0.01);
+    }
+
+    #[test]
+    fn pages_open_as_separate_columns() {
+        let mut app = CareLibreApp::new();
+        app.open_page(Page::Rostering);
+
+        let page_columns = app
+            .columns
+            .iter()
+            .filter(|column| matches!(column.kind, ColumnKind::Page(_)))
+            .count();
+        assert_eq!(page_columns, 1);
+        assert_eq!(app.page(), Page::Rostering);
+
+        app.open_page(Page::Contacts);
+        let page_columns = app
+            .columns
+            .iter()
+            .filter(|column| matches!(column.kind, ColumnKind::Page(_)))
+            .count();
+        assert_eq!(page_columns, 2);
+        assert_eq!(app.page(), Page::Contacts);
+
+        // Selecting an already-open page focuses it rather than duplicating it.
+        app.open_page(Page::Rostering);
+        let page_columns = app
+            .columns
+            .iter()
+            .filter(|column| matches!(column.kind, ColumnKind::Page(_)))
+            .count();
+        assert_eq!(page_columns, 2);
+        assert_eq!(app.page(), Page::Rostering);
+    }
 }

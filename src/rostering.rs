@@ -114,12 +114,53 @@ pub struct ApiContextRef {
 }
 
 #[derive(Clone, Debug, Deserialize)]
+pub struct ApiSuitabilityRequirement {
+    pub quality_id: String,
+    pub quality_name: String,
+    pub client_id: String,
+    pub client_name: String,
+    pub operator: String,
+    #[serde(default)]
+    pub value: Option<serde_json::Value>,
+    pub severity: String,
+    /// `met`, `expiring`, `expired`, `mismatch`, `unknown` or `required`.
+    pub status: String,
+    pub detail: Option<String>,
+}
+
+impl ApiSuitabilityRequirement {
+    pub fn summary(&self) -> String {
+        let value = self.value.as_ref().map(crate::contact::quality_value_label);
+        match (self.operator.as_str(), value) {
+            ("exists", _) => format!("{} required", self.quality_name),
+            ("equals", Some(value)) => format!("{} must be {value}", self.quality_name),
+            ("not_equals", Some(value)) => format!("{} must not be {value}", self.quality_name),
+            ("in", Some(value)) => format!("{} must be one of {value}", self.quality_name),
+            ("contains", Some(value)) => format!("{} must include {value}", self.quality_name),
+            (operator, _) => format!("{} ({operator})", self.quality_name),
+        }
+    }
+
+    pub fn is_met(&self) -> bool {
+        matches!(self.status.as_str(), "met" | "expiring")
+    }
+}
+
+#[derive(Clone, Debug, Deserialize)]
 pub struct ApiSuitabilityCandidate {
     pub contact_id: String,
     pub display_name: String,
     pub score: f64,
+    #[serde(default = "default_true")]
+    pub meets_requirements: bool,
     pub reasons: Vec<String>,
     pub warnings: Vec<String>,
+    #[serde(default)]
+    pub requirements: Vec<ApiSuitabilityRequirement>,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -130,6 +171,8 @@ pub struct ApiSuitability {
     pub division: Option<ApiContextRef>,
     pub clients: Vec<ApiPartyRef>,
     pub assigned_workers: Vec<ApiPartyRef>,
+    #[serde(default)]
+    pub requirements: Vec<ApiSuitabilityRequirement>,
     pub candidates: Vec<ApiSuitabilityCandidate>,
     pub blocked: Vec<ApiSuitabilityCandidate>,
 }

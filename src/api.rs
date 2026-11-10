@@ -8,9 +8,11 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 use crate::contact::{
-    ApiContactDetail, ApiContactList, ApiContactWrite, ApiRelationship, ApiRelationshipGraph,
-    ApiRelationshipHistory, ApiRelationshipList, ApiRelationshipTypeList, ApiRelationshipWrite,
-    RelationshipChange,
+    ApiAgreement, ApiAgreementFinalised, ApiAgreementLine, ApiAgreementLineWrite,
+    ApiAgreementWrite, ApiClientRequirement, ApiClientRequirementWrite, ApiContactDetail,
+    ApiContactList, ApiContactWrite, ApiFundingPackage, ApiFundingPackageWrite, ApiRelationship,
+    ApiRelationshipGraph, ApiRelationshipHistory, ApiRelationshipList, ApiRelationshipTypeList,
+    ApiRelationshipWrite, ApiWorkerQualityValue, ApiWorkerQualityValueWrite, RelationshipChange,
 };
 use crate::rostering::{
     ApiAssignment, ApiAssignmentUpdate, ApiAssignmentWrite, ApiBatchShiftWrite, ApiCopyShiftWrite,
@@ -301,6 +303,131 @@ impl ApiClient {
     ) -> ApiResult<ApiContactDetail> {
         let (status, body) =
             self.send_with_token("POST", "/api/v1/contacts", access_token, payload)?;
+        decode(status, &body)
+    }
+
+    pub fn set_contact_quality(
+        &self,
+        access_token: &str,
+        contact_id: &str,
+        payload: &ApiWorkerQualityValueWrite,
+    ) -> ApiResult<ApiWorkerQualityValue> {
+        let (status, body) = self.send_with_token(
+            "POST",
+            &format!("/api/v1/contacts/{contact_id}/qualities"),
+            access_token,
+            payload,
+        )?;
+        decode(status, &body)
+    }
+
+    pub fn delete_contact_quality(
+        &self,
+        access_token: &str,
+        contact_id: &str,
+        quality_id: &str,
+    ) -> ApiResult<()> {
+        self.delete_with_token(
+            &format!("/api/v1/contacts/{contact_id}/qualities/{quality_id}"),
+            access_token,
+        )
+    }
+
+    pub fn set_contact_requirement(
+        &self,
+        access_token: &str,
+        contact_id: &str,
+        payload: &ApiClientRequirementWrite,
+    ) -> ApiResult<ApiClientRequirement> {
+        let (status, body) = self.send_with_token(
+            "POST",
+            &format!("/api/v1/contacts/{contact_id}/requirements"),
+            access_token,
+            payload,
+        )?;
+        decode(status, &body)
+    }
+
+    pub fn delete_contact_requirement(
+        &self,
+        access_token: &str,
+        contact_id: &str,
+        requirement_id: &str,
+    ) -> ApiResult<()> {
+        self.delete_with_token(
+            &format!("/api/v1/contacts/{contact_id}/requirements/{requirement_id}"),
+            access_token,
+        )
+    }
+
+    pub fn create_funding_package(
+        &self,
+        access_token: &str,
+        contact_id: &str,
+        payload: &ApiFundingPackageWrite,
+    ) -> ApiResult<ApiFundingPackage> {
+        let (status, body) = self.send_with_token(
+            "POST",
+            &format!("/api/v1/contacts/{contact_id}/funding-packages"),
+            access_token,
+            payload,
+        )?;
+        decode(status, &body)
+    }
+
+    pub fn create_agreement(
+        &self,
+        access_token: &str,
+        contact_id: &str,
+        payload: &ApiAgreementWrite,
+    ) -> ApiResult<ApiAgreement> {
+        let (status, body) = self.send_with_token(
+            "POST",
+            &format!("/api/v1/contacts/{contact_id}/agreements"),
+            access_token,
+            payload,
+        )?;
+        decode(status, &body)
+    }
+
+    pub fn add_agreement_line(
+        &self,
+        access_token: &str,
+        agreement_id: &str,
+        payload: &ApiAgreementLineWrite,
+    ) -> ApiResult<ApiAgreementLine> {
+        let (status, body) = self.send_with_token(
+            "POST",
+            &format!("/api/v1/agreements/{agreement_id}/lines"),
+            access_token,
+            payload,
+        )?;
+        decode(status, &body)
+    }
+
+    pub fn delete_agreement_line(
+        &self,
+        access_token: &str,
+        agreement_id: &str,
+        line_id: &str,
+    ) -> ApiResult<()> {
+        self.delete_with_token(
+            &format!("/api/v1/agreements/{agreement_id}/lines/{line_id}"),
+            access_token,
+        )
+    }
+
+    pub fn finalise_agreement(
+        &self,
+        access_token: &str,
+        agreement_id: &str,
+    ) -> ApiResult<ApiAgreementFinalised> {
+        let (status, body) = self.send_with_token(
+            "POST",
+            &format!("/api/v1/agreements/{agreement_id}/finalise"),
+            access_token,
+            &serde_json::json!({}),
+        )?;
         decode(status, &body)
     }
 

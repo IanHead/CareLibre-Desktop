@@ -1,7 +1,7 @@
 //! Headless screenshot of the app, for design review and CI snapshots.
 //!
 //! Run with:
-//! `cargo run --example screenshot -- docs/home.png`
+//! `cargo run --example screenshot -- docs/contacts.png`
 //! `cargo run --example screenshot -- docs/settings.png settings --live`
 //! `--server=http://127.0.0.1:8485` uses another server for this run only.
 
@@ -40,7 +40,7 @@ fn main() {
         Some("reports") => Page::Reports,
         Some("settings") => Page::Settings,
         Some("intake") => Page::Intake,
-        _ => Page::Home,
+        _ => Page::Contacts,
     };
     let live = args.iter().any(|arg| arg == "--live");
     let perf = args.iter().any(|arg| arg == "--perf");
@@ -94,6 +94,7 @@ fn main() {
 
     let mut harness = egui_kittest::Harness::builder()
         .with_size(egui::vec2(1360.0, 860.0))
+        .with_max_steps(40)
         .with_context_setup(move |ctx| theme::apply(ctx, theme_mode))
         .wgpu()
         .build_ui_state(|ui, app: &mut CareLibreApp| app.show(ui), app);
@@ -139,18 +140,6 @@ fn main() {
                 harness.run();
                 std::thread::sleep(Duration::from_millis(25));
             }
-        }
-
-        if page == Page::Home && login.is_some() {
-            // Load a contact page once so the dashboard counts are populated.
-            harness.state_mut().set_page(Page::Contacts);
-            let deadline = Instant::now() + Duration::from_secs(10);
-            while harness.state().contacts_loaded() == 0 && Instant::now() < deadline {
-                harness.run();
-                std::thread::sleep(Duration::from_millis(25));
-            }
-            harness.state_mut().set_page(Page::Home);
-            harness.run();
         }
 
         if page == Page::Contacts {

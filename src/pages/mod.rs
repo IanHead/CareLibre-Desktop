@@ -1,6 +1,5 @@
 pub mod contact_editor;
 pub mod contacts;
-pub mod home;
 pub mod intake;
 pub mod placeholder;
 pub mod relationships;
@@ -37,7 +36,6 @@ pub enum Action {
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub enum Page {
-    Home,
     Intake,
     Contacts,
     Rostering,
@@ -52,7 +50,6 @@ pub enum Page {
 impl Page {
     pub fn label(self) -> &'static str {
         match self {
-            Self::Home => "Home",
             Self::Intake => "Intake",
             Self::Contacts => "Contacts",
             Self::Rostering => "Rostering",
@@ -67,7 +64,6 @@ impl Page {
 
     pub fn icon(self) -> &'static str {
         match self {
-            Self::Home => "🏠",
             Self::Intake => "📝",
             Self::Contacts => "👥",
             Self::Rostering => "📅",
@@ -82,7 +78,6 @@ impl Page {
 
     pub fn blurb(self) -> &'static str {
         match self {
-            Self::Home => "Your care operation at a glance.",
             Self::Intake => "Guided onboarding for clients, workers and other contacts.",
             Self::Contacts => "Everyone the organisation works with, filtered by relationship.",
             Self::Rostering => "Shifts, client and worker assignments, and sessions.",
@@ -97,7 +92,6 @@ impl Page {
 
     pub fn features(self) -> &'static [&'static str] {
         match self {
-            Self::Home => &[],
             Self::Intake => &[
                 "Scenario picker with persisted drafts",
                 "Client intake with health, support network and behaviours",

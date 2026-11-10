@@ -103,7 +103,8 @@ fn reseeding_replaces_the_previous_demo_data() {
 
 #[test]
 fn intake_drafts_round_trip_and_complete() {
-    use carelibre_desktop::intake::{IntakeDraft, IntakeKind};
+    use carelibre_desktop::contact::PartyKind;
+    use carelibre_desktop::intake::{IntakeDraft, IntakeKind, IntakeRelationship};
 
     let mut conn = open_in_memory().expect("in-memory database");
 
@@ -114,6 +115,17 @@ fn intake_drafts_round_trip_and_complete() {
     draft.set("phone", "0400 000 000".to_owned());
     draft.set("suburb", "Newtown".to_owned());
     draft.current_step = 2;
+    draft.set_relationship(
+        "emergency_contact",
+        IntakeRelationship {
+            subject_role: "person_supported".to_owned(),
+            linked_role: "emergency_contact".to_owned(),
+            kind: PartyKind::Contact,
+            id: "contact-1".to_owned(),
+            name: "Alex Chen".to_owned(),
+            notes: "Daughter".to_owned(),
+        },
+    );
 
     carelibre_desktop::store::save_intake(&conn, DEMO_ORG_ID, draft.clone()).expect("save draft");
 
@@ -126,6 +138,11 @@ fn intake_drafts_round_trip_and_complete() {
         .expect("load")
         .expect("draft");
     assert_eq!(loaded.get("first_name"), "Margaret");
+    assert_eq!(
+        loaded.relationship("emergency_contact"),
+        draft.relationship("emergency_contact"),
+        "selected relationships survive the draft round trip"
+    );
 
     let completed = carelibre_desktop::store::complete_intake(&mut conn, DEMO_ORG_ID, loaded)
         .expect("complete");

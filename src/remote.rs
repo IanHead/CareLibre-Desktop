@@ -11,9 +11,12 @@ use eframe::egui;
 use crate::{
     api::ApiClient,
     contact::{
-        ApiContactDetail, ApiContactList, ApiContactWrite, ApiRelationship, ApiRelationshipEvent,
-        ApiRelationshipGraph, ApiRelationshipList, ApiRelationshipType, ApiRelationshipWrite,
-        RelationshipChange,
+        ApiAgreement, ApiAgreementFinalised, ApiAgreementLine, ApiAgreementLineWrite,
+        ApiAgreementWrite, ApiClientRequirement, ApiClientRequirementWrite, ApiContactDetail,
+        ApiContactList, ApiContactWrite, ApiFundingPackage, ApiFundingPackageWrite,
+        ApiRelationship, ApiRelationshipEvent, ApiRelationshipGraph, ApiRelationshipList,
+        ApiRelationshipType, ApiRelationshipWrite, ApiWorkerQualityValue,
+        ApiWorkerQualityValueWrite, RelationshipChange,
     },
     rostering::{
         ApiAssignment, ApiAssignmentUpdate, ApiAssignmentWrite, ApiBatchShiftWrite,
@@ -53,6 +56,71 @@ pub enum RemoteCommand {
         base_url: String,
         token: String,
         payload: Box<ApiContactWrite>,
+    },
+    SetContactQuality {
+        request_id: u64,
+        base_url: String,
+        token: String,
+        contact_id: String,
+        payload: Box<ApiWorkerQualityValueWrite>,
+    },
+    DeleteContactQuality {
+        request_id: u64,
+        base_url: String,
+        token: String,
+        contact_id: String,
+        quality_id: String,
+    },
+    SetContactRequirement {
+        request_id: u64,
+        base_url: String,
+        token: String,
+        contact_id: String,
+        payload: Box<ApiClientRequirementWrite>,
+    },
+    DeleteContactRequirement {
+        request_id: u64,
+        base_url: String,
+        token: String,
+        contact_id: String,
+        requirement_id: String,
+    },
+    CreateFundingPackage {
+        request_id: u64,
+        base_url: String,
+        token: String,
+        contact_id: String,
+        payload: Box<ApiFundingPackageWrite>,
+    },
+    CreateAgreement {
+        request_id: u64,
+        base_url: String,
+        token: String,
+        contact_id: String,
+        payload: Box<ApiAgreementWrite>,
+    },
+    AddAgreementLine {
+        request_id: u64,
+        base_url: String,
+        token: String,
+        contact_id: String,
+        agreement_id: String,
+        payload: Box<ApiAgreementLineWrite>,
+    },
+    DeleteAgreementLine {
+        request_id: u64,
+        base_url: String,
+        token: String,
+        contact_id: String,
+        agreement_id: String,
+        line_id: String,
+    },
+    FinaliseAgreement {
+        request_id: u64,
+        base_url: String,
+        token: String,
+        contact_id: String,
+        agreement_id: String,
     },
     ListRelationships {
         request_id: u64,
@@ -207,6 +275,56 @@ pub enum RemoteEvent {
     ContactCreated {
         request_id: u64,
         result: Result<ApiContactDetail, String>,
+    },
+    ContactQualitySaved {
+        request_id: u64,
+        contact_id: String,
+        result: Result<ApiWorkerQualityValue, String>,
+    },
+    ContactQualityDeleted {
+        request_id: u64,
+        contact_id: String,
+        quality_id: String,
+        result: Result<(), String>,
+    },
+    ContactRequirementSaved {
+        request_id: u64,
+        contact_id: String,
+        result: Result<ApiClientRequirement, String>,
+    },
+    ContactRequirementDeleted {
+        request_id: u64,
+        contact_id: String,
+        requirement_id: String,
+        result: Result<(), String>,
+    },
+    FundingPackageSaved {
+        request_id: u64,
+        contact_id: String,
+        result: Result<ApiFundingPackage, String>,
+    },
+    AgreementSaved {
+        request_id: u64,
+        contact_id: String,
+        result: Result<ApiAgreement, String>,
+    },
+    AgreementLineSaved {
+        request_id: u64,
+        contact_id: String,
+        agreement_id: String,
+        result: Result<ApiAgreementLine, String>,
+    },
+    AgreementLineDeleted {
+        request_id: u64,
+        contact_id: String,
+        agreement_id: String,
+        line_id: String,
+        result: Result<(), String>,
+    },
+    AgreementFinalised {
+        request_id: u64,
+        contact_id: String,
+        result: Result<ApiAgreementFinalised, String>,
     },
     RelationshipsListed {
         request_id: u64,
@@ -383,6 +501,163 @@ impl RemoteHandle {
             base_url,
             token,
             payload: Box::new(payload),
+        });
+    }
+
+    pub fn set_contact_quality(
+        &self,
+        request_id: u64,
+        base_url: String,
+        token: String,
+        contact_id: String,
+        payload: ApiWorkerQualityValueWrite,
+    ) {
+        let _ = self.commands.send(RemoteCommand::SetContactQuality {
+            request_id,
+            base_url,
+            token,
+            contact_id,
+            payload: Box::new(payload),
+        });
+    }
+
+    pub fn delete_contact_quality(
+        &self,
+        request_id: u64,
+        base_url: String,
+        token: String,
+        contact_id: String,
+        quality_id: String,
+    ) {
+        let _ = self.commands.send(RemoteCommand::DeleteContactQuality {
+            request_id,
+            base_url,
+            token,
+            contact_id,
+            quality_id,
+        });
+    }
+
+    pub fn set_contact_requirement(
+        &self,
+        request_id: u64,
+        base_url: String,
+        token: String,
+        contact_id: String,
+        payload: ApiClientRequirementWrite,
+    ) {
+        let _ = self.commands.send(RemoteCommand::SetContactRequirement {
+            request_id,
+            base_url,
+            token,
+            contact_id,
+            payload: Box::new(payload),
+        });
+    }
+
+    pub fn delete_contact_requirement(
+        &self,
+        request_id: u64,
+        base_url: String,
+        token: String,
+        contact_id: String,
+        requirement_id: String,
+    ) {
+        let _ = self.commands.send(RemoteCommand::DeleteContactRequirement {
+            request_id,
+            base_url,
+            token,
+            contact_id,
+            requirement_id,
+        });
+    }
+
+    pub fn create_funding_package(
+        &self,
+        request_id: u64,
+        base_url: String,
+        token: String,
+        contact_id: String,
+        payload: ApiFundingPackageWrite,
+    ) {
+        let _ = self.commands.send(RemoteCommand::CreateFundingPackage {
+            request_id,
+            base_url,
+            token,
+            contact_id,
+            payload: Box::new(payload),
+        });
+    }
+
+    pub fn create_agreement(
+        &self,
+        request_id: u64,
+        base_url: String,
+        token: String,
+        contact_id: String,
+        payload: ApiAgreementWrite,
+    ) {
+        let _ = self.commands.send(RemoteCommand::CreateAgreement {
+            request_id,
+            base_url,
+            token,
+            contact_id,
+            payload: Box::new(payload),
+        });
+    }
+
+    pub fn add_agreement_line(
+        &self,
+        request_id: u64,
+        base_url: String,
+        token: String,
+        contact_id: String,
+        agreement_id: String,
+        payload: ApiAgreementLineWrite,
+    ) {
+        let _ = self.commands.send(RemoteCommand::AddAgreementLine {
+            request_id,
+            base_url,
+            token,
+            contact_id,
+            agreement_id,
+            payload: Box::new(payload),
+        });
+    }
+
+    pub fn delete_agreement_line(
+        &self,
+        request_id: u64,
+        base_url: String,
+        token: String,
+        contact_id: String,
+        agreement_id: String,
+        line_id: String,
+    ) {
+        let _ = self.commands.send(RemoteCommand::DeleteAgreementLine {
+            request_id,
+            base_url,
+            token,
+            contact_id,
+            agreement_id,
+            line_id,
+        });
+    }
+
+    pub fn finalise_agreement(
+        &self,
+        request_id: u64,
+        base_url: String,
+        token: String,
+        contact_id: String,
+        agreement_id: String,
+    ) {
+        let _ = self.commands.send(RemoteCommand::FinaliseAgreement {
+            request_id,
+            base_url,
+            token,
+            contact_id,
+            agreement_id,
         });
     }
 
@@ -743,6 +1018,165 @@ fn run(ctx: egui::Context, commands: Receiver<RemoteCommand>, events: Sender<Rem
                     .and_then(|client| client.create_contact(&token, &payload))
                     .map_err(|err| err.to_string());
                 let _ = events.send(RemoteEvent::ContactCreated { request_id, result });
+            }
+            RemoteCommand::SetContactQuality {
+                request_id,
+                base_url,
+                token,
+                contact_id,
+                payload,
+            } => {
+                let result = ApiClient::new(&base_url)
+                    .and_then(|client| client.set_contact_quality(&token, &contact_id, &payload))
+                    .map_err(|err| err.to_string());
+                let _ = events.send(RemoteEvent::ContactQualitySaved {
+                    request_id,
+                    contact_id,
+                    result,
+                });
+            }
+            RemoteCommand::DeleteContactQuality {
+                request_id,
+                base_url,
+                token,
+                contact_id,
+                quality_id,
+            } => {
+                let result = ApiClient::new(&base_url)
+                    .and_then(|client| {
+                        client.delete_contact_quality(&token, &contact_id, &quality_id)
+                    })
+                    .map_err(|err| err.to_string());
+                let _ = events.send(RemoteEvent::ContactQualityDeleted {
+                    request_id,
+                    contact_id,
+                    quality_id,
+                    result,
+                });
+            }
+            RemoteCommand::SetContactRequirement {
+                request_id,
+                base_url,
+                token,
+                contact_id,
+                payload,
+            } => {
+                let result = ApiClient::new(&base_url)
+                    .and_then(|client| {
+                        client.set_contact_requirement(&token, &contact_id, &payload)
+                    })
+                    .map_err(|err| err.to_string());
+                let _ = events.send(RemoteEvent::ContactRequirementSaved {
+                    request_id,
+                    contact_id,
+                    result,
+                });
+            }
+            RemoteCommand::DeleteContactRequirement {
+                request_id,
+                base_url,
+                token,
+                contact_id,
+                requirement_id,
+            } => {
+                let result = ApiClient::new(&base_url)
+                    .and_then(|client| {
+                        client.delete_contact_requirement(&token, &contact_id, &requirement_id)
+                    })
+                    .map_err(|err| err.to_string());
+                let _ = events.send(RemoteEvent::ContactRequirementDeleted {
+                    request_id,
+                    contact_id,
+                    requirement_id,
+                    result,
+                });
+            }
+            RemoteCommand::CreateFundingPackage {
+                request_id,
+                base_url,
+                token,
+                contact_id,
+                payload,
+            } => {
+                let result = ApiClient::new(&base_url)
+                    .and_then(|client| client.create_funding_package(&token, &contact_id, &payload))
+                    .map_err(|err| err.to_string());
+                let _ = events.send(RemoteEvent::FundingPackageSaved {
+                    request_id,
+                    contact_id,
+                    result,
+                });
+            }
+            RemoteCommand::CreateAgreement {
+                request_id,
+                base_url,
+                token,
+                contact_id,
+                payload,
+            } => {
+                let result = ApiClient::new(&base_url)
+                    .and_then(|client| client.create_agreement(&token, &contact_id, &payload))
+                    .map_err(|err| err.to_string());
+                let _ = events.send(RemoteEvent::AgreementSaved {
+                    request_id,
+                    contact_id,
+                    result,
+                });
+            }
+            RemoteCommand::AddAgreementLine {
+                request_id,
+                base_url,
+                token,
+                contact_id,
+                agreement_id,
+                payload,
+            } => {
+                let result = ApiClient::new(&base_url)
+                    .and_then(|client| client.add_agreement_line(&token, &agreement_id, &payload))
+                    .map_err(|err| err.to_string());
+                let _ = events.send(RemoteEvent::AgreementLineSaved {
+                    request_id,
+                    contact_id,
+                    agreement_id,
+                    result,
+                });
+            }
+            RemoteCommand::DeleteAgreementLine {
+                request_id,
+                base_url,
+                token,
+                contact_id,
+                agreement_id,
+                line_id,
+            } => {
+                let result = ApiClient::new(&base_url)
+                    .and_then(|client| {
+                        client.delete_agreement_line(&token, &agreement_id, &line_id)
+                    })
+                    .map_err(|err| err.to_string());
+                let _ = events.send(RemoteEvent::AgreementLineDeleted {
+                    request_id,
+                    contact_id,
+                    agreement_id,
+                    line_id,
+                    result,
+                });
+            }
+            RemoteCommand::FinaliseAgreement {
+                request_id,
+                base_url,
+                token,
+                contact_id,
+                agreement_id,
+            } => {
+                let result = ApiClient::new(&base_url)
+                    .and_then(|client| client.finalise_agreement(&token, &agreement_id))
+                    .map_err(|err| err.to_string());
+                let _ = events.send(RemoteEvent::AgreementFinalised {
+                    request_id,
+                    contact_id,
+                    result,
+                });
             }
             RemoteCommand::ListRelationships {
                 request_id,

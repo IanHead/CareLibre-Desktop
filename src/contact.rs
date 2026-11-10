@@ -17,6 +17,12 @@ pub struct ApiContact {
     pub preferred_name: Option<String>,
     pub pronouns: Option<String>,
     pub date_of_birth: Option<String>,
+    #[serde(default)]
+    pub gender: Option<String>,
+    #[serde(default)]
+    pub languages: Vec<String>,
+    #[serde(default)]
+    pub cultural_identity: Option<String>,
     pub email: Option<String>,
     pub phone: Option<String>,
     pub notes: Option<String>,
@@ -88,21 +94,345 @@ pub struct ApiCustomField {
     pub sort_order: i64,
 }
 
+/// One entry in the organisation's quality catalogue.
+#[derive(Clone, Debug, Deserialize)]
+pub struct ApiWorkerQuality {
+    pub id: String,
+    pub key: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub category: String,
+    pub data_type: String,
+    #[serde(default)]
+    pub options: Option<Vec<String>>,
+    pub storage: String,
+    pub contact_field: Option<String>,
+    pub tracks_expiry: bool,
+    pub is_sensitive: bool,
+    pub is_system: bool,
+    pub is_active: bool,
+}
+
+impl ApiWorkerQuality {
+    /// Intrinsic qualities are edited on the contact, not as a value row.
+    pub fn is_intrinsic(&self) -> bool {
+        self.storage == "contact_field"
+    }
+
+    pub fn category_label(&self) -> &'static str {
+        quality_category_label(&self.category)
+    }
+}
+
+/// A skill or training a worker holds.
+#[derive(Clone, Debug, Deserialize)]
+pub struct ApiWorkerQualityValue {
+    pub id: String,
+    pub contact_id: String,
+    pub quality_id: String,
+    pub quality_key: String,
+    pub quality_name: String,
+    pub category: String,
+    pub data_type: String,
+    pub tracks_expiry: bool,
+    pub value: Value,
+    pub expires_on: Option<String>,
+    pub evidence: Option<String>,
+    pub notes: Option<String>,
+    pub status: String,
+    pub days_remaining: Option<i64>,
+}
+
+impl ApiWorkerQualityValue {
+    pub fn summary(&self) -> String {
+        let value = quality_value_label(&self.value);
+        match &self.expires_on {
+            Some(date) if self.status == "expired" => format!("{value} — expired {date}"),
+            Some(date) => format!("{value} — expires {date}"),
+            None => value,
+        }
+    }
+
+    pub fn is_expired(&self) -> bool {
+        self.status == "expired"
+    }
+
+    pub fn is_expiring(&self) -> bool {
+        self.status == "expiring"
+    }
+}
+
+/// A requirement a client places on the workers who support them.
+#[derive(Clone, Debug, Deserialize)]
+pub struct ApiClientRequirement {
+    pub id: String,
+    pub contact_id: String,
+    pub quality_id: String,
+    pub quality_key: String,
+    pub quality_name: String,
+    pub category: String,
+    pub data_type: String,
+    pub is_sensitive: bool,
+    pub operator: String,
+    pub value: Option<Value>,
+    pub severity: String,
+    pub reason: Option<String>,
+    pub legal_basis: Option<String>,
+    pub service_id: Option<String>,
+    pub service_name: Option<String>,
+    pub start_date: Option<String>,
+    pub end_date: Option<String>,
+}
+
+impl ApiClientRequirement {
+    pub fn summary(&self) -> String {
+        let value = self.value.as_ref().map(quality_value_label);
+        match (self.operator.as_str(), value) {
+            ("exists", _) => format!("{} required", self.quality_name),
+            ("equals", Some(value)) => format!("{} must be {value}", self.quality_name),
+            ("not_equals", Some(value)) => format!("{} must not be {value}", self.quality_name),
+            ("in", Some(value)) => format!("{} must be one of {value}", self.quality_name),
+            ("contains", Some(value)) => format!("{} must include {value}", self.quality_name),
+            (operator, _) => format!("{} ({operator})", self.quality_name),
+        }
+    }
+
+    pub fn is_block(&self) -> bool {
+        self.severity == "block"
+    }
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct ApiFundingSource {
+    pub id: String,
+    pub key: String,
+    pub name: String,
+    pub kind: String,
+    pub claiming_model: String,
+    pub description: Option<String>,
+    pub configuration: Value,
+    pub is_active: bool,
+    pub is_system: bool,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct ApiFundingService {
+    pub id: String,
+    pub name: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct ApiFundingPackage {
+    pub id: String,
+    pub client_contact_id: String,
+    pub funding_source_id: String,
+    pub source_name: String,
+    pub source_kind: String,
+    pub name: String,
+    pub reference: Option<String>,
+    pub start_date: String,
+    pub end_date: Option<String>,
+    pub budget_amount: Option<f64>,
+    pub status: String,
+    pub notes: Option<String>,
+    pub committed_amount: f64,
+    pub remaining_amount: Option<f64>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct ApiAgreement {
+    pub id: String,
+    pub client_contact_id: String,
+    pub funding_package_id: String,
+    pub title: String,
+    pub status: String,
+    pub quote_date: Option<String>,
+    pub start_date: String,
+    pub end_date: Option<String>,
+    pub total_amount: f64,
+    pub notes: Option<String>,
+    pub finalised_at: Option<String>,
+    #[serde(default)]
+    pub lines: Vec<ApiAgreementLine>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct ApiAgreementLine {
+    pub id: String,
+    pub agreement_id: String,
+    pub service_id: Option<String>,
+    pub service_name: Option<String>,
+    pub description: String,
+    pub quantity: f64,
+    pub unit: String,
+    pub unit_rate: f64,
+    pub amount: f64,
+    pub recurrence: String,
+    #[serde(default)]
+    pub weekdays: Vec<i16>,
+    pub start_time: Option<String>,
+    pub duration_minutes: Option<i32>,
+    pub site_id: Option<String>,
+    pub site_name: Option<String>,
+    pub notes: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct ApiAgreementFinalised {
+    pub agreement: ApiAgreement,
+    pub generated_shifts: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct ApiFundingPackageWrite {
+    pub funding_source_id: String,
+    pub name: String,
+    pub reference: Option<String>,
+    pub start_date: String,
+    pub end_date: Option<String>,
+    pub budget_amount: Option<f64>,
+    pub notes: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct ApiAgreementWrite {
+    pub funding_package_id: String,
+    pub title: String,
+    pub status: Option<String>,
+    pub quote_date: Option<String>,
+    pub start_date: String,
+    pub end_date: Option<String>,
+    pub notes: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct ApiAgreementLineWrite {
+    pub service_id: Option<String>,
+    pub description: String,
+    pub quantity: f64,
+    pub unit: Option<String>,
+    pub unit_rate: f64,
+    pub recurrence: Option<String>,
+    #[serde(default)]
+    pub weekdays: Vec<i16>,
+    pub start_time: Option<String>,
+    pub duration_minutes: Option<i32>,
+    pub site_id: Option<String>,
+    pub notes: Option<String>,
+}
+
+pub fn funding_kind_label(kind: &str) -> &'static str {
+    match kind {
+        "ndis" => "NDIS",
+        "support_at_home" => "Support at Home",
+        "chsp" => "CHSP",
+        "private" => "Private / fee for service",
+        _ => "Other",
+    }
+}
+
+pub fn claiming_model_label(model: &str) -> &'static str {
+    match model {
+        "ndis_price_guide" => "NDIS price guide",
+        "support_at_home" => "Support at Home",
+        "chsp" => "CHSP",
+        "fee_for_service" => "Fee for service",
+        _ => "Manual",
+    }
+}
+
+pub fn agreement_status_label(status: &str) -> &str {
+    match status {
+        "draft" => "Draft",
+        "quoted" => "Quoted",
+        "accepted" => "Accepted",
+        "active" => "Active",
+        "completed" => "Completed",
+        "cancelled" => "Cancelled",
+        _ => status,
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct ApiWorkerQualityValueWrite {
+    pub quality_id: String,
+    pub value: Value,
+    pub expires_on: Option<String>,
+    pub evidence: Option<String>,
+    pub notes: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct ApiClientRequirementWrite {
+    pub quality_id: String,
+    pub operator: String,
+    pub value: Option<Value>,
+    pub severity: Option<String>,
+    pub reason: Option<String>,
+    pub legal_basis: Option<String>,
+    pub service_id: Option<String>,
+    pub start_date: Option<String>,
+    pub end_date: Option<String>,
+}
+
+/// Human-readable value for a quality or requirement.
+pub fn quality_value_label(value: &Value) -> String {
+    match value {
+        Value::Bool(true) => "Held".to_owned(),
+        Value::Bool(false) => "Not held".to_owned(),
+        Value::String(value) => relationship_role_label(value),
+        Value::Array(values) => values
+            .iter()
+            .map(quality_value_label)
+            .collect::<Vec<_>>()
+            .join(", "),
+        Value::Null => "Not recorded".to_owned(),
+        other => other.to_string(),
+    }
+}
+
+pub fn quality_category_label(category: &str) -> &'static str {
+    match category {
+        "skill" => "Skills",
+        "training" => "Training",
+        "qualification" => "Qualifications",
+        "screening" => "Screening and checks",
+        "attribute" => "Worker details",
+        _ => "Preferences",
+    }
+}
+
 #[derive(Clone, Debug, Deserialize)]
 pub struct ApiContactDetail {
     pub contact: ApiContact,
     pub custom_fields: Vec<ApiCustomField>,
     pub custom_values: BTreeMap<String, Value>,
+    #[serde(default)]
+    pub quality_catalogue: Vec<ApiWorkerQuality>,
+    #[serde(default)]
+    pub quality_values: Vec<ApiWorkerQualityValue>,
+    #[serde(default)]
+    pub requirements: Vec<ApiClientRequirement>,
+    #[serde(default)]
+    pub funding_sources: Vec<ApiFundingSource>,
+    #[serde(default)]
+    pub funding_packages: Vec<ApiFundingPackage>,
+    #[serde(default)]
+    pub agreements: Vec<ApiAgreement>,
+    #[serde(default)]
+    pub funding_services: Vec<ApiFundingService>,
 }
 
 #[derive(Clone, Debug, Serialize)]
 pub struct ApiContactWrite {
-    pub display_name: String,
     pub given_name: Option<String>,
     pub family_name: Option<String>,
     pub preferred_name: Option<String>,
     pub pronouns: Option<String>,
     pub date_of_birth: Option<String>,
+    pub gender: Option<String>,
+    pub languages: Vec<String>,
+    pub cultural_identity: Option<String>,
     pub email: Option<String>,
     pub phone: Option<String>,
     pub notes: Option<String>,

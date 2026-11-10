@@ -7,6 +7,8 @@ pub enum FieldKind {
     Email,
     Phone,
     Date,
+    Number,
+    Postcode,
     Select,
     Checkbox,
 }
@@ -21,10 +23,21 @@ pub struct FieldSpec {
     pub wide: bool,
 }
 
+pub struct RelationshipSpec {
+    pub key: &'static str,
+    pub label: &'static str,
+    /// The role this record holds in the relationship.
+    pub subject_role: &'static str,
+    /// The role the linked contact or organisation holds.
+    pub linked_role: &'static str,
+    pub required: bool,
+}
+
 pub struct StepSpec {
     pub title: &'static str,
     pub description: &'static str,
     pub fields: &'static [FieldSpec],
+    pub relationships: &'static [RelationshipSpec],
 }
 
 const fn base(
@@ -100,6 +113,34 @@ pub const fn date_req(
     placeholder: &'static str,
 ) -> FieldSpec {
     base(key, label, placeholder, FieldKind::Date, true, false)
+}
+
+pub const fn num(key: &'static str, label: &'static str, placeholder: &'static str) -> FieldSpec {
+    base(key, label, placeholder, FieldKind::Number, false, false)
+}
+
+pub const fn postcode(key: &'static str, label: &'static str) -> FieldSpec {
+    base(key, label, "2000", FieldKind::Postcode, false, false)
+}
+
+pub const fn postcode_req(key: &'static str, label: &'static str) -> FieldSpec {
+    base(key, label, "2000", FieldKind::Postcode, true, false)
+}
+
+pub const fn rel(
+    key: &'static str,
+    label: &'static str,
+    subject_role: &'static str,
+    linked_role: &'static str,
+    required: bool,
+) -> RelationshipSpec {
+    RelationshipSpec {
+        key,
+        label,
+        subject_role,
+        linked_role,
+        required,
+    }
 }
 
 pub const fn sel(
@@ -185,6 +226,7 @@ pub const CLIENT_STEPS: &[StepSpec] = &[
             txt("languages", "Languages spoken", "e.g. English, Cantonese"),
             txt("cultural_identity", "Cultural identity", "Optional"),
         ],
+        relationships: &[],
     },
     StepSpec {
         title: "Contact & address",
@@ -196,13 +238,14 @@ pub const CLIENT_STEPS: &[StepSpec] = &[
             txt("address_line2", "Address line 2", "Unit, building, level"),
             txt_req("suburb", "Suburb", "Suburb"),
             sel_req("state", "State", STATES),
-            txt_req("postcode", "Postcode", "2000"),
-            txt(
+            postcode_req("postcode", "Postcode"),
+            sel(
                 "preferred_contact",
                 "Preferred contact method",
-                "e.g. phone, SMS or email",
+                &["Phone", "SMS", "Email", "In person"],
             ),
         ],
+        relationships: &[],
     },
     StepSpec {
         title: "Health & support needs",
@@ -240,27 +283,48 @@ pub const CLIENT_STEPS: &[StepSpec] = &[
             ),
             wide("health_notes", "Other health notes", "Optional"),
         ],
+        relationships: &[],
     },
     StepSpec {
         title: "Support network",
         description: "Emergency and professional contacts around the participant.",
-        fields: &[
-            txt_req("emergency_contact_name", "Emergency contact", "Full name"),
-            phone_req("emergency_contact_phone", "Emergency phone", "0400 000 000"),
-            txt(
-                "emergency_contact_relationship",
-                "Relationship",
-                "e.g. daughter, friend",
+        fields: &[],
+        relationships: &[
+            rel(
+                "emergency_contact",
+                "Emergency contact",
+                "person_supported",
+                "emergency_contact",
+                true,
             ),
-            txt("gp_name", "GP / doctor", "Full name"),
-            txt("gp_phone", "GP phone", "Phone number"),
-            txt(
+            rel(
+                "gp",
+                "GP / doctor",
+                "patient",
+                "general_practitioner",
+                false,
+            ),
+            rel(
                 "support_coordinator",
                 "Support coordinator",
-                "Name and organisation",
+                "person_supported",
+                "support_coordinator",
+                false,
             ),
-            txt("plan_manager", "Plan manager", "Name and organisation"),
-            txt("advocate", "Advocate or nominee", "Name and relationship"),
+            rel(
+                "plan_manager",
+                "Plan manager",
+                "person_supported",
+                "plan_manager",
+                false,
+            ),
+            rel(
+                "advocate",
+                "Advocate or nominee",
+                "person_supported",
+                "advocate",
+                false,
+            ),
         ],
     },
     StepSpec {
@@ -290,6 +354,7 @@ pub const CLIENT_STEPS: &[StepSpec] = &[
             check("behaviour_plan", "Behaviour support plan on file"),
             check("restrictive_practices", "Restrictive practices in place"),
         ],
+        relationships: &[],
     },
     StepSpec {
         title: "Funding & consent",
@@ -323,6 +388,7 @@ pub const CLIENT_STEPS: &[StepSpec] = &[
                 "Consent to develop and maintain a care plan",
             ),
         ],
+        relationships: &[],
     },
 ];
 
@@ -342,17 +408,18 @@ pub const WORKER_STEPS: &[StepSpec] = &[
             ),
             mail_req("email", "Email", "name@example.com"),
             phone_req("phone", "Phone", "0400 000 000"),
-            txt(
+            sel(
                 "preferred_contact",
                 "Preferred contact method",
-                "e.g. phone, SMS or email",
+                &["Phone", "SMS", "Email", "In person"],
             ),
             txt_req("address_line1", "Address line 1", "Street address"),
             txt("address_line2", "Address line 2", "Unit, building, level"),
             txt_req("suburb", "Suburb", "Suburb"),
             sel_req("state", "State", STATES),
-            txt_req("postcode", "Postcode", "2000"),
+            postcode_req("postcode", "Postcode"),
         ],
+        relationships: &[],
     },
     StepSpec {
         title: "Position & employment",
@@ -371,10 +438,11 @@ pub const WORKER_STEPS: &[StepSpec] = &[
             ),
             date_req("start_date", "Contract start", "DD/MM/YYYY"),
             date("end_date", "Contract end", "DD/MM/YYYY"),
-            txt("ordinary_hours", "Ordinary hours per week", "e.g. 25"),
+            num("ordinary_hours", "Ordinary hours per week", "e.g. 25"),
             txt("reports_to", "Reports to", "Manager or supervisor"),
             wide("employment_notes", "Employment notes", "Optional"),
         ],
+        relationships: &[],
     },
     StepSpec {
         title: "Award & classification",
@@ -390,10 +458,11 @@ pub const WORKER_STEPS: &[StepSpec] = &[
                 "Classification",
                 "e.g. Level 2, Pay point 3",
             ),
-            txt("base_rate", "Base hourly rate", "$"),
-            txt("superannuation", "Superannuation", "%"),
+            num("base_rate", "Base hourly rate", "$"),
+            num("superannuation", "Superannuation", "%"),
             wide("award_notes", "Award notes", "Optional"),
         ],
+        relationships: &[],
     },
     StepSpec {
         title: "Compliance & checks",
@@ -410,6 +479,7 @@ pub const WORKER_STEPS: &[StepSpec] = &[
             check("vehicle_access", "Has access to a vehicle"),
             wide("compliance_notes", "Compliance notes", "Optional"),
         ],
+        relationships: &[],
     },
     StepSpec {
         title: "Review & confirm",
@@ -426,6 +496,7 @@ pub const WORKER_STEPS: &[StepSpec] = &[
                 "Consent to store this information and share it with the care team",
             ),
         ],
+        relationships: &[],
     },
 ];
 
@@ -455,12 +526,13 @@ pub const OTHER_STEPS: &[StepSpec] = &[
             ),
             mail("email", "Email", "name@example.com"),
             phone_req("phone", "Phone", "0400 000 000"),
-            txt(
+            sel(
                 "preferred_contact",
                 "Preferred contact method",
-                "e.g. phone, SMS or email",
+                &["Phone", "SMS", "Email", "In person"],
             ),
         ],
+        relationships: &[],
     },
     StepSpec {
         title: "Address",
@@ -470,8 +542,9 @@ pub const OTHER_STEPS: &[StepSpec] = &[
             txt("address_line2", "Address line 2", "Unit, building, level"),
             txt("suburb", "Suburb", "Suburb"),
             sel("state", "State", STATES),
-            txt("postcode", "Postcode", "2000"),
+            postcode("postcode", "Postcode"),
         ],
+        relationships: &[],
     },
     StepSpec {
         title: "Notes & consent",
@@ -483,6 +556,7 @@ pub const OTHER_STEPS: &[StepSpec] = &[
                 "Consent to store this contact's information",
             ),
         ],
+        relationships: &[],
     },
 ];
 

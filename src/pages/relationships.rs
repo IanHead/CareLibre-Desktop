@@ -401,6 +401,7 @@ fn party_picker(
     let combo = egui::ComboBox::from_id_salt(id)
         .selected_text(label)
         .width(ui.available_width())
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
         .show_ui(ui, |ui| {
             ui.add(
                 egui::TextEdit::singleline(&mut search)
