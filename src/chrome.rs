@@ -207,6 +207,9 @@ fn drag(ui: &mut Ui, ctx: &egui::Context, rect: Rect) {
     );
     if response.drag_started() {
         ctx.send_viewport_cmd(ViewportCommand::StartDrag);
+        // Hand the drag over to the OS immediately. Leaving egui's drag state
+        // active while the window moves makes subsequent pointer frames jerky.
+        ctx.stop_dragging();
     }
     if response.double_clicked() {
         let maximized = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
@@ -305,6 +308,7 @@ pub fn resize_handles(ctx: &egui::Context) {
                 if response.drag_started() {
                     ui.ctx()
                         .send_viewport_cmd(ViewportCommand::BeginResize(direction));
+                    ui.ctx().stop_dragging();
                 }
             });
     }

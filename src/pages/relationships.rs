@@ -139,33 +139,61 @@ fn add_card(
             return;
         }
 
-        ui.columns(2, |cols| {
-            cols[0].label(
+        if ui.available_width() >= 560.0 {
+            ui.columns(2, |cols| {
+                cols[0].label(
+                    RichText::new("From")
+                        .color(theme::muted())
+                        .font(theme::strong_font(11.0)),
+                );
+                party_picker(
+                    &mut cols[0],
+                    "relationship-from",
+                    &mut form.from,
+                    nodes,
+                    form.to.as_ref().map(|node| (node.kind, node.id.as_str())),
+                );
+
+                cols[1].label(
+                    RichText::new("To")
+                        .color(theme::muted())
+                        .font(theme::strong_font(11.0)),
+                );
+                party_picker(
+                    &mut cols[1],
+                    "relationship-to",
+                    &mut form.to,
+                    nodes,
+                    form.from.as_ref().map(|node| (node.kind, node.id.as_str())),
+                );
+            });
+        } else {
+            ui.label(
                 RichText::new("From")
                     .color(theme::muted())
                     .font(theme::strong_font(11.0)),
             );
             party_picker(
-                &mut cols[0],
+                ui,
                 "relationship-from",
                 &mut form.from,
                 nodes,
                 form.to.as_ref().map(|node| (node.kind, node.id.as_str())),
             );
-
-            cols[1].label(
+            ui.add_space(4.0);
+            ui.label(
                 RichText::new("To")
                     .color(theme::muted())
                     .font(theme::strong_font(11.0)),
             );
             party_picker(
-                &mut cols[1],
+                ui,
                 "relationship-to",
                 &mut form.to,
                 nodes,
                 form.from.as_ref().map(|node| (node.kind, node.id.as_str())),
             );
-        });
+        }
 
         ui.add_space(6.0);
         role_picker(ui, "relationship-page-role", roles, &mut form.role, |role| {

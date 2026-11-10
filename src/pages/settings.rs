@@ -82,30 +82,39 @@ pub fn show(ui: &mut Ui, form: &mut SettingsForm, server: &ServerState) -> Optio
 
             let width = ui.available_width();
             let gap = 18.0;
-            let left_width = (width - gap) * 0.56;
-            let right_width = width - gap - left_width;
 
-            ui.horizontal_top(|ui| {
-                ui.allocate_ui_with_layout(
-                    vec2(left_width, 0.0),
-                    Layout::top_down(Align::Min),
-                    |ui| {
-                        server_card(ui, form, server, &mut action);
-                    },
-                );
+            if width < 720.0 {
+                server_card(ui, form, server, &mut action);
+                ui.add_space(14.0);
+                account_card(ui, form, server, &mut action);
+                ui.add_space(14.0);
+                appearance_card(ui, form, &mut action);
+            } else {
+                let left_width = (width - gap) * 0.56;
+                let right_width = width - gap - left_width;
 
-                ui.add_space(gap);
+                ui.horizontal_top(|ui| {
+                    ui.allocate_ui_with_layout(
+                        vec2(left_width, 0.0),
+                        Layout::top_down(Align::Min),
+                        |ui| {
+                            server_card(ui, form, server, &mut action);
+                        },
+                    );
 
-                ui.allocate_ui_with_layout(
-                    vec2(right_width, 0.0),
-                    Layout::top_down(Align::Min),
-                    |ui| {
-                        account_card(ui, form, server, &mut action);
-                        ui.add_space(14.0);
-                        appearance_card(ui, form, &mut action);
-                    },
-                );
-            });
+                    ui.add_space(gap);
+
+                    ui.allocate_ui_with_layout(
+                        vec2(right_width, 0.0),
+                        Layout::top_down(Align::Min),
+                        |ui| {
+                            account_card(ui, form, server, &mut action);
+                            ui.add_space(14.0);
+                            appearance_card(ui, form, &mut action);
+                        },
+                    );
+                });
+            }
 
             ui.add_space(24.0);
         });

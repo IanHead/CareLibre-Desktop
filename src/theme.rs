@@ -305,7 +305,7 @@ fn style_for(palette: &Palette) -> egui::Style {
     style.spacing.button_padding = egui::vec2(12.0, 7.0);
     style.spacing.interact_size.y = 32.0;
     style.spacing.window_margin = Margin::same(12);
-    style.animation_time = 0.18;
+    style.animation_time = 0.0;
 
     style.text_styles = [
         (

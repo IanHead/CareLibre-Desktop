@@ -277,16 +277,25 @@ fn picker(ui: &mut Ui, state: &mut IntakeState, store_ready: bool) -> Option<Int
         ui.add_space(10.0);
     }
 
-    ui.columns(3, |cols| {
-        for (index, kind) in [IntakeKind::Client, IntakeKind::Worker, IntakeKind::Other]
-            .into_iter()
-            .enumerate()
-        {
-            if scenario_card(&mut cols[index], kind).clicked() {
+    if ui.available_width() >= 720.0 {
+        ui.columns(3, |cols| {
+            for (index, kind) in [IntakeKind::Client, IntakeKind::Worker, IntakeKind::Other]
+                .into_iter()
+                .enumerate()
+            {
+                if scenario_card(&mut cols[index], kind).clicked() {
+                    action = Some(IntakeAction::Start(kind));
+                }
+            }
+        });
+    } else {
+        for kind in [IntakeKind::Client, IntakeKind::Worker, IntakeKind::Other] {
+            if scenario_card(ui, kind).clicked() {
                 action = Some(IntakeAction::Start(kind));
             }
+            ui.add_space(8.0);
         }
-    });
+    }
 
     ui.add_space(20.0);
     section_header(ui, "Drafts", state.drafts.len());
@@ -549,21 +558,6 @@ fn wizard(
         ui.label(RichText::new(draft.display_name()).font(theme::strong_font(22.0)));
         theme::pill(ui, draft.kind.short_label(), kind_colour(draft.kind));
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            let (label, next) = if state.popped_out {
-                ("Dock", IntakeAction::Dock)
-            } else {
-                ("Pop out", IntakeAction::PopOut)
-            };
-            if ui
-                .add(
-                    egui::Button::new(RichText::new(label).color(theme::accent()).size(11.0))
-                        .frame(false),
-                )
-                .clicked()
-            {
-                action = Some(next);
-            }
-
             let (text, colour) = if state.saving {
                 ("Saving…".to_owned(), theme::warning())
             } else if state.dirty {
@@ -815,16 +809,21 @@ fn render_fields(ui: &mut Ui, draft: &mut IntakeDraft, step: &StepSpec, show_err
         }
 
         if let Some(first) = pending.take() {
-            let mut pair_changed = false;
-            ui.columns(2, |cols| {
-                if render_field(&mut cols[0], draft, first, show_errors) {
-                    pair_changed = true;
-                }
-                if render_field(&mut cols[1], draft, field, show_errors) {
-                    pair_changed = true;
-                }
-            });
-            changed |= pair_changed;
+            if ui.available_width() >= 520.0 {
+                let mut pair_changed = false;
+                ui.columns(2, |cols| {
+                    if render_field(&mut cols[0], draft, first, show_errors) {
+                        pair_changed = true;
+                    }
+                    if render_field(&mut cols[1], draft, field, show_errors) {
+                        pair_changed = true;
+                    }
+                });
+                changed |= pair_changed;
+            } else {
+                changed |= render_field(ui, draft, first, show_errors);
+                changed |= render_field(ui, draft, field, show_errors);
+            }
         } else {
             pending = Some(field);
         }
@@ -1110,18 +1109,25 @@ fn new_relationship_form(
                     .color(theme::text()),
             );
             ui.add_space(4.0);
-            ui.columns(2, |cols| {
-                text_field(&mut cols[0], "Given name", &mut new_rel.contact.given_name);
-                text_field(
-                    &mut cols[1],
-                    "Family name",
-                    &mut new_rel.contact.family_name,
-                );
-            });
-            ui.columns(2, |cols| {
-                text_field(&mut cols[0], "Email", &mut new_rel.contact.email);
-                text_field(&mut cols[1], "Phone", &mut new_rel.contact.phone);
-            });
+            if ui.available_width() >= 520.0 {
+                ui.columns(2, |cols| {
+                    text_field(&mut cols[0], "Given name", &mut new_rel.contact.given_name);
+                    text_field(
+                        &mut cols[1],
+                        "Family name",
+                        &mut new_rel.contact.family_name,
+                    );
+                });
+                ui.columns(2, |cols| {
+                    text_field(&mut cols[0], "Email", &mut new_rel.contact.email);
+                    text_field(&mut cols[1], "Phone", &mut new_rel.contact.phone);
+                });
+            } else {
+                text_field(ui, "Given name", &mut new_rel.contact.given_name);
+                text_field(ui, "Family name", &mut new_rel.contact.family_name);
+                text_field(ui, "Email", &mut new_rel.contact.email);
+                text_field(ui, "Phone", &mut new_rel.contact.phone);
+            }
 
             if let Some(problem) = new_contact_error(&new_rel.contact) {
                 ui.label(RichText::new(problem).color(theme::danger()).size(10.0));

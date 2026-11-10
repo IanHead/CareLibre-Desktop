@@ -196,7 +196,6 @@ struct AccountBadge {
     name: String,
     organisation: String,
     role: String,
-    edition: String,
 }
 
 impl CareLibreApp {
@@ -769,7 +768,6 @@ impl CareLibreApp {
             name: session.auth.user.full_name.clone(),
             organisation: session.auth.organisation.name.clone(),
             role: session.role().to_owned(),
-            edition: session.auth.organisation.edition.clone(),
         })
     }
 
@@ -4824,14 +4822,22 @@ impl CareLibreApp {
                         theme::on_accent(),
                     );
                     ui.add_space(2.0);
-                    ui.vertical(|ui| {
-                        ui.label(RichText::new("CareLibre").font(theme::strong_font(16.0)));
-                        ui.label(
-                            RichText::new("CARE PLATFORM")
-                                .color(theme::faint())
-                                .size(8.5),
-                        );
-                    });
+                    let (brand, _) = ui.allocate_exact_size(vec2(120.0, 34.0), Sense::hover());
+                    let painter = ui.painter();
+                    painter.text(
+                        brand.left_center() + vec2(0.0, -8.0),
+                        Align2::LEFT_CENTER,
+                        "CareLibre",
+                        theme::strong_font(16.0),
+                        theme::text(),
+                    );
+                    painter.text(
+                        brand.left_center() + vec2(0.0, 8.0),
+                        Align2::LEFT_CENTER,
+                        "CARE PLATFORM",
+                        FontId::proportional(8.5),
+                        theme::faint(),
+                    );
 
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         match &account {
@@ -5021,14 +5027,6 @@ impl CareLibreApp {
                             if nav_item(ui, Page::Settings, 0.0).clicked() {
                                 self.open_page(Page::Settings);
                             }
-                            ui.add_space(10.0);
-                            edition_card(
-                                ui,
-                                account.as_ref().map(|a| a.edition.as_str()),
-                                self.access_token().is_some(),
-                                self.cache_counts.all,
-                                matches!(self.server.connection, ConnectionState::Offline { .. }),
-                            );
                         });
                     });
                 }
@@ -5195,15 +5193,9 @@ fn nav_button(
     let (rect, response) =
         ui.allocate_exact_size(vec2(ui.available_width(), height), Sense::click());
 
-    let hover =
-        ui.ctx()
-            .animate_bool_with_time(response.id.with("nav_hover"), response.hovered(), 0.14);
-    if hover > 0.0 {
-        ui.painter().rect_filled(
-            rect,
-            CornerRadius::same(9),
-            theme::lerp_color(Color32::TRANSPARENT, theme::surface_raised(), hover),
-        );
+    if response.hovered() {
+        ui.painter()
+            .rect_filled(rect, CornerRadius::same(9), theme::surface_raised());
     }
 
     let text_colour = theme::muted();
@@ -5298,83 +5290,6 @@ fn user_row(ui: &mut Ui, account: Option<&AccountBadge>) -> bool {
     });
 
     clicked
-}
-
-fn edition_card(
-    ui: &mut Ui,
-    edition: Option<&str>,
-    server_ready: bool,
-    server_contacts: usize,
-    server_error: bool,
-) {
-    let title = match edition {
-        Some(edition) if !edition.eq_ignore_ascii_case("community") => {
-            format!("{} EDITION", edition.to_uppercase())
-        }
-        _ => "COMMUNITY EDITION".to_owned(),
-    };
-
-    Frame::new()
-        .fill(theme::bg())
-        .stroke(Stroke::new(1.0, theme::border()))
-        .corner_radius(CornerRadius::same(10))
-        .inner_margin(Margin::same(12))
-        .show(ui, |ui| {
-            // The sidebar lays its footer out bottom-up; force normal flow here.
-            ui.vertical(|ui| {
-                ui.set_width(ui.available_width());
-                ui.horizontal(|ui| {
-                    let (rect, _) = ui.allocate_exact_size(vec2(8.0, 8.0), Sense::hover());
-                    ui.painter()
-                        .circle_filled(rect.center(), 4.0, theme::success());
-                    ui.label(
-                        RichText::new(title)
-                            .color(theme::muted())
-                            .font(theme::strong_font(9.5)),
-                    );
-                });
-                ui.add_space(3.0);
-                ui.label(
-                    RichText::new("Self-hosted · free forever")
-                        .color(theme::faint())
-                        .size(10.5),
-                );
-                ui.add_space(8.0);
-
-                let (colour, text) = if server_error {
-                    (theme::danger(), "Server offline".to_owned())
-                } else if server_ready {
-                    (
-                        theme::success(),
-                        if server_contacts == 0 {
-                            "Server connected".to_owned()
-                        } else {
-                            format!("Server · {} contacts", format_count(server_contacts))
-                        },
-                    )
-                } else {
-                    (theme::warning(), "Sign in to load contacts".to_owned())
-                };
-
-                ui.horizontal(|ui| {
-                    let (rect, _) = ui.allocate_exact_size(vec2(7.0, 7.0), Sense::hover());
-                    ui.painter().circle_filled(rect.center(), 3.5, colour);
-                    ui.label(RichText::new(text).color(theme::muted()).size(9.5));
-                });
-            });
-        });
-}
-
-fn format_count(value: usize) -> String {
-    let digits = value.to_string();
-    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
-    for (index, ch) in digits.chars().enumerate() {
-        if index > 0 && (digits.len() - index).is_multiple_of(3) {
-            out.push(',');
-        }
-        out.push(ch);
-    }
-    out
 }
 
 fn status_segment(ui: &mut Ui, text: &str, colour: Color32, tooltip: Option<&str>) {

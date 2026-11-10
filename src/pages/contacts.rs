@@ -15,6 +15,7 @@ use crate::store::{ContactCounts, ContactCursor, ContactFilter, ContactKind, Con
 use crate::theme;
 
 const ROW_HEIGHT: f32 = 54.0;
+const CARD_ROW_HEIGHT: f32 = 108.0;
 const HEADER_HEIGHT: f32 = 28.0;
 pub const PAGE_SIZE: usize = 200;
 pub const LOAD_MORE_SIZE: usize = 500;
@@ -163,8 +164,7 @@ fn header(ui: &mut Ui, state: &ContactsState) {
 /// dual-role contacts count as both clients and workers.
 fn filter_chips(ui: &mut Ui, state: &mut ContactsState) -> Option<ContactsAction> {
     let mut action = None;
-    let row = vec2(ui.available_width(), 46.0);
-    ui.allocate_ui_with_layout(row, Layout::left_to_right(Align::Center), |ui| {
+    ui.horizontal_wrapped(|ui| {
         ui.label(
             RichText::new("Relationship")
                 .color(theme::faint())
@@ -259,8 +259,9 @@ fn search_row(ui: &mut Ui, state: &mut ContactsState) -> Option<ContactsAction> 
     let mut action = None;
 
     ui.horizontal(|ui| {
+        let search_width = ui.available_width().min(400.0);
         let response = ui.add_sized(
-            [400.0, 34.0],
+            [search_width, 34.0],
             egui::TextEdit::singleline(&mut state.search)
                 .hint_text("Search name, email, phone or role…")
                 .margin(Margin::symmetric(10, 8)),
@@ -306,6 +307,10 @@ fn search_row(ui: &mut Ui, state: &mut ContactsState) -> Option<ContactsAction> 
 }
 
 fn contacts_table(ui: &mut Ui, state: &mut ContactsState, action: &mut Option<ContactsAction>) {
+    if ui.available_width() < 620.0 {
+        contacts_cards(ui, state, action);
+        return;
+    }
     table_header(ui);
 
     let total = state.total;
@@ -375,6 +380,213 @@ fn contacts_table(ui: &mut Ui, state: &mut ContactsState, action: &mut Option<Co
             .size(10.0),
         );
     });
+}
+
+fn contacts_cards(ui: &mut Ui, state: &mut ContactsState, action: &mut Option<ContactsAction>) {
+    let total = state.total;
+    let mut clicked_id: Option<String> = None;
+
+    egui::ScrollArea::vertical()
+        .auto_shrink([false, false])
+        .show_rows(ui, CARD_ROW_HEIGHT, total, |ui, range| {
+            ui.spacing_mut().item_spacing.y = 0.0;
+            let snapshot = state.rows.load_full();
+            let loaded = snapshot.len();
+            let range_end = range.end;
+
+            for index in range {
+                if let Some(row) = snapshot.get(index) {
+                    if row_card(ui, row, state.selected.as_deref()) {
+                        clicked_id = Some(row.id.clone());
+                    }
+                } else {
+                    placeholder_card(ui);
+                }
+            }
+
+            if loaded < total
+                && state.next_cursor.is_some()
+                && !state.loading
+                && state.search_due.is_none()
+                && range_end + PREFETCH_ROWS >= loaded
+            {
+                state.needs_more = true;
+            }
+        });
+
+    if let Some(id) = clicked_id {
+        state.selected = Some(id.clone());
+        if action.is_none() {
+            *action = Some(ContactsAction::OpenContact(id));
+        }
+    }
+
+    if action.is_none()
+        && state.needs_more
+        && !state.loading
+        && state.search_due.is_none()
+        && state.next_cursor.is_some()
+    {
+        state.needs_more = false;
+        *action = Some(ContactsAction::LoadMore);
+    }
+
+    ui.add_space(6.0);
+    ui.label(
+        RichText::new(format!(
+            "Showing {} of {} {}. Scroll to load more.",
+            format_count(state.rows.load().len()),
+            format_count(state.total),
+            match state.filter {
+                ContactFilter::All => "contacts",
+                ContactFilter::Clients => "clients",
+                ContactFilter::Workers => "workers",
+                ContactFilter::Other => "other contacts",
+            },
+        ))
+        .color(theme::faint())
+        .size(10.0),
+    );
+}
+
+fn row_card(ui: &mut Ui, row: &ContactRow, selected: Option<&str>) -> bool {
+    let (rect, response) =
+        ui.allocate_exact_size(vec2(ui.available_width(), CARD_ROW_HEIGHT), Sense::click());
+    let card = rect.shrink2(vec2(0.0, 4.0));
+    let is_selected = selected == Some(row.id.as_str());
+    let fill = if is_selected {
+        theme::accent_soft(20)
+    } else if response.hovered() {
+        theme::surface()
+    } else {
+        theme::surface_raised()
+    };
+    let painter = ui.painter();
+    painter.rect(
+        card,
+        CornerRadius::same(10),
+        fill,
+        Stroke::new(1.0, theme::border()),
+        StrokeKind::Inside,
+    );
+
+    let content = card.shrink2(vec2(12.0, 9.0));
+    let kind_colour = kind_colour(row.kind);
+    let avatar_centre = pos2(content.left() + 16.0, content.top() + 17.0);
+    painter.circle_filled(
+        avatar_centre,
+        14.0,
+        Color32::from_rgba_unmultiplied(kind_colour.r(), kind_colour.g(), kind_colour.b(), 45),
+    );
+    painter.text(
+        avatar_centre,
+        Align2::CENTER_CENTER,
+        initials(&row.name),
+        FontId::proportional(10.5),
+        kind_colour,
+    );
+
+    let text_x = content.left() + 40.0;
+    let text_width = (content.width() - 40.0).max(40.0);
+    let mut y = content.top() + 7.0;
+    painter.text(
+        pos2(text_x, y),
+        Align2::LEFT_CENTER,
+        truncate(&row.name, (text_width / 6.5) as usize),
+        theme::strong_font(12.5),
+        theme::text(),
+    );
+    y += 16.0;
+    if let Some(relationship) = &row.relationship {
+        painter.text(
+            pos2(text_x, y),
+            Align2::LEFT_CENTER,
+            truncate(relationship, (text_width / 5.4) as usize),
+            FontId::proportional(9.5),
+            theme::accent(),
+        );
+        y += 13.0;
+    }
+    painter.text(
+        pos2(text_x, y),
+        Align2::LEFT_CENTER,
+        truncate(
+            row.email.as_deref().unwrap_or("—"),
+            (text_width / 5.5) as usize,
+        ),
+        FontId::proportional(10.5),
+        theme::muted(),
+    );
+    y += 14.0;
+    painter.text(
+        pos2(text_x, y),
+        Align2::LEFT_CENTER,
+        row.phone.as_deref().unwrap_or("—"),
+        FontId::monospace(9.5),
+        theme::faint(),
+    );
+
+    let bottom = content.bottom() - 2.0;
+    painter.text(
+        pos2(text_x, bottom),
+        Align2::LEFT_CENTER,
+        row.kind.label(),
+        FontId::proportional(9.5),
+        kind_colour,
+    );
+    painter.text(
+        pos2(text_x + 58.0, bottom),
+        Align2::LEFT_CENTER,
+        &row.status,
+        FontId::proportional(9.5),
+        status_colour(&row.status),
+    );
+    if content.width() > 250.0 {
+        painter.text(
+            pos2(content.right(), bottom),
+            Align2::RIGHT_CENTER,
+            truncate(row.division.as_deref().unwrap_or("—"), 18),
+            FontId::proportional(9.0),
+            theme::faint(),
+        );
+    }
+
+    if response.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(
+            egui::Role::Button,
+            ui.is_enabled(),
+            match &row.relationship {
+                Some(relationship) => format!(
+                    "{}, {} — {} — {relationship}",
+                    row.name,
+                    row.kind.label(),
+                    row.status
+                ),
+                None => format!("{}, {} — {}", row.name, row.kind.label(), row.status),
+            },
+        )
+    });
+
+    response.clicked()
+}
+
+fn placeholder_card(ui: &mut Ui) {
+    let (rect, _) =
+        ui.allocate_exact_size(vec2(ui.available_width(), CARD_ROW_HEIGHT), Sense::hover());
+    let card = rect.shrink2(vec2(0.0, 4.0));
+    ui.painter()
+        .rect_filled(card, CornerRadius::same(10), theme::surface_raised());
+    ui.painter().text(
+        pos2(card.left() + 12.0, card.center().y),
+        Align2::LEFT_CENTER,
+        "Loading local rows…",
+        FontId::proportional(10.0),
+        theme::faint(),
+    );
 }
 
 fn table_header(ui: &mut Ui) {

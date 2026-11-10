@@ -15,6 +15,9 @@ fn main() -> eframe::Result {
         // fall back to software adapters (lavapipe, llvmpipe) when no GPU is
         // available.
         renderer: eframe::Renderer::Wgpu,
+        // Temporal dithering adds per-frame noise that can look like flicker
+        // on large, flat UI surfaces.
+        dithering: false,
         ..Default::default()
     };
 
