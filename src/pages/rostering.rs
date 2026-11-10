@@ -22,7 +22,6 @@ use crate::{
 };
 
 const TIMELINE_DAYS: i64 = 7;
-const PX_PER_HOUR: f32 = 13.0;
 const LABEL_WIDTH: f32 = 150.0;
 const HEADER_HEIGHT: f32 = 34.0;
 const BLOCK_HEIGHT: f32 = 24.0;
@@ -817,7 +816,6 @@ fn timeline_card(ui: &mut Ui, state: &RosteringState, action: &mut Option<Roster
                 )
             })
             .collect();
-        let width = LABEL_WIDTH + TIMELINE_DAYS as f32 * 24.0 * PX_PER_HOUR;
         let height = HEADER_HEIGHT
             + lanes
                 .iter()
@@ -825,26 +823,19 @@ fn timeline_card(ui: &mut Ui, state: &RosteringState, action: &mut Option<Roster
                 .sum::<f32>()
             + 4.0;
 
-        let offset_id = egui::Id::unique(("roster-timeline-offset", &state.week_start));
-        let already_scrolled = ui.data(|data| data.get_temp::<bool>(offset_id).unwrap_or(false));
-        let mut scroll = ScrollArea::both()
+        let scroll = ScrollArea::vertical()
             .id_salt("roster_timeline")
             .max_height(440.0)
             .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible);
-        if !already_scrolled {
-            scroll = scroll.scroll_offset(vec2(12.0 * PX_PER_HOUR, 0.0));
-            ui.data_mut(|data| data.insert_temp(offset_id, true));
-        }
         let output = scroll.show(ui, |ui| {
-            let (rect, _) = ui.allocate_exact_size(
-                vec2(width.max(ui.available_width() + 20.0), height),
-                Sense::hover(),
-            );
+            let width = ui.available_width();
+            let day_width = ((width - LABEL_WIDTH) / TIMELINE_DAYS as f32).max(1.0);
+            let px_per_hour = day_width / 24.0;
+            let (rect, _) = ui.allocate_exact_size(vec2(width, height), Sense::hover());
             let painter = ui.painter_at(rect);
             painter.rect_filled(rect, CornerRadius::same(8), theme::surface());
 
             let week_start = week_start_local(&state.week_start);
-            let day_width = 24.0 * PX_PER_HOUR;
 
             for day in 0..TIMELINE_DAYS {
                 let x = rect.left() + LABEL_WIDTH + day as f32 * day_width;
@@ -852,20 +843,21 @@ fn timeline_card(ui: &mut Ui, state: &RosteringState, action: &mut Option<Roster
                     [egui::pos2(x, rect.top()), egui::pos2(x, rect.bottom())],
                     Stroke::new(1.0, theme::border()),
                 );
-                let date = week_start + ChronoDuration::days(day);
-                painter.text(
-                    egui::pos2(x + 6.0, rect.top() + 10.0),
-                    egui::Align2::LEFT_TOP,
-                    date.format("%a %-d").to_string(),
-                    theme::strong_font(10.0),
-                    theme::muted(),
-                );
+                if day_width >= 30.0 {
+                    let date = week_start + ChronoDuration::days(day);
+                    painter.text(
+                        egui::pos2(x + 6.0, rect.top() + 10.0),
+                        egui::Align2::LEFT_TOP,
+                        date.format("%a %-d").to_string(),
+                        theme::strong_font(10.0),
+                        theme::muted(),
+                    );
+                }
             }
 
+            let show_hour_labels = px_per_hour * 3.0 >= 14.0;
             for hour in (0..=24).step_by(3) {
-                let y = rect.top() + HEADER_HEIGHT + hour as f32 * 0.0;
-                let _ = y;
-                let x = rect.left() + LABEL_WIDTH + hour as f32 * PX_PER_HOUR;
+                let x = rect.left() + LABEL_WIDTH + hour as f32 * px_per_hour;
                 painter.line_segment(
                     [
                         egui::pos2(x, rect.top() + HEADER_HEIGHT - 4.0),
@@ -873,7 +865,7 @@ fn timeline_card(ui: &mut Ui, state: &RosteringState, action: &mut Option<Roster
                     ],
                     Stroke::new(0.5, theme::border().gamma_multiply(0.5)),
                 );
-                if hour < 24 {
+                if hour < 24 && show_hour_labels {
                     painter.text(
                         egui::pos2(x + 2.0, rect.top() + HEADER_HEIGHT - 16.0),
                         egui::Align2::LEFT_TOP,
@@ -934,8 +926,8 @@ fn timeline_card(ui: &mut Ui, state: &RosteringState, action: &mut Option<Roster
                     let offset_minutes =
                         start.signed_duration_since(week_start).num_minutes() as f32;
                     let duration_minutes = end.signed_duration_since(start).num_minutes() as f32;
-                    let x = rect.left() + LABEL_WIDTH + (offset_minutes / 60.0) * PX_PER_HOUR;
-                    let block_width = ((duration_minutes / 60.0) * PX_PER_HOUR).max(18.0);
+                    let x = rect.left() + LABEL_WIDTH + (offset_minutes / 60.0) * px_per_hour;
+                    let block_width = ((duration_minutes / 60.0) * px_per_hour).max(2.0);
                     let block = egui::Rect::from_min_size(
                         egui::pos2(x, y + BLOCK_GAP + *row as f32 * (BLOCK_HEIGHT + BLOCK_GAP)),
                         vec2(block_width, BLOCK_HEIGHT),
@@ -963,27 +955,29 @@ fn timeline_card(ui: &mut Ui, state: &RosteringState, action: &mut Option<Roster
                         ),
                         egui::StrokeKind::Inside,
                     );
-                    let text_painter = painter.with_clip_rect(block.shrink(4.0));
-                    let label = if block_width < 62.0 {
-                        local_time(&shift.starts_at)
-                    } else {
-                        format!(
-                            "{} {}",
-                            local_time(&shift.starts_at),
-                            shift
-                                .title
-                                .clone()
-                                .or_else(|| shift.service_name.clone())
-                                .unwrap_or_else(|| shift_kind_label(&shift.kind))
-                        )
-                    };
-                    text_painter.text(
-                        egui::pos2(block.left() + 5.0, block.top() + 3.0),
-                        egui::Align2::LEFT_TOP,
-                        label,
-                        egui::FontId::proportional(if block_width < 62.0 { 8.0 } else { 9.5 }),
-                        theme::text(),
-                    );
+                    if block_width >= 24.0 {
+                        let text_painter = painter.with_clip_rect(block.shrink(4.0));
+                        let label = if block_width < 62.0 {
+                            local_time(&shift.starts_at)
+                        } else {
+                            format!(
+                                "{} {}",
+                                local_time(&shift.starts_at),
+                                shift
+                                    .title
+                                    .clone()
+                                    .or_else(|| shift.service_name.clone())
+                                    .unwrap_or_else(|| shift_kind_label(&shift.kind))
+                            )
+                        };
+                        text_painter.text(
+                            egui::pos2(block.left() + 5.0, block.top() + 3.0),
+                            egui::Align2::LEFT_TOP,
+                            label,
+                            egui::FontId::proportional(if block_width < 62.0 { 8.0 } else { 9.5 }),
+                            theme::text(),
+                        );
+                    }
 
                     let response = ui
                         .interact(

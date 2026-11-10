@@ -42,6 +42,8 @@ use crate::{
 const MAX_RECORD_COLUMNS: usize = 5;
 const COLUMN_MIN_WIDTH: f32 = 240.0;
 const SIDEBAR_WIDTH: f32 = 232.0;
+const CENTERED_MENU_WIDTH: f32 = 440.0;
+const CENTERED_MENU_HEIGHT: f32 = 710.0;
 const COLUMN_ANIM_DURATION: f64 = 0.32;
 const SIDEBAR_ANIM_DURATION: f64 = 0.36;
 const PAGE_ANIM_DURATION: f64 = 0.24;
@@ -100,7 +102,7 @@ pub struct CareLibreApp {
     columns_initialised: bool,
     column_rects: Vec<(usize, egui::Rect)>,
     last_column_order: Vec<usize>,
-    max_record_columns: usize,
+    max_total_columns: usize,
     active_contact: Option<String>,
     drag_column: Option<String>,
     sidebar_width: f32,
@@ -224,7 +226,7 @@ impl CareLibreApp {
             columns_initialised: false,
             column_rects: Vec::new(),
             last_column_order: Vec::new(),
-            max_record_columns: 3,
+            max_total_columns: 4,
             active_contact: None,
             drag_column: None,
             sidebar_width: 0.0,
@@ -394,17 +396,30 @@ impl CareLibreApp {
 
     /// Show a page and make sure it has a column in the work area.
     fn open_page(&mut self, page: Page) {
-        self.page = page;
         if let Some(index) = self
             .columns
             .iter()
             .position(|column| matches!(column.kind, ColumnKind::Page(open) if open == page))
         {
+            self.page = page;
             if self.columns[index].closing {
                 self.cancel_column_close(index);
             }
             return;
         }
+        if self.visible_column_count() >= self.max_total_columns {
+            if let Some(ctx) = self.app_ctx.clone() {
+                self.notify(
+                    &ctx,
+                    format!(
+                        "Close a column before opening another. Up to {} columns can be open at once in this window.",
+                        self.max_total_columns
+                    ),
+                );
+            }
+            return;
+        }
+        self.page = page;
         self.columns.insert(
             0,
             ColumnState {
@@ -483,6 +498,22 @@ impl CareLibreApp {
         self.columns.iter().any(|column| {
             matches!(column.kind, ColumnKind::Page(open) if open == self.page) && !column.closing
         })
+    }
+
+    fn visible_column_count(&self) -> usize {
+        self.columns
+            .iter()
+            .filter(|column| {
+                !column.closing
+                    && match &column.kind {
+                        ColumnKind::Page(_) => true,
+                        ColumnKind::Contact(id) => self
+                            .contact_windows
+                            .get(id)
+                            .is_some_and(|window| !window.popped_out),
+                    }
+            })
+            .count()
     }
 
     /// Sign in programmatically. Used by headless previews and live tests.
@@ -1167,27 +1198,13 @@ impl CareLibreApp {
 
         let state = ContactWindowState::new(id.to_owned());
         let request_id = state.request_id.unwrap_or(1);
-        let visible_contacts = self
-            .columns
-            .iter()
-            .filter(|column| match &column.kind {
-                ColumnKind::Page(_) => false,
-                ColumnKind::Contact(open) => {
-                    !column.closing
-                        && self
-                            .contact_windows
-                            .get(open)
-                            .is_some_and(|window| !window.popped_out)
-                }
-            })
-            .count();
-        if visible_contacts >= self.max_record_columns {
+        if self.visible_column_count() >= self.max_total_columns {
             if let Some(ctx) = self.app_ctx.clone() {
                 self.notify(
                     &ctx,
                     format!(
-                        "Close a column before opening another. Up to {} record columns can be open at once in this window; pop a record out for more.",
-                        self.max_record_columns
+                        "Close a column before opening another. Up to {} columns can be open at once in this window; pop a record out for more.",
+                        self.max_total_columns
                     ),
                 );
             }
@@ -1902,46 +1919,29 @@ impl CareLibreApp {
 
         let viewport_width = ui.available_width();
         let now = ui.ctx().input(|input| input.time);
-        let page_columns = visible
-            .iter()
-            .filter(|index| {
-                matches!(self.columns[**index].kind, ColumnKind::Page(_))
-                    && !self.columns[**index].closing
-            })
-            .count();
         let max_total_columns = (((viewport_width + 7.0) / (COLUMN_MIN_WIDTH + 7.0)).floor()
             as usize)
             .clamp(1, MAX_RECORD_COLUMNS + 1);
-        self.max_record_columns = max_total_columns
-            .saturating_sub(page_columns)
-            .clamp(1, MAX_RECORD_COLUMNS);
-        let visible_contacts = visible
-            .iter()
-            .filter(|index| {
-                matches!(self.columns[**index].kind, ColumnKind::Contact(_))
-                    && !self.columns[**index].closing
-            })
-            .count();
-        let over_limit = visible_contacts > self.max_record_columns;
+        self.max_total_columns = max_total_columns;
+        let over_limit = self.visible_column_count() > self.max_total_columns;
         let content_width = self.normalise_column_widths(&visible, viewport_width, now);
-        let overflow = content_width > viewport_width + 0.5;
         let handle_width = 7.0;
 
-        if has_contact_columns || over_limit || overflow {
+        if has_contact_columns || visible.len() > 1 || over_limit {
             Frame::new()
                 .fill(theme::sidebar())
                 .inner_margin(Margin::symmetric(12, 6))
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
                         ui.label(
-                            RichText::new("OPEN RECORDS")
+                            RichText::new("OPEN COLUMNS")
                                 .color(theme::faint())
                                 .font(theme::strong_font(9.0)),
                         );
                         ui.label(
                             RichText::new(format!(
-                                "Drag :: to reorder · drag a divider to resize · up to {} record columns",
-                                self.max_record_columns
+                                "Drag :: to reorder · drag a divider to resize · up to {} columns",
+                                self.max_total_columns
                             ))
                             .color(theme::faint())
                             .size(9.0),
@@ -1960,13 +1960,11 @@ impl CareLibreApp {
                             }
                         });
                     });
-                    if over_limit || overflow {
+                    if over_limit {
                         ui.label(
-                            RichText::new(if overflow {
-                                "Window too small for these columns — scroll sideways or close one."
-                            } else {
-                                "Window too small for these columns — close one or widen the window."
-                            })
+                            RichText::new(
+                                "Window too small for these columns — close one or widen the window.",
+                            )
                             .color(theme::warning())
                             .size(9.0),
                         );
@@ -2017,19 +2015,7 @@ impl CareLibreApp {
             }
         }
 
-        let mut strip_scroll = egui::ScrollArea::horizontal()
-            .id_salt("column-strip-scroll")
-            .auto_shrink([false, false]);
-        if !overflow {
-            strip_scroll = strip_scroll
-                .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden);
-        }
-        strip_scroll.show(ui, |ui| {
-            let height = if overflow {
-                (height - 16.0).max(120.0)
-            } else {
-                height
-            };
+        {
             let (strip_rect, _) =
                 ui.allocate_exact_size(vec2(content_width, height), Sense::hover());
 
@@ -2233,7 +2219,7 @@ impl CareLibreApp {
             }
             self.column_rects = new_column_rects;
             self.last_column_order = order.clone();
-        });
+        }
 
         if let Some((left_index, right_index, delta)) = resize {
             self.apply_column_resize(left_index, right_index, delta, now);
@@ -2256,9 +2242,24 @@ impl CareLibreApp {
             self.close_contact_window(&id);
         }
         if close_all {
-            let ids = self.docked_contact_ids();
+            let ids: Vec<String> = self.contact_windows.keys().cloned().collect();
             for id in ids {
                 self.close_contact_window(&id);
+            }
+            let pages: Vec<Page> = self
+                .columns
+                .iter()
+                .filter_map(|column| match &column.kind {
+                    ColumnKind::Page(page) => Some(*page),
+                    ColumnKind::Contact(_) => None,
+                })
+                .collect();
+            for page in pages {
+                if let Some(index) = self.columns.iter().position(
+                    |column| matches!(column.kind, ColumnKind::Page(open) if open == page),
+                ) {
+                    self.begin_column_close(index, now);
+                }
             }
         }
         for (id, action) in editor_actions {
@@ -2560,10 +2561,8 @@ impl CareLibreApp {
     }
 
     /// Fit the visible columns into the viewport. Columns share the available
-    /// width by weight, so a fresh set of columns is split evenly. If they
-    /// cannot all fit at a readable minimum, keep the minimum widths and return
-    /// a wider content width so the caller can offer horizontal overflow
-    /// scrolling.
+    /// width by weight, so a fresh set of columns is split evenly. Opening is
+    /// capped so the workspace never needs horizontal scrolling.
     fn normalise_column_widths(&mut self, visible: &[usize], viewport_width: f32, now: f64) -> f32 {
         if visible.is_empty() {
             return viewport_width;
@@ -2592,57 +2591,26 @@ impl CareLibreApp {
                     column.anim_from + (column.anim_to - column.anim_from) * eased
                 };
             }
-            let content = visible
-                .iter()
-                .map(|index| self.columns[*index].display_width.max(0.0))
-                .sum::<f32>()
-                + handle_total;
-            return content.max(viewport_width);
+            return viewport_width;
         }
 
-        let count = visible.len() as f32;
-        let min_total = COLUMN_MIN_WIDTH * count + handle_total;
-        let overflow = min_total > viewport_width + 0.5;
-        let available = if overflow { min_total } else { viewport_width };
-        let usable = (available - handle_total).max(1.0);
-
-        let mut targets: Vec<f32> = if overflow {
-            vec![COLUMN_MIN_WIDTH; visible.len()]
-        } else {
-            let weight_total: f32 = visible
+        let usable = (viewport_width - handle_total).max(1.0);
+        let weight_total: f32 = visible
+            .iter()
+            .map(|index| self.columns[*index].weight.max(0.001))
+            .sum();
+        let mut targets: Vec<f32> = visible
+            .iter()
+            .map(|index| (usable * self.columns[*index].weight.max(0.001) / weight_total).max(1.0))
+            .collect();
+        let sum: f32 = targets.iter().sum();
+        if (sum - usable).abs() > 0.5
+            && let Some((slot, _)) = targets
                 .iter()
-                .map(|index| self.columns[*index].weight.max(0.001))
-                .sum();
-            visible
-                .iter()
-                .map(|index| usable * self.columns[*index].weight.max(0.001) / weight_total)
-                .collect()
-        };
-
-        // Keep every column readable, redistributing any shortfall from the
-        // columns that still have room.
-        for _ in 0..visible.len() {
-            let deficit: f32 = targets
-                .iter()
-                .map(|target| (COLUMN_MIN_WIDTH - *target).max(0.0))
-                .sum();
-            if deficit <= 0.5 {
-                break;
-            }
-            let flexible: f32 = targets
-                .iter()
-                .map(|target| (*target - COLUMN_MIN_WIDTH).max(0.0))
-                .sum();
-            if flexible <= 0.5 {
-                break;
-            }
-            for target in &mut targets {
-                if *target < COLUMN_MIN_WIDTH {
-                    *target = COLUMN_MIN_WIDTH;
-                } else {
-                    *target -= deficit * (*target - COLUMN_MIN_WIDTH) / flexible;
-                }
-            }
+                .enumerate()
+                .max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal))
+        {
+            targets[slot] = (targets[slot] + (usable - sum)).max(1.0);
         }
 
         let initialise = !self.columns_initialised;
@@ -2683,7 +2651,7 @@ impl CareLibreApp {
             };
         }
 
-        available
+        viewport_width
     }
 
     fn next_rostering_request(&mut self) -> u64 {
@@ -4983,19 +4951,30 @@ impl CareLibreApp {
         }
 
         let panel_width = self.sidebar_width.clamp(1.0, full_width);
-        let menu_width = SIDEBAR_WIDTH.min(panel_width);
-        let menu_x = ((panel_width - menu_width) / 2.0).max(0.0);
+        let centeredness =
+            ((panel_width - SIDEBAR_WIDTH) / (full_width - SIDEBAR_WIDTH).max(1.0)).clamp(0.0, 1.0);
+        let content_width =
+            (SIDEBAR_WIDTH - 24.0) + (CENTERED_MENU_WIDTH - (SIDEBAR_WIDTH - 24.0)) * centeredness;
         let active_page = self.page_column_open().then_some(self.page);
 
         egui::Panel::left("sidebar")
             .exact_size(panel_width)
             .resizable(false)
             .show_separator_line(false)
-            .frame(Frame::new().fill(theme::bg()))
+            .frame(
+                Frame::new()
+                    .fill(theme::sidebar())
+                    .stroke(Stroke::new(1.0, theme::border())),
+            )
             .show(ui, |ui| {
+                let panel_height = ui.available_height();
+                let content_height = panel_height
+                    + (CENTERED_MENU_HEIGHT.min(panel_height) - panel_height) * centeredness;
+                let content_x = ((panel_width - content_width) / 2.0).max(0.0);
+                let content_y = ((panel_height - content_height) / 2.0).max(0.0);
                 let rect = egui::Rect::from_min_size(
-                    ui.min_rect().min + vec2(menu_x, 0.0),
-                    vec2(menu_width, ui.available_height()),
+                    ui.min_rect().min + vec2(content_x, content_y),
+                    vec2(content_width, content_height),
                 );
                 let mut menu_ui = ui.new_child(
                     egui::UiBuilder::new()
@@ -5003,45 +4982,60 @@ impl CareLibreApp {
                         .layout(Layout::top_down(Align::Min)),
                 );
                 menu_ui.set_clip_rect(rect);
-                Frame::new()
-                    .fill(theme::sidebar())
-                    .inner_margin(Margin::symmetric(12, 16))
-                    .stroke(Stroke::new(1.0, theme::border()))
-                    .show(&mut menu_ui, |ui| {
-                        ui.set_width(ui.available_width());
-                        ui.set_min_height(ui.available_height());
+                menu_ui.spacing_mut().item_spacing.y = 8.0 - 4.0 * centeredness;
 
-                        group_label(ui, "WORKSPACE");
-                        if nav_button(
-                            ui,
-                            active_page == Some(Page::Intake),
-                            "📝",
-                            "Start intake",
-                            "Guided onboarding for clients, workers and other contacts.",
-                        )
+                group_label(&mut menu_ui, "WORKSPACE");
+                if nav_button(
+                    &mut menu_ui,
+                    active_page == Some(Page::Intake),
+                    "📝",
+                    "Start intake",
+                    "Guided onboarding for clients, workers and other contacts.",
+                    centeredness,
+                    38.0 + 8.0 * centeredness,
+                )
+                .clicked()
+                {
+                    self.open_intake();
+                }
+                for page in [Page::Contacts, Page::Rostering, Page::Relationships] {
+                    if nav_item(&mut menu_ui, active_page == Some(page), page, centeredness)
                         .clicked()
-                        {
-                            self.open_intake();
-                        }
-                        for page in [Page::Contacts, Page::Rostering, Page::Relationships] {
-                            if nav_item(ui, active_page == Some(page), page).clicked() {
-                                self.open_page(page);
-                            }
-                        }
+                    {
+                        self.open_page(page);
+                    }
+                }
 
-                        ui.add_space(14.0);
-                        group_label(ui, "OPERATIONS");
-                        for page in [
-                            Page::Services,
-                            Page::Documents,
-                            Page::Communications,
-                            Page::Reports,
-                        ] {
-                            if nav_item(ui, active_page == Some(page), page).clicked() {
-                                self.open_page(page);
-                            }
-                        }
+                menu_ui.add_space(14.0);
+                group_label(&mut menu_ui, "OPERATIONS");
+                for page in [
+                    Page::Services,
+                    Page::Documents,
+                    Page::Communications,
+                    Page::Reports,
+                ] {
+                    if nav_item(&mut menu_ui, active_page == Some(page), page, centeredness)
+                        .clicked()
+                    {
+                        self.open_page(page);
+                    }
+                }
 
+                if centeredness > 0.5
+                    && nav_item(
+                        &mut menu_ui,
+                        active_page == Some(Page::Settings),
+                        Page::Settings,
+                        centeredness,
+                    )
+                    .clicked()
+                {
+                    self.open_page(Page::Settings);
+                }
+
+                if centeredness < 0.98 {
+                    menu_ui.scope(|ui| {
+                        ui.multiply_opacity(1.0 - centeredness);
                         ui.with_layout(Layout::bottom_up(Align::Min), |ui| {
                             if user_row(ui, account.as_ref()) {
                                 self.open_page(Page::Settings);
@@ -5049,8 +5043,13 @@ impl CareLibreApp {
                             ui.add_space(8.0);
                             ui.separator();
                             ui.add_space(8.0);
-                            if nav_item(ui, active_page == Some(Page::Settings), Page::Settings)
-                                .clicked()
+                            if nav_item(
+                                ui,
+                                active_page == Some(Page::Settings),
+                                Page::Settings,
+                                0.0,
+                            )
+                            .clicked()
                             {
                                 self.open_page(Page::Settings);
                             }
@@ -5064,6 +5063,7 @@ impl CareLibreApp {
                             );
                         });
                     });
+                }
             });
     }
 
@@ -5211,8 +5211,17 @@ fn group_label(ui: &mut Ui, text: &str) {
     ui.add_space(4.0);
 }
 
-fn nav_item(ui: &mut Ui, selected: bool, page: Page) -> egui::Response {
-    nav_button(ui, selected, page.icon(), page.label(), page.blurb())
+fn nav_item(ui: &mut Ui, selected: bool, page: Page, detail: f32) -> egui::Response {
+    let height = 38.0 + 8.0 * detail;
+    nav_button(
+        ui,
+        selected,
+        page.icon(),
+        page.label(),
+        page.blurb(),
+        detail,
+        height,
+    )
 }
 
 fn nav_button(
@@ -5221,8 +5230,11 @@ fn nav_button(
     icon: &str,
     label: &str,
     tooltip: &str,
+    detail: f32,
+    height: f32,
 ) -> egui::Response {
-    let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), 38.0), Sense::click());
+    let (rect, response) =
+        ui.allocate_exact_size(vec2(ui.available_width(), height), Sense::click());
 
     let hover =
         ui.ctx()
@@ -5260,16 +5272,25 @@ fn nav_button(
         icon_colour,
     );
     ui.painter().text(
-        rect.left_center() + vec2(50.0, 0.0),
+        rect.left_center() + vec2(50.0, -5.0 * detail),
         Align2::LEFT_CENTER,
         label,
-        if selected {
-            theme::strong_font(13.0)
+        if selected || detail > 0.5 {
+            theme::strong_font(13.0 + detail * 0.5)
         } else {
             FontId::proportional(13.0)
         },
         text_colour,
     );
+    if detail > 0.01 {
+        ui.painter().text(
+            rect.left_center() + vec2(50.0, 9.0),
+            Align2::LEFT_CENTER,
+            tooltip,
+            FontId::proportional(10.0),
+            theme::muted().gamma_multiply(detail),
+        );
+    }
 
     if response.hovered() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);

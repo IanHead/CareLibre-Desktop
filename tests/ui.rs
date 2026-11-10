@@ -158,6 +158,48 @@ fn pages_can_be_closed_and_reopened() {
 }
 
 #[test]
+fn close_all_closes_pages_and_records() {
+    let mut app = CareLibreApp::new();
+    app.set_page(Page::Contacts);
+    app.open_contact("first-contact");
+
+    let mut harness = harness(app);
+    harness.run();
+    harness
+        .get_by_role_and_label(egui::Role::Button, "Rostering")
+        .click();
+    harness.run();
+
+    harness.get_by_label("Close all").click();
+    harness.run();
+
+    assert!(!harness.state().page_column_open());
+    assert!(harness.state().docked_contact_ids().is_empty());
+    assert_eq!(harness.query_all_by_label("Pop out page").count(), 0);
+}
+
+#[test]
+fn pages_are_limited_to_the_window() {
+    let mut harness = harness(CareLibreApp::new());
+    harness.run();
+
+    for page in ["Contacts", "Rostering", "Relationships", "Services & rates"] {
+        harness
+            .get_by_role_and_label(egui::Role::Button, page)
+            .click();
+        harness.run();
+    }
+    assert_eq!(harness.get_all_by_label("Pop out page").count(), 4);
+
+    harness
+        .get_by_role_and_label(egui::Role::Button, "Documents")
+        .click();
+    harness.run();
+
+    assert_eq!(harness.get_all_by_label("Pop out page").count(), 4);
+}
+
+#[test]
 fn multiple_contact_columns_render_without_id_clashes() {
     let mut app = CareLibreApp::new();
     app.open_contact("first-contact");
@@ -176,8 +218,8 @@ fn open_columns_are_limited() {
         app.open_contact(&format!("contact-{index}"));
     }
 
-    // The page counts as one column; three records fill the remaining slots.
-    assert_eq!(app.docked_contact_ids().len(), 3);
+    // No page is open, so the first four records fill the window's slots.
+    assert_eq!(app.docked_contact_ids().len(), 4);
 }
 
 #[test]
@@ -188,7 +230,7 @@ fn open_contacts_render_the_column_strip() {
     let mut harness = harness(app);
     harness.run();
 
-    harness.get_by_label("OPEN RECORDS");
+    harness.get_by_label("OPEN COLUMNS");
 }
 
 #[test]
