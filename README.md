@@ -17,6 +17,9 @@ open-source care management platform for disability and aged care providers.
 
 <table>
   <tr>
+    <td align="center" colspan="3"><a href="docs/launch.png"><img src="docs/thumbs/launch.png" alt="CareLibre centred launch menu"></a><br><sub><b>Launch</b> — a centred menu until the first column opens</sub></td>
+  </tr>
+  <tr>
     <td align="center"><a href="docs/contacts.png"><img src="docs/thumbs/contacts.png" alt="CareLibre contacts workspace"></a><br><sub><b>Contacts</b> — live directory with role filters and search</sub></td>
     <td align="center"><a href="docs/contact-editor.png"><img src="docs/thumbs/contact-editor.png" alt="CareLibre contact record with linked relationships"></a><br><sub><b>Records</b> — docked, with linked relationships</sub></td>
     <td align="center"><a href="docs/funding.png"><img src="docs/thumbs/funding.png" alt="CareLibre funding packages and service agreements"></a><br><sub><b>Funding</b> — packages, quotes and agreements</sub></td>
@@ -278,6 +281,7 @@ cargo fmt                  # formatting
 The UI can be rendered without a display, which is handy for design review and CI:
 
 ```sh
+cargo run --example screenshot -- docs/launch.png --empty
 cargo run --example screenshot -- docs/contacts.png
 cargo run --example screenshot -- docs/rostering.png rostering
 cargo run --example screenshot -- docs/contacts.png contacts --live \

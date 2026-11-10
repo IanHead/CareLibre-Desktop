@@ -43,6 +43,7 @@ fn main() {
         _ => Page::Contacts,
     };
     let live = args.iter().any(|arg| arg == "--live");
+    let empty = args.iter().any(|arg| arg == "--empty");
     let perf = args.iter().any(|arg| arg == "--perf");
     let contact = args.iter().any(|arg| arg == "--contact");
     let client_side = args.iter().any(|arg| arg == "--client");
@@ -82,7 +83,9 @@ fn main() {
     if let Some(server) = server {
         app.use_server(server).expect("valid --server URL");
     }
-    app.set_page(page);
+    if !empty {
+        app.set_page(page);
+    }
     if let Some(filter) = contact_filter {
         app.set_contact_filter(filter);
     }
