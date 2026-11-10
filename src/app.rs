@@ -4811,7 +4811,7 @@ impl CareLibreApp {
                     .stroke(Stroke::new(1.0, theme::border())),
             )
             .show(ui, |ui| {
-                ui.horizontal(|ui| {
+                ui.horizontal_centered(|ui| {
                     // Brand
                     let (logo, _) = ui.allocate_exact_size(vec2(34.0, 34.0), Sense::hover());
                     ui.painter()
@@ -4832,19 +4832,6 @@ impl CareLibreApp {
                                 .size(8.5),
                         );
                     });
-
-                    ui.add_space(14.0);
-                    let (separator, _) = ui.allocate_exact_size(vec2(1.0, 26.0), Sense::hover());
-                    ui.painter()
-                        .rect_filled(separator, CornerRadius::ZERO, theme::border());
-                    ui.add_space(14.0);
-
-                    let page_label = if self.page_column_open() {
-                        format!("{}  {}", self.page.icon(), self.page.label())
-                    } else {
-                        "Workspace".to_owned()
-                    };
-                    ui.label(RichText::new(page_label).color(theme::muted()).size(13.0));
 
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         match &account {
@@ -4955,7 +4942,6 @@ impl CareLibreApp {
             ((panel_width - SIDEBAR_WIDTH) / (full_width - SIDEBAR_WIDTH).max(1.0)).clamp(0.0, 1.0);
         let content_width =
             (SIDEBAR_WIDTH - 24.0) + (CENTERED_MENU_WIDTH - (SIDEBAR_WIDTH - 24.0)) * centeredness;
-        let active_page = self.page_column_open().then_some(self.page);
 
         egui::Panel::left("sidebar")
             .exact_size(panel_width)
@@ -4987,7 +4973,6 @@ impl CareLibreApp {
                 group_label(&mut menu_ui, "WORKSPACE");
                 if nav_button(
                     &mut menu_ui,
-                    active_page == Some(Page::Intake),
                     "📝",
                     "Start intake",
                     "Guided onboarding for clients, workers and other contacts.",
@@ -4999,9 +4984,7 @@ impl CareLibreApp {
                     self.open_intake();
                 }
                 for page in [Page::Contacts, Page::Rostering, Page::Relationships] {
-                    if nav_item(&mut menu_ui, active_page == Some(page), page, centeredness)
-                        .clicked()
-                    {
+                    if nav_item(&mut menu_ui, page, centeredness).clicked() {
                         self.open_page(page);
                     }
                 }
@@ -5014,21 +4997,13 @@ impl CareLibreApp {
                     Page::Communications,
                     Page::Reports,
                 ] {
-                    if nav_item(&mut menu_ui, active_page == Some(page), page, centeredness)
-                        .clicked()
-                    {
+                    if nav_item(&mut menu_ui, page, centeredness).clicked() {
                         self.open_page(page);
                     }
                 }
 
                 if centeredness > 0.5
-                    && nav_item(
-                        &mut menu_ui,
-                        active_page == Some(Page::Settings),
-                        Page::Settings,
-                        centeredness,
-                    )
-                    .clicked()
+                    && nav_item(&mut menu_ui, Page::Settings, centeredness).clicked()
                 {
                     self.open_page(Page::Settings);
                 }
@@ -5043,14 +5018,7 @@ impl CareLibreApp {
                             ui.add_space(8.0);
                             ui.separator();
                             ui.add_space(8.0);
-                            if nav_item(
-                                ui,
-                                active_page == Some(Page::Settings),
-                                Page::Settings,
-                                0.0,
-                            )
-                            .clicked()
-                            {
+                            if nav_item(ui, Page::Settings, 0.0).clicked() {
                                 self.open_page(Page::Settings);
                             }
                             ui.add_space(10.0);
@@ -5211,22 +5179,13 @@ fn group_label(ui: &mut Ui, text: &str) {
     ui.add_space(4.0);
 }
 
-fn nav_item(ui: &mut Ui, selected: bool, page: Page, detail: f32) -> egui::Response {
+fn nav_item(ui: &mut Ui, page: Page, detail: f32) -> egui::Response {
     let height = 38.0 + 8.0 * detail;
-    nav_button(
-        ui,
-        selected,
-        page.icon(),
-        page.label(),
-        page.blurb(),
-        detail,
-        height,
-    )
+    nav_button(ui, page.icon(), page.label(), page.blurb(), detail, height)
 }
 
 fn nav_button(
     ui: &mut Ui,
-    selected: bool,
     icon: &str,
     label: &str,
     tooltip: &str,
@@ -5239,13 +5198,7 @@ fn nav_button(
     let hover =
         ui.ctx()
             .animate_bool_with_time(response.id.with("nav_hover"), response.hovered(), 0.14);
-    if selected {
-        ui.painter()
-            .rect_filled(rect, CornerRadius::same(9), theme::accent_soft(24));
-        let bar = egui::Rect::from_min_size(rect.left_center() + vec2(7.0, -9.0), vec2(3.0, 18.0));
-        ui.painter()
-            .rect_filled(bar, CornerRadius::same(2), theme::accent());
-    } else if hover > 0.0 {
+    if hover > 0.0 {
         ui.painter().rect_filled(
             rect,
             CornerRadius::same(9),
@@ -5253,16 +5206,8 @@ fn nav_button(
         );
     }
 
-    let text_colour = if selected {
-        theme::text()
-    } else {
-        theme::muted()
-    };
-    let icon_colour = if selected {
-        theme::accent()
-    } else {
-        theme::faint()
-    };
+    let text_colour = theme::muted();
+    let icon_colour = theme::faint();
 
     ui.painter().text(
         rect.left_center() + vec2(24.0, 0.0),
@@ -5275,7 +5220,7 @@ fn nav_button(
         rect.left_center() + vec2(50.0, -5.0 * detail),
         Align2::LEFT_CENTER,
         label,
-        if selected || detail > 0.5 {
+        if detail > 0.5 {
             theme::strong_font(13.0 + detail * 0.5)
         } else {
             FontId::proportional(13.0)
