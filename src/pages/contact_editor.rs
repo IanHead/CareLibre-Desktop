@@ -1358,7 +1358,7 @@ fn qualities_card(ui: &mut Ui, state: &mut ContactWindowState) -> Option<Contact
             || "Choose a skill…".to_owned(),
             |quality| format!("{} — {}", quality.name, quality.category_label()),
         );
-        egui::ComboBox::from_id_salt("new-quality")
+        let combo = egui::ComboBox::from_id_salt("new-quality")
             .selected_text(selected_text)
             .width(ui.available_width().min(380.0))
             .show_ui(ui, |ui| {
@@ -1379,6 +1379,7 @@ fn qualities_card(ui: &mut Ui, state: &mut ContactWindowState) -> Option<Contact
                     }
                 }
             });
+        named(&combo.response, "Skill or training");
 
         let Some(quality) = selected else {
             return;
@@ -1526,7 +1527,7 @@ fn requirements_card(ui: &mut Ui, state: &mut ContactWindowState) -> Option<Cont
             || "Choose a quality…".to_owned(),
             |quality| format!("{} — {}", quality.name, quality.category_label()),
         );
-        egui::ComboBox::from_id_salt("new-requirement-quality")
+        let combo = egui::ComboBox::from_id_salt("new-requirement-quality")
             .selected_text(selected_text)
             .width(ui.available_width().min(380.0))
             .show_ui(ui, |ui| {
@@ -1547,6 +1548,7 @@ fn requirements_card(ui: &mut Ui, state: &mut ContactWindowState) -> Option<Cont
                     }
                 }
             });
+        named(&combo.response, "Requirement quality");
 
         let Some(quality) = selected else {
             return;
@@ -1555,7 +1557,7 @@ fn requirements_card(ui: &mut Ui, state: &mut ContactWindowState) -> Option<Cont
         ui.add_space(4.0);
         ui.horizontal(|ui| {
             field_label(ui, "Rule", false);
-            egui::ComboBox::from_id_salt("new-requirement-operator")
+            let combo = egui::ComboBox::from_id_salt("new-requirement-operator")
                 .selected_text(operator_label(&state.new_requirement_operator))
                 .show_ui(ui, |ui| {
                     for operator in ["exists", "equals", "not_equals", "in", "contains"] {
@@ -1566,6 +1568,7 @@ fn requirements_card(ui: &mut Ui, state: &mut ContactWindowState) -> Option<Cont
                         );
                     }
                 });
+            named(&combo.response, "Requirement rule");
         });
 
         if state.new_requirement_operator != "exists" {
@@ -1590,7 +1593,7 @@ fn requirements_card(ui: &mut Ui, state: &mut ContactWindowState) -> Option<Cont
 
         ui.horizontal(|ui| {
             field_label(ui, "If unmet", false);
-            egui::ComboBox::from_id_salt("new-requirement-severity")
+            let combo = egui::ComboBox::from_id_salt("new-requirement-severity")
                 .selected_text(if state.new_requirement_severity == "block" {
                     "Block"
                 } else {
@@ -1608,6 +1611,7 @@ fn requirements_card(ui: &mut Ui, state: &mut ContactWindowState) -> Option<Cont
                         "Block",
                     );
                 });
+            named(&combo.response, "Unmet requirement severity");
         });
 
         text_field(
@@ -1661,7 +1665,7 @@ fn quality_value_input(
             if text.is_empty() {
                 *text = options.first().cloned().unwrap_or_default();
             }
-            egui::ComboBox::from_id_salt(format!("{id}-{}", quality.id))
+            let combo = egui::ComboBox::from_id_salt(format!("{id}-{}", quality.id))
                 .selected_text(if text.is_empty() {
                     "Choose…".to_owned()
                 } else {
@@ -1676,6 +1680,7 @@ fn quality_value_input(
                         );
                     }
                 });
+            named(&combo.response, "Quality value");
         }
         "multiselect" => {
             text_field(ui, "Values (comma separated)", text);
@@ -1939,7 +1944,7 @@ fn funding_card(ui: &mut Ui, state: &mut ContactWindowState) -> Option<ContactEd
                     )
                 },
             );
-            egui::ComboBox::from_id_salt("new-package-source")
+            let combo = egui::ComboBox::from_id_salt("new-package-source")
                 .selected_text(selected_text)
                 .width(ui.available_width().min(380.0))
                 .show_ui(ui, |ui| {
@@ -1955,6 +1960,7 @@ fn funding_card(ui: &mut Ui, state: &mut ContactWindowState) -> Option<ContactEd
                         }
                     }
                 });
+            named(&combo.response, "Funding source");
             text_field(ui, "Package name", &mut state.new_package_name);
             text_field(ui, "Plan or package reference", &mut state.new_package_reference);
             field_row(ui, |ui, right| {
@@ -2016,7 +2022,7 @@ fn funding_card(ui: &mut Ui, state: &mut ContactWindowState) -> Option<ContactEd
                 || "Choose a funding package…".to_owned(),
                 |package| package.name.clone(),
             );
-            egui::ComboBox::from_id_salt("new-agreement-package")
+            let combo = egui::ComboBox::from_id_salt("new-agreement-package")
                 .selected_text(selected_text)
                 .width(ui.available_width().min(380.0))
                 .show_ui(ui, |ui| {
@@ -2033,6 +2039,7 @@ fn funding_card(ui: &mut Ui, state: &mut ContactWindowState) -> Option<ContactEd
                         }
                     }
                 });
+            named(&combo.response, "Funding package");
             text_field(ui, "Quote title", &mut state.new_agreement_title);
             field_row(ui, |ui, right| {
                 if right {
@@ -2209,7 +2216,7 @@ fn agreement_line_form(
                 .map(|service| service.name.clone())
         })
         .unwrap_or_else(|| "No service".to_owned());
-    egui::ComboBox::from_id_salt(("line-service", &agreement.id))
+    let combo = egui::ComboBox::from_id_salt(("line-service", &agreement.id))
         .selected_text(selected_text)
         .width(ui.available_width().min(360.0))
         .show_ui(ui, |ui| {
@@ -2231,6 +2238,7 @@ fn agreement_line_form(
                 }
             }
         });
+    named(&combo.response, "Service");
     text_field(ui, "Line description", &mut state.new_line_description);
     field_row(ui, |ui, right| {
         if right {
@@ -2241,17 +2249,18 @@ fn agreement_line_form(
     });
     ui.horizontal(|ui| {
         field_label(ui, "Unit", false);
-        egui::ComboBox::from_id_salt(("line-unit", &agreement.id))
+        let combo = egui::ComboBox::from_id_salt(("line-unit", &agreement.id))
             .selected_text(&state.new_line_unit)
             .show_ui(ui, |ui| {
                 for unit in ["hour", "session", "each", "day"] {
                     ui.selectable_value(&mut state.new_line_unit, unit.to_owned(), unit);
                 }
             });
+        named(&combo.response, "Unit");
     });
     ui.horizontal(|ui| {
         field_label(ui, "Repeats", false);
-        egui::ComboBox::from_id_salt(("line-recurrence", &agreement.id))
+        let combo = egui::ComboBox::from_id_salt(("line-recurrence", &agreement.id))
             .selected_text(&state.new_line_recurrence)
             .show_ui(ui, |ui| {
                 for recurrence in ["none", "daily", "weekly", "fortnightly"] {
@@ -2262,6 +2271,7 @@ fn agreement_line_form(
                     );
                 }
             });
+        named(&combo.response, "Repeats");
     });
     if state.new_line_recurrence != "none" {
         ui.horizontal_wrapped(|ui| {

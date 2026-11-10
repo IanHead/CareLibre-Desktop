@@ -62,6 +62,8 @@ fn main() {
     });
     let suitability = args.iter().any(|arg| arg == "--suitability");
     let relationships = args.iter().any(|arg| arg == "--relationships");
+    let funding = args.iter().any(|arg| arg == "--funding");
+    let qualities = args.iter().any(|arg| arg == "--qualities");
     // With --relationships: open the first relationship's history or actions menu.
     let history = args.iter().any(|arg| arg == "--history");
     let actions = args.iter().any(|arg| arg == "--actions");
@@ -195,6 +197,14 @@ fn main() {
             while !harness.state().contact_editor_ready() && Instant::now() < deadline {
                 harness.run();
                 std::thread::sleep(Duration::from_millis(25));
+            }
+            if funding {
+                harness.get_by_label("Funding & agreements").scroll_to_me();
+                harness.run();
+            }
+            if qualities {
+                harness.get_by_label("Skills & training").scroll_to_me();
+                harness.run();
             }
             if relationships {
                 let deadline = Instant::now() + Duration::from_secs(10);

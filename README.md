@@ -6,19 +6,25 @@ open-source care management platform for disability and aged care providers.
 > **Status: prototype.** The native application shell, contact workspace and server
 > authentication are in place. Contacts, clients and workers are read live from the
 > CareLibre server through a background worker and displayed in virtualised, paged lists.
-> Every contact opens as a column in the main work area, alongside the current page. Columns
-> can be reordered, resized, closed or popped out into a native free-floating window. Edits,
-> custom-field values and linked relationships are saved back to the server.
-> Guided intake wizards persist drafts locally and create onboarding contacts on the server.
-> Rostering is live with a worker/client timeline, recurrence and explainable suitability, and
-> every workspace page can pop out into its own native window. Services, documents and
-> communications are next.
+> Every page and contact opens as its own column, and columns share the window evenly.
+> They can be reordered, resized, closed or popped out into a native free-floating window.
+> Edits, custom-field values and linked relationships are saved back to the server.
+> Worker skills and checks, client support requirements, funding packages, quotes and
+> service agreements are managed directly on the record. Guided intake wizards persist
+> drafts locally and create onboarding contacts on the server. Rostering is live with a
+> worker/client timeline, recurrence and explainable suitability, and every workspace page
+> can pop out into its own native window. Services, documents and communications are next.
 
 <table>
   <tr>
-    <td align="center"><a href="docs/contacts.png"><img src="docs/thumbs/contacts.png" alt="CareLibre contacts workspace"></a><br><sub><b>Contacts</b> — live workload at a glance</sub></td>
-    <td align="center"><a href="docs/contact-editor.png"><img src="docs/thumbs/contact-editor.png" alt="CareLibre contact record and linked relationships"></a><br><sub><b>Records</b> — docked, with linked relationships</sub></td>
+    <td align="center"><a href="docs/contacts.png"><img src="docs/thumbs/contacts.png" alt="CareLibre contacts workspace"></a><br><sub><b>Contacts</b> — live directory with role filters and search</sub></td>
+    <td align="center"><a href="docs/contact-editor.png"><img src="docs/thumbs/contact-editor.png" alt="CareLibre contact record with linked relationships"></a><br><sub><b>Records</b> — docked, with linked relationships</sub></td>
+    <td align="center"><a href="docs/funding.png"><img src="docs/thumbs/funding.png" alt="CareLibre funding packages and service agreements"></a><br><sub><b>Funding</b> — packages, quotes and agreements</sub></td>
+  </tr>
+  <tr>
+    <td align="center"><a href="docs/worker-qualities.png"><img src="docs/thumbs/worker-qualities.png" alt="CareLibre worker skills and compliance checks"></a><br><sub><b>Worker qualities</b> — skills, checks and expiries</sub></td>
     <td align="center"><a href="docs/rostering.png"><img src="docs/thumbs/rostering.png" alt="CareLibre rostering timeline"></a><br><sub><b>Rostering</b> — timeline by worker or client</sub></td>
+    <td align="center"><a href="docs/relationships.png"><img src="docs/thumbs/relationships.png" alt="CareLibre relationship network"></a><br><sub><b>Relationships</b> — two-sided contact and organisation links</sub></td>
   </tr>
 </table>
 
@@ -272,12 +278,16 @@ cargo fmt                  # formatting
 The UI can be rendered without a display, which is handy for design review and CI:
 
 ```sh
-cargo run --example screenshot -- docs/home.png
+cargo run --example screenshot -- docs/contacts.png
 cargo run --example screenshot -- docs/rostering.png rostering
 cargo run --example screenshot -- docs/contacts.png contacts --live \
   --login=you@example.com:your-password
 cargo run --example screenshot -- docs/contact-editor.png contacts --live --contact \
+  --relationships --login=you@example.com:your-password
+cargo run --example screenshot -- docs/funding.png clients --live --contact --funding \
   --login=you@example.com:your-password
+cargo run --example screenshot -- docs/worker-qualities.png workers --live --contact \
+  --qualities --login=you@example.com:your-password
 ```
 
 ### Layout
