@@ -2011,7 +2011,7 @@ impl CareLibreApp {
                         Stroke::new(1.0, theme::border_strong())
                     })
                     .corner_radius(CornerRadius::same(10))
-                    .inner_margin(Margin::ZERO)
+                    .inner_margin(Margin::same(1))
                     .show(&mut column_ui, |ui| {
                         ui.set_min_height(height);
                         let column_page = match &kind {
@@ -2054,6 +2054,12 @@ impl CareLibreApp {
                             ColumnKind::Page(open_page) => {
                                 Frame::new()
                                     .fill(theme::bg())
+                                    .corner_radius(CornerRadius {
+                                        nw: 0,
+                                        ne: 0,
+                                        sw: 9,
+                                        se: 9,
+                                    })
                                     .inner_margin(Margin::same(16))
                                     .show(ui, |ui| {
                                         ui.set_min_height((height - 40.0).max(120.0));
@@ -2088,6 +2094,12 @@ impl CareLibreApp {
                             ColumnKind::Contact(id) => {
                                 Frame::new()
                                         .fill(theme::bg())
+                                        .corner_radius(CornerRadius {
+                                            nw: 0,
+                                            ne: 0,
+                                            sw: 9,
+                                            se: 9,
+                                        })
                                         .inner_margin(Margin::same(12))
                                         .show(ui, |ui| {
                                             ui.set_min_height((height - 40.0).max(120.0));
