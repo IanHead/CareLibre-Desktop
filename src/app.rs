@@ -1994,7 +1994,7 @@ impl CareLibreApp {
                         .max_rect(rect)
                         .layout(Layout::top_down(Align::Min)),
                 );
-                column_ui.set_clip_rect(rect);
+                column_ui.set_clip_rect(rect.expand(1.0));
                 if closing {
                     column_ui.multiply_opacity(1.0 - theme::ease_in_out(close_progress));
                 }
@@ -2005,11 +2005,7 @@ impl CareLibreApp {
                     } else {
                         theme::surface()
                     })
-                    .stroke(if is_dragging {
-                        Stroke::new(2.0, theme::accent())
-                    } else {
-                        Stroke::new(1.0, theme::border_strong())
-                    })
+                    .stroke(Stroke::NONE)
                     .corner_radius(CornerRadius::same(10))
                     .inner_margin(Margin::same(1))
                     .show(&mut column_ui, |ui| {
@@ -2115,6 +2111,17 @@ impl CareLibreApp {
                             }
                         }
                     });
+
+                column_ui.painter().rect_stroke(
+                    rect.shrink(0.5),
+                    CornerRadius::same(10),
+                    if is_dragging {
+                        Stroke::new(2.0, theme::accent())
+                    } else {
+                        Stroke::new(1.0, theme::border_strong())
+                    },
+                    StrokeKind::Inside,
+                );
 
                 new_column_rects.push((
                     index,
