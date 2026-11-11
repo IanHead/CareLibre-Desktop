@@ -206,50 +206,17 @@ fn drag(ui: &mut Ui, ctx: &egui::Context, rect: Rect) {
         Sense::click_and_drag(),
     );
     if response.drag_started() {
-        let maximized = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
-        if maximized {
-            // Let the OS restore and move a maximized window; custom dragging
-            // from the maximized state is not reliable across platforms.
-            ctx.send_viewport_cmd(ViewportCommand::StartDrag);
-            ctx.stop_dragging();
-        } else {
-            let start_outer = ctx.input(|i| i.viewport().outer_rect.map(|r| r.min));
-            let start_pointer = ctx.input(|i| i.pointer.interact_pos());
-            if let (Some(start_outer), Some(start_pointer)) = (start_outer, start_pointer) {
-                ctx.data_mut(|data| {
-                    data.insert_temp(window_drag_id(), (start_outer, start_pointer));
-                });
-            } else {
-                ctx.send_viewport_cmd(ViewportCommand::StartDrag);
-                ctx.stop_dragging();
-            }
-        }
-    }
-
-    if response.dragged()
-        && let Some((start_outer, start_pointer)) =
-            ctx.data(|data| data.get_temp::<(egui::Pos2, egui::Pos2)>(window_drag_id()))
-        && let Some(pointer) = ctx.input(|i| i.pointer.interact_pos())
-    {
-        let new_pos = start_outer + (pointer - start_pointer);
-        ctx.send_viewport_cmd(ViewportCommand::OuterPosition(new_pos));
-        ctx.set_cursor_icon(CursorIcon::Grabbing);
-    }
-
-    if response.drag_stopped() {
-        ctx.data_mut(|data| {
-            data.remove::<(egui::Pos2, egui::Pos2)>(window_drag_id());
-        });
+        // Hand the move to the window manager. The OS move loop is smoother
+        // than per-frame position updates; egui's drag state is cleared so it
+        // does not keep capturing the pointer after the hand-off.
+        ctx.send_viewport_cmd(ViewportCommand::StartDrag);
+        ctx.stop_dragging();
     }
 
     if response.double_clicked() {
         let maximized = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
         ctx.send_viewport_cmd(ViewportCommand::Maximized(!maximized));
     }
-}
-
-fn window_drag_id() -> Id {
-    Id::unique("carelibre-window-drag")
 }
 
 /// Invisible resize handles around the viewport content.
