@@ -199,6 +199,59 @@ fn pages_are_limited_to_the_window() {
 }
 
 #[test]
+fn close_all_button_animates_and_makes_room() {
+    let mut app = CareLibreApp::new();
+    app.set_page(Page::Contacts);
+    app.set_theme_mode(ThemeMode::Dark);
+    let mut harness = Harness::builder()
+        .with_size(egui::vec2(1280.0, 800.0))
+        .with_max_steps(40)
+        .with_step_dt(1.0 / 60.0)
+        .with_context_setup(|ctx| theme::apply(ctx, ThemeMode::Dark))
+        .build_ui_state(|ui, app| app.show(ui), app);
+    harness.run();
+
+    assert_eq!(
+        harness.query_all_by_label("Close all").count(),
+        0,
+        "Close all should be hidden with a single column"
+    );
+    let search_single = harness.get_by_role(egui::Role::TextInput).rect();
+
+    harness
+        .get_by_role_and_label(egui::Role::Button, "Rostering")
+        .click();
+    harness.run_steps(4);
+
+    assert_eq!(
+        harness.query_all_by_label("Close all").count(),
+        1,
+        "Close all should appear when a second column opens"
+    );
+    let search_partial = harness.get_by_role(egui::Role::TextInput).rect();
+    assert!(
+        search_partial.right() < search_single.right() - 2.0,
+        "expected the search box to start moving left as the button appears"
+    );
+
+    harness.run();
+    let search_after = harness.get_by_role(egui::Role::TextInput).rect();
+    assert!(
+        search_after.right() < search_partial.right() - 2.0,
+        "expected the search box to keep moving left as the button grows"
+    );
+    assert!(
+        search_single.right() - search_after.right() > 60.0,
+        "expected the finished button to make room for its full width"
+    );
+    assert_eq!(
+        harness.query_all_by_label("Close all").count(),
+        1,
+        "Close all should stay visible while several columns are open"
+    );
+}
+
+#[test]
 fn multiple_contact_columns_render_without_id_clashes() {
     let mut app = CareLibreApp::new();
     app.open_contact("first-contact");

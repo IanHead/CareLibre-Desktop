@@ -49,6 +49,7 @@ const CENTERED_MENU_HEIGHT: f32 = 710.0;
 const COLUMN_ANIM_DURATION: f64 = 0.32;
 const SIDEBAR_ANIM_DURATION: f64 = 0.36;
 const PAGE_ANIM_DURATION: f64 = 0.24;
+const TOP_BAR_ANIM_DURATION: f64 = 0.22;
 const NOTICE_ENTER_DURATION: f32 = 0.24;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -112,6 +113,12 @@ pub struct CareLibreApp {
     sidebar_anim_from: f32,
     sidebar_anim_start: f64,
     sidebar_initialised: bool,
+    /// 0..1 presence of the top bar's **Close all** button.
+    close_all_anim: f32,
+    close_all_anim_from: f32,
+    close_all_target: f32,
+    close_all_anim_start: f64,
+    close_all_initialised: bool,
     relationship_request_seq: u64,
     relationship_list_requests: BTreeMap<u64, String>,
     relationship_create_requests: BTreeMap<u64, Option<String>>,
@@ -234,6 +241,11 @@ impl CareLibreApp {
             sidebar_anim_from: 0.0,
             sidebar_anim_start: 0.0,
             sidebar_initialised: false,
+            close_all_anim: 0.0,
+            close_all_anim_from: 0.0,
+            close_all_target: 0.0,
+            close_all_anim_start: 0.0,
+            close_all_initialised: false,
             // Keep relationship request ids in a separate range so they can
             // never collide with intake creation request ids.
             relationship_request_seq: 1 << 32,
@@ -4802,9 +4814,63 @@ impl CareLibreApp {
                             self.open_intake();
                         }
 
-                        if self.visible_column_count() > 1 {
-                            ui.add_space(6.0);
-                            if ui.add(theme::secondary_button("Close all")).clicked() {
+                        let close_all_target = if self.visible_column_count() > 1 {
+                            1.0
+                        } else {
+                            0.0
+                        };
+                        let close_all_now = ui.ctx().input(|input| input.time);
+                        if !self.close_all_initialised {
+                            self.close_all_anim = close_all_target;
+                            self.close_all_anim_from = close_all_target;
+                            self.close_all_target = close_all_target;
+                            self.close_all_anim_start = close_all_now;
+                            self.close_all_initialised = true;
+                        } else if (self.close_all_target - close_all_target).abs() > 0.001 {
+                            self.close_all_anim_from = self.close_all_anim;
+                            self.close_all_target = close_all_target;
+                            self.close_all_anim_start = close_all_now;
+                        }
+                        let close_all_progress =
+                            ((close_all_now - self.close_all_anim_start) / TOP_BAR_ANIM_DURATION)
+                                .clamp(0.0, 1.0) as f32;
+                        if close_all_progress < 1.0 {
+                            ui.ctx().request_repaint();
+                        }
+                        let close_all_eased = theme::ease_in_out(close_all_progress);
+                        self.close_all_anim = self.close_all_anim_from
+                            + (self.close_all_target - self.close_all_anim_from) * close_all_eased;
+                        let close_all = self.close_all_anim.clamp(0.0, 1.0);
+
+                        if close_all > 0.001 {
+                            ui.add_space(6.0 * close_all);
+
+                            let label = "Close all";
+                            let text_width = ui
+                                .painter()
+                                .layout_no_wrap(
+                                    label.to_owned(),
+                                    theme::strong_font(13.0),
+                                    theme::text(),
+                                )
+                                .size()
+                                .x;
+                            let button_width = text_width + 24.0;
+                            let (region, _) = ui.allocate_exact_size(
+                                vec2(button_width * close_all, 34.0),
+                                Sense::hover(),
+                            );
+                            let mut close_all_ui = ui.new_child(
+                                egui::UiBuilder::new()
+                                    .id_salt("close-all-button")
+                                    .max_rect(region)
+                                    .layout(Layout::right_to_left(Align::Center)),
+                            );
+                            close_all_ui.set_clip_rect(region);
+                            close_all_ui.multiply_opacity(close_all);
+                            let response = close_all_ui
+                                .add_sized([button_width, 34.0], theme::secondary_button(label));
+                            if response.clicked() {
                                 self.close_all_columns(self.frame_time);
                             }
                         }
