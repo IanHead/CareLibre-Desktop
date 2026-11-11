@@ -33,7 +33,6 @@ fn main() {
     let page = match args.get(1).map(String::as_str) {
         Some("contacts" | "clients" | "workers") => Page::Contacts,
         Some("rostering") => Page::Rostering,
-        Some("relationships") => Page::Relationships,
         Some("services") => Page::Services,
         Some("documents") => Page::Documents,
         Some("communications") => Page::Communications,
@@ -78,6 +77,25 @@ fn main() {
 
     let server = args.iter().find_map(|arg| arg.strip_prefix("--server="));
     let search = args.iter().find_map(|arg| arg.strip_prefix("--search="));
+    let also: Vec<Page> = args
+        .iter()
+        .find_map(|arg| arg.strip_prefix("--also="))
+        .map(|list| {
+            list.split(',')
+                .filter_map(|name| match name.trim() {
+                    "contacts" | "clients" | "workers" => Some(Page::Contacts),
+                    "rostering" => Some(Page::Rostering),
+                    "services" => Some(Page::Services),
+                    "documents" => Some(Page::Documents),
+                    "communications" => Some(Page::Communications),
+                    "reports" => Some(Page::Reports),
+                    "settings" => Some(Page::Settings),
+                    "intake" => Some(Page::Intake),
+                    _ => None,
+                })
+                .collect()
+        })
+        .unwrap_or_default();
 
     let mut app = CareLibreApp::new();
     if let Some(server) = server {
@@ -85,6 +103,9 @@ fn main() {
     }
     if !empty {
         app.set_page(page);
+        for extra in also {
+            app.open_page_column(extra);
+        }
     }
     if let Some(filter) = contact_filter {
         app.set_contact_filter(filter);
@@ -157,14 +178,6 @@ fn main() {
             }
             let deadline = Instant::now() + Duration::from_secs(5);
             while harness.state().contacts_loaded() == 0 && Instant::now() < deadline {
-                harness.run();
-                std::thread::sleep(Duration::from_millis(25));
-            }
-        }
-
-        if page == Page::Relationships {
-            let deadline = Instant::now() + Duration::from_secs(15);
-            while !harness.state().relationship_graph_ready() && Instant::now() < deadline {
                 harness.run();
                 std::thread::sleep(Duration::from_millis(25));
             }

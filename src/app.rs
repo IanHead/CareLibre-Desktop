@@ -28,7 +28,6 @@ use crate::{
         contact_editor::{ContactEditorAction, ContactWindowState, NewRelationshipContact},
         contacts::{ContactsAction, ContactsState, LOAD_MORE_SIZE, PAGE_SIZE},
         intake::{IntakeAction, IntakeState, IntakeView},
-        relationships::{RelationshipsAction, RelationshipsForm},
         rostering::{RosteringAction, RosteringState},
         settings::SettingsForm,
     },
@@ -41,6 +40,7 @@ use crate::{
 
 const MAX_RECORD_COLUMNS: usize = 5;
 const COLUMN_MIN_WIDTH: f32 = 240.0;
+const COLUMN_STRIP_PADDING: f32 = 10.0;
 const SIDEBAR_WIDTH: f32 = 232.0;
 const CENTERED_MENU_WIDTH: f32 = 440.0;
 const CENTERED_MENU_HEIGHT: f32 = 710.0;
@@ -135,7 +135,6 @@ pub struct CareLibreApp {
     party_catalog_request: Option<u64>,
     relationship_edges: Vec<ApiRelationship>,
     relationship_graph_loaded: bool,
-    relationship_form: RelationshipsForm,
     rostering: RosteringState,
     rostering_request_seq: u64,
     rostering_requests: BTreeMap<u64, RosterRequest>,
@@ -252,7 +251,6 @@ impl CareLibreApp {
             party_catalog_request: None,
             relationship_edges: Vec::new(),
             relationship_graph_loaded: false,
-            relationship_form: RelationshipsForm::default(),
             rostering: RosteringState::default(),
             // Rostering request ids live in their own range.
             rostering_request_seq: 1 << 40,
@@ -438,6 +436,11 @@ impl CareLibreApp {
             },
         );
         self.reset_column_weights();
+    }
+
+    /// Open an additional page column. Used by previews and tests.
+    pub fn open_page_column(&mut self, page: Page) {
+        self.open_page(page);
     }
 
     /// Give every open column the same share of the window. Called whenever a
@@ -631,7 +634,6 @@ impl CareLibreApp {
 
         let mut contacts_action: Option<ContactsAction> = None;
         let mut intake_action: Option<IntakeAction> = None;
-        let mut relationship_action: Option<RelationshipsAction> = None;
         let mut rostering_action: Option<RosteringAction> = None;
         let action = egui::CentralPanel::default()
             .frame(Frame::new().fill(theme::bg()).inner_margin(Margin::ZERO))
@@ -640,7 +642,6 @@ impl CareLibreApp {
                     ui,
                     &mut contacts_action,
                     &mut intake_action,
-                    &mut relationship_action,
                     &mut rostering_action,
                 )
             })
@@ -651,9 +652,6 @@ impl CareLibreApp {
         }
         if let Some(intake_action) = intake_action {
             self.handle_intake_action(ui.ctx(), intake_action);
-        }
-        if let Some(relationship_action) = relationship_action {
-            self.handle_relationships_action(ui.ctx(), relationship_action);
         }
         if let Some(rostering_action) = rostering_action {
             self.handle_rostering_action(ui.ctx(), rostering_action);
@@ -693,12 +691,8 @@ impl CareLibreApp {
         page: Page,
         contacts_action: &mut Option<ContactsAction>,
         intake_action: &mut Option<IntakeAction>,
-        relationship_action: &mut Option<RelationshipsAction>,
         rostering_action: &mut Option<RosteringAction>,
     ) -> Option<Action> {
-        if page == Page::Relationships {
-            self.ensure_party_catalog();
-        }
         match page {
             Page::Settings => pages::settings::show(ui, &mut self.settings, &self.server),
             Page::Intake => {
@@ -739,21 +733,6 @@ impl CareLibreApp {
                 let catalog = self.lookup_parties();
                 if let Some(action) = pages::rostering::show(ui, &mut self.rostering, &catalog) {
                     *rostering_action = Some(action);
-                }
-                None
-            }
-            Page::Relationships => {
-                let loading =
-                    self.party_catalog_request.is_some() || !self.relationship_graph_loaded;
-                if let Some(action) = pages::relationships::show(
-                    ui,
-                    &mut self.relationship_form,
-                    &self.party_catalog,
-                    &self.relationship_edges,
-                    &self.role_options,
-                    loading,
-                ) {
-                    *relationship_action = Some(action);
                 }
                 None
             }
@@ -1716,7 +1695,6 @@ impl CareLibreApp {
             let mut close = false;
             let mut contacts_action: Option<ContactsAction> = None;
             let mut intake_action: Option<IntakeAction> = None;
-            let mut relationship_action: Option<RelationshipsAction> = None;
             let mut rostering_action: Option<RosteringAction> = None;
             let mut page_action: Option<Action> = None;
 
@@ -1777,7 +1755,6 @@ impl CareLibreApp {
                             page,
                             &mut contacts_action,
                             &mut intake_action,
-                            &mut relationship_action,
                             &mut rostering_action,
                         );
                     });
@@ -1797,9 +1774,6 @@ impl CareLibreApp {
             }
             if let Some(action) = intake_action {
                 self.handle_intake_action(ctx, action);
-            }
-            if let Some(action) = relationship_action {
-                self.handle_relationships_action(ctx, action);
             }
             if let Some(action) = rostering_action {
                 self.handle_rostering_action(ctx, action);
@@ -1875,7 +1849,6 @@ impl CareLibreApp {
         ui: &mut Ui,
         contacts_action: &mut Option<ContactsAction>,
         intake_action: &mut Option<IntakeAction>,
-        relationship_action: &mut Option<RelationshipsAction>,
         rostering_action: &mut Option<RosteringAction>,
     ) -> Option<Action> {
         let mut page_action = None;
@@ -1907,13 +1880,13 @@ impl CareLibreApp {
             .any(|index| matches!(self.columns[*index].kind, ColumnKind::Contact(_)));
 
         let viewport_width = ui.available_width();
+        let strip_width = (viewport_width - COLUMN_STRIP_PADDING * 2.0).max(1.0);
         let now = ui.ctx().input(|input| input.time);
-        let max_total_columns = (((viewport_width + 7.0) / (COLUMN_MIN_WIDTH + 7.0)).floor()
-            as usize)
+        let max_total_columns = (((strip_width + 7.0) / (COLUMN_MIN_WIDTH + 7.0)).floor() as usize)
             .clamp(1, MAX_RECORD_COLUMNS + 1);
         self.max_total_columns = max_total_columns;
         let over_limit = self.visible_column_count() > self.max_total_columns;
-        let content_width = self.normalise_column_widths(&visible, viewport_width, now);
+        let content_width = self.normalise_column_widths(&visible, strip_width, now);
         let handle_width = 7.0;
 
         if has_contact_columns || visible.len() > 1 || over_limit {
@@ -1981,7 +1954,7 @@ impl CareLibreApp {
         let mut rendered_columns: Vec<(usize, f32, f32)> = Vec::new();
 
         // Target positions in the preview order, based on animated widths.
-        let mut target_x = 0.0;
+        let mut target_x = COLUMN_STRIP_PADDING;
         let mut target_positions: std::collections::HashMap<usize, f32> =
             std::collections::HashMap::new();
         for index in &order {
@@ -2009,7 +1982,7 @@ impl CareLibreApp {
 
         {
             let (strip_rect, _) =
-                ui.allocate_exact_size(vec2(content_width, height), Sense::hover());
+                ui.allocate_exact_size(vec2(viewport_width, height), Sense::hover());
 
             for index in order.iter().copied() {
                 let (kind, display_width, target_x, closing, close_progress) = {
@@ -2132,7 +2105,6 @@ impl CareLibreApp {
                                                 *open_page,
                                                 contacts_action,
                                                 intake_action,
-                                                relationship_action,
                                                 rostering_action,
                                             ) {
                                                 page_action = Some(action);
@@ -2182,7 +2154,7 @@ impl CareLibreApp {
                         self.columns[index].display_width.max(1.0),
                     ));
                 let boundary = left_x + left_width;
-                if boundary >= content_width - 4.0 {
+                if boundary >= COLUMN_STRIP_PADDING + content_width - 4.0 {
                     continue;
                 }
                 let hit_width = 10.0;
@@ -2402,10 +2374,7 @@ impl CareLibreApp {
                         .max_rect(title_rect)
                         .layout(Layout::left_to_right(Align::Center)),
                 );
-                title_ui.add(
-                    egui::Label::new(RichText::new("::").color(theme::faint()).size(12.0))
-                        .selectable(false),
-                );
+                title_ui.add_space(4.0);
                 title_ui.add(
                     egui::Label::new(
                         RichText::new(format!("{icon}  {title}"))
@@ -3005,34 +2974,6 @@ impl CareLibreApp {
         }
     }
 
-    fn handle_relationships_action(&mut self, ctx: &egui::Context, action: RelationshipsAction) {
-        match action {
-            RelationshipsAction::Create {
-                from_kind,
-                from_id,
-                from_role,
-                to_kind,
-                to_id,
-                to_role,
-                notes,
-            } => {
-                self.create_relationship_request(
-                    from_kind, from_id, from_role, to_kind, to_id, to_role, notes, None, ctx,
-                );
-            }
-            RelationshipsAction::OpenContact(id) => self.open_contact(&id),
-            RelationshipsAction::Refresh => {
-                self.party_catalog.clear();
-                self.relationship_edges.clear();
-                self.relationship_graph_loaded = false;
-                self.party_catalog_request = None;
-                self.relationship_form.error = None;
-                self.ensure_party_catalog();
-                self.notify(ctx, "Refreshing the relationship network…");
-            }
-        }
-    }
-
     #[allow(clippy::too_many_arguments)]
     fn create_relationship(
         &mut self,
@@ -3078,13 +3019,10 @@ impl CareLibreApp {
         ctx: &egui::Context,
     ) {
         let Some(token) = self.access_token() else {
-            if let Some(window_id) = &window_id {
-                if let Some(window) = self.contact_windows.get_mut(window_id) {
-                    window.relationship_failed("Sign in to link relationships.".to_owned());
-                }
-            } else {
-                self.relationship_form.error = Some("Sign in to link relationships.".to_owned());
-                self.relationship_form.pending = false;
+            if let Some(window_id) = &window_id
+                && let Some(window) = self.contact_windows.get_mut(window_id)
+            {
+                window.relationship_failed("Sign in to link relationships.".to_owned());
             }
             return;
         };
@@ -3111,16 +3049,11 @@ impl CareLibreApp {
             }
             None => {
                 self.relationship_create_requests.remove(&request);
-                if let Some(window_id) = &window_id {
-                    if let Some(window) = self.contact_windows.get_mut(window_id) {
-                        window.relationship_failed(
-                            "The server connection is not available.".to_owned(),
-                        );
-                    }
-                } else {
-                    self.relationship_form.error =
-                        Some("The server connection is not available.".to_owned());
-                    self.relationship_form.pending = false;
+                if let Some(window_id) = &window_id
+                    && let Some(window) = self.contact_windows.get_mut(window_id)
+                {
+                    window
+                        .relationship_failed("The server connection is not available.".to_owned());
                 }
             }
         }
@@ -4118,12 +4051,8 @@ impl CareLibreApp {
                 self.party_catalog = graph.nodes;
                 self.relationship_edges = graph.edges;
                 self.relationship_graph_loaded = true;
-                self.relationship_form.error = None;
-                self.relationship_form.pending = false;
             }
             Err(error) => {
-                self.relationship_form.error = Some(error.clone());
-                self.relationship_form.pending = false;
                 self.notify(
                     ctx,
                     format!("Could not load the relationship directory: {error}"),
@@ -4289,19 +4218,13 @@ impl CareLibreApp {
                         window.relationship_linked(edge.clone());
                     }
                 }
-                self.relationship_form.pending = false;
-                self.relationship_form.error = None;
-                self.relationship_form.notes.clear();
                 self.notify(ctx, "Relationship linked.");
             }
             Err(error) => {
-                if let Some(window_id) = &window_id {
-                    if let Some(window) = self.contact_windows.get_mut(window_id) {
-                        window.relationship_failed(error);
-                    }
-                } else {
-                    self.relationship_form.error = Some(error);
-                    self.relationship_form.pending = false;
+                if let Some(window_id) = &window_id
+                    && let Some(window) = self.contact_windows.get_mut(window_id)
+                {
+                    window.relationship_failed(error);
                 }
             }
         }
@@ -4970,7 +4893,7 @@ impl CareLibreApp {
                 {
                     self.open_intake();
                 }
-                for page in [Page::Contacts, Page::Rostering, Page::Relationships] {
+                for page in [Page::Contacts, Page::Rostering] {
                     if nav_item(&mut menu_ui, page, centeredness).clicked() {
                         self.open_page(page);
                     }

@@ -27,7 +27,7 @@ open-source care management platform for disability and aged care providers.
   <tr>
     <td align="center"><a href="docs/worker-qualities.png"><img src="docs/thumbs/worker-qualities.png" alt="CareLibre worker skills and compliance checks"></a><br><sub><b>Worker qualities</b> — skills, checks and expiries</sub></td>
     <td align="center"><a href="docs/rostering.png"><img src="docs/thumbs/rostering.png" alt="CareLibre rostering timeline"></a><br><sub><b>Rostering</b> — timeline by worker or client</sub></td>
-    <td align="center"><a href="docs/relationships.png"><img src="docs/thumbs/relationships.png" alt="CareLibre relationship network"></a><br><sub><b>Relationships</b> — two-sided contact and organisation links</sub></td>
+    <td align="center"><a href="docs/intake.png"><img src="docs/thumbs/intake.png" alt="CareLibre guided intake"></a><br><sub><b>Intake</b> — guided onboarding for clients, workers and contacts</sub></td>
   </tr>
 </table>
 
@@ -197,16 +197,15 @@ server stores a role for each endpoint (`person_supported` / `emergency_contact`
 search the whole graph, so both contacts and organisations are selectable and links can be
 removed without touching either record.
 
-The **Relationships** workspace page manages the network directly. Choose any two records —
-contact or organisation — give each side a role, and link them. It lists and filters every
-link in the tenant and supports deleting them.
+Relationships are managed from inside contact records. If the network needs to be
+manipulated manually, that capability lives in the server's Admin UI.
 
 ## Rostering and worker suitability
 
 The **Rostering** workspace draws the week as a **timeline grouped by worker or client**,
-with a resource column fixed on the left while the hours scroll. Filter by week, status,
-site, division, service and cost centre. Select a shift block for its assignments and
-suitability.
+with a resource column on the left and the week scaled to the available column width.
+Filter by week, status, site, division, service and cost centre. Select a shift block for
+its assignments and suitability.
 
 Create or edit shifts with their kind, local start/end time, site, location and status.
 New shifts can repeat **daily, weekly or fortnightly** (a count or an until date); the client
@@ -312,7 +311,7 @@ cargo run --example screenshot -- docs/worker-qualities.png workers --live --con
 | `src/perf.rs` | F12 performance HUD |
 | `src/theme.rs` | Palette, typography and shared card/pill widgets |
 | `src/rostering.rs` | Rostering API models and local-time conversion |
-| `src/pages/` | One module per area; `home.rs` dashboard, `contacts.rs` virtualised list, `contact_editor.rs` record editor, `relationships.rs` network page, `rostering.rs` shifts and suitability, `intake/` wizards, `settings.rs` connection/account UI |
+| `src/pages/` | One module per area: `contacts.rs` virtualised list, `contact_editor.rs` record editor, `rostering.rs` shifts and suitability, `intake/` wizards, `settings.rs` connection/account UI |
 | `assets/fonts/` | Bundled Inter font (SIL OFL 1.1) and licence |
 | `examples/screenshot.rs` | Headless renderer used for snapshots |
 | `tests/ui.rs` | Headless rendering and sidebar navigation tests |
@@ -331,7 +330,7 @@ The desktop client tracks the wider CareLibre requirements:
 - [x] Guided intake wizards that create server contacts
 - [x] Docked multi-record editor with drag-reorderable tabs and native pop-out windows
 - [x] Two-sided relationship graph with contact and organisation endpoints
-- [x] Relationships workspace page plus inline contact creation from a contact record
+- [x] Inline relationship management from a contact record
 - [x] Animated page, tab, navigation and notification transitions
 - [x] Client-side title bar by default on new installs, with optional native decorations
 - [x] Light, Dark and Follow System appearance with live desktop detection

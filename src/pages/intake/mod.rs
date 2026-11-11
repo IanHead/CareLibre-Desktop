@@ -326,6 +326,7 @@ fn picker(ui: &mut Ui, state: &mut IntakeState, store_ready: bool) -> Option<Int
     } else {
         for draft in &state.drafts {
             let total = fields::steps(draft.kind).len();
+            let narrow = ui.available_width() < 520.0;
             let response = Frame::new()
                 .fill(theme::surface())
                 .stroke(Stroke::new(1.0, theme::border()))
@@ -333,55 +334,24 @@ fn picker(ui: &mut Ui, state: &mut IntakeState, store_ready: bool) -> Option<Int
                 .inner_margin(Margin::symmetric(14, 10))
                 .show(ui, |ui| {
                     ui.set_width(ui.available_width());
-                    ui.horizontal(|ui| {
-                        let (rect, _) = ui.allocate_exact_size(vec2(34.0, 34.0), Sense::hover());
-                        ui.painter().rect_filled(
-                            rect,
-                            CornerRadius::same(9),
-                            theme::surface_raised(),
-                        );
-                        ui.painter().text(
-                            rect.center(),
-                            Align2::CENTER_CENTER,
-                            draft.kind.icon(),
-                            FontId::proportional(15.0),
-                            theme::text(),
-                        );
-                        ui.add_space(2.0);
-                        ui.vertical(|ui| {
-                            ui.label(RichText::new(&draft.name).font(theme::strong_font(13.0)));
-                            ui.horizontal(|ui| {
-                                theme::pill(ui, draft.kind.short_label(), kind_colour(draft.kind));
-                                ui.label(
-                                    RichText::new(format!(
-                                        "Step {} of {} · {}",
-                                        draft.current_step + 1,
-                                        total,
-                                        relative_time(draft.updated_at)
-                                    ))
-                                    .color(theme::faint())
-                                    .size(10.5),
-                                );
+                    if narrow {
+                        ui.horizontal(|ui| {
+                            draft_icon(ui, draft.kind);
+                            ui.add_space(2.0);
+                            draft_summary(ui, draft, total);
+                        });
+                        ui.add_space(4.0);
+                        ui.horizontal_wrapped(|ui| draft_actions(ui, draft, &mut action));
+                    } else {
+                        ui.horizontal(|ui| {
+                            draft_icon(ui, draft.kind);
+                            ui.add_space(2.0);
+                            draft_summary(ui, draft, total);
+                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                draft_actions(ui, draft, &mut action);
                             });
                         });
-
-                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            if ui.add(theme::primary_button("Resume")).clicked() {
-                                action = Some(IntakeAction::Resume(draft.id.clone()));
-                            }
-                            if ui
-                                .add(
-                                    egui::Button::new(
-                                        RichText::new("Discard").color(theme::danger()).size(11.0),
-                                    )
-                                    .frame(false),
-                                )
-                                .clicked()
-                            {
-                                action = Some(IntakeAction::Discard(draft.id.clone()));
-                            }
-                        });
-                    });
+                    }
                 });
             let _ = response;
             ui.add_space(6.0);
@@ -544,30 +514,37 @@ fn wizard(
     let mut action = None;
 
     // Header
-    ui.horizontal(|ui| {
-        if ui
-            .add(
-                egui::Button::new(RichText::new("←  Intake").color(theme::muted()).size(11.5))
-                    .frame(false),
-            )
-            .clicked()
-        {
-            action = Some(IntakeAction::BackToPicker);
-        }
-        ui.add_space(6.0);
-        ui.label(RichText::new(draft.display_name()).font(theme::strong_font(22.0)));
-        theme::pill(ui, draft.kind.short_label(), kind_colour(draft.kind));
-        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            let (text, colour) = if state.saving {
-                ("Saving…".to_owned(), theme::warning())
-            } else if state.dirty {
-                ("Unsaved changes".to_owned(), theme::warning())
-            } else {
-                ("Saved locally".to_owned(), theme::success())
-            };
-            ui.label(RichText::new(text).color(colour).size(10.5));
+    let narrow = ui.available_width() < 520.0;
+    if narrow {
+        ui.horizontal(|ui| {
+            if back_to_intake(ui) {
+                action = Some(IntakeAction::BackToPicker);
+            }
+            ui.add_space(6.0);
+            ui.add(
+                egui::Label::new(
+                    RichText::new(draft.display_name()).font(theme::strong_font(22.0)),
+                )
+                .truncate(),
+            );
         });
-    });
+        ui.horizontal_wrapped(|ui| {
+            theme::pill(ui, draft.kind.short_label(), kind_colour(draft.kind));
+            save_status(ui, state);
+        });
+    } else {
+        ui.horizontal(|ui| {
+            if back_to_intake(ui) {
+                action = Some(IntakeAction::BackToPicker);
+            }
+            ui.add_space(6.0);
+            ui.label(RichText::new(draft.display_name()).font(theme::strong_font(22.0)));
+            theme::pill(ui, draft.kind.short_label(), kind_colour(draft.kind));
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                save_status(ui, state);
+            });
+        });
+    }
 
     ui.add_space(10.0);
     progress(ui, steps, step_index);
@@ -1543,7 +1520,87 @@ fn completed(ui: &mut Ui, state: &mut IntakeState) -> Option<IntakeAction> {
 
 // Shared -------------------------------------------------------------------
 
+fn draft_icon(ui: &mut Ui, kind: IntakeKind) {
+    let (rect, _) = ui.allocate_exact_size(vec2(34.0, 34.0), Sense::hover());
+    ui.painter()
+        .rect_filled(rect, CornerRadius::same(9), theme::surface_raised());
+    ui.painter().text(
+        rect.center(),
+        Align2::CENTER_CENTER,
+        kind.icon(),
+        FontId::proportional(15.0),
+        theme::text(),
+    );
+}
+
+fn draft_summary(ui: &mut Ui, draft: &IntakeSummary, total: usize) {
+    ui.vertical(|ui| {
+        ui.label(RichText::new(&draft.name).font(theme::strong_font(13.0)));
+        ui.horizontal_wrapped(|ui| {
+            theme::pill(ui, draft.kind.short_label(), kind_colour(draft.kind));
+            ui.label(
+                RichText::new(format!(
+                    "Step {} of {} · {}",
+                    draft.current_step + 1,
+                    total,
+                    relative_time(draft.updated_at)
+                ))
+                .color(theme::faint())
+                .size(10.5),
+            );
+        });
+    });
+}
+
+fn draft_actions(ui: &mut Ui, draft: &IntakeSummary, action: &mut Option<IntakeAction>) {
+    if ui.add(theme::primary_button("Resume")).clicked() {
+        *action = Some(IntakeAction::Resume(draft.id.clone()));
+    }
+    if ui
+        .add(
+            egui::Button::new(RichText::new("Discard").color(theme::danger()).size(11.0))
+                .frame(false),
+        )
+        .clicked()
+    {
+        *action = Some(IntakeAction::Discard(draft.id.clone()));
+    }
+}
+
+fn back_to_intake(ui: &mut Ui) -> bool {
+    ui.add(
+        egui::Button::new(RichText::new("←  Intake").color(theme::muted()).size(11.5)).frame(false),
+    )
+    .clicked()
+}
+
+fn save_status(ui: &mut Ui, state: &IntakeState) {
+    let (text, colour) = if state.saving {
+        ("Saving…".to_owned(), theme::warning())
+    } else if state.dirty {
+        ("Unsaved changes".to_owned(), theme::warning())
+    } else {
+        ("Saved locally".to_owned(), theme::success())
+    };
+    ui.label(RichText::new(text).color(colour).size(10.5));
+}
+
 fn header(ui: &mut Ui, title: &str, subtitle: &str) {
+    if ui.available_width() < 480.0 {
+        header_title(ui, title, subtitle);
+        ui.add_space(4.0);
+        theme::pill(ui, "WIZARDS", theme::accent());
+    } else {
+        ui.horizontal(|ui| {
+            header_title(ui, title, subtitle);
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                theme::pill(ui, "WIZARDS", theme::accent());
+            });
+        });
+    }
+}
+
+fn header_title(ui: &mut Ui, title: &str, subtitle: &str) {
     ui.horizontal(|ui| {
         let (rect, _) = ui.allocate_exact_size(vec2(52.0, 52.0), Sense::hover());
         ui.painter()
@@ -1559,9 +1616,6 @@ fn header(ui: &mut Ui, title: &str, subtitle: &str) {
         ui.vertical(|ui| {
             ui.label(RichText::new(title).font(theme::strong_font(26.0)));
             ui.label(RichText::new(subtitle).color(theme::muted()).size(13.0));
-        });
-        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            theme::pill(ui, "WIZARDS", theme::accent());
         });
     });
 }

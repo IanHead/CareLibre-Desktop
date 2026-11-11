@@ -21,7 +21,6 @@ fn every_page_renders() {
     for page in [
         Page::Contacts,
         Page::Rostering,
-        Page::Relationships,
         Page::Services,
         Page::Documents,
         Page::Communications,
@@ -183,7 +182,7 @@ fn pages_are_limited_to_the_window() {
     let mut harness = harness(CareLibreApp::new());
     harness.run();
 
-    for page in ["Contacts", "Rostering", "Relationships", "Services & rates"] {
+    for page in ["Contacts", "Rostering", "Services & rates", "Documents"] {
         harness
             .get_by_role_and_label(egui::Role::Button, page)
             .click();
@@ -192,7 +191,7 @@ fn pages_are_limited_to_the_window() {
     assert_eq!(harness.get_all_by_label("Pop out page").count(), 4);
 
     harness
-        .get_by_role_and_label(egui::Role::Button, "Documents")
+        .get_by_role_and_label(egui::Role::Button, "Communications")
         .click();
     harness.run();
 

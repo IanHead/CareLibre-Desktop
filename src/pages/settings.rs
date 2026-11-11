@@ -195,6 +195,21 @@ fn remember_me(ui: &mut Ui, form: &mut SettingsForm, action: &mut Option<Action>
 }
 
 fn header(ui: &mut Ui, server: &ServerState) {
+    if ui.available_width() < 560.0 {
+        header_title(ui);
+        ui.add_space(4.0);
+        connection_pill(ui, server);
+    } else {
+        ui.horizontal(|ui| {
+            header_title(ui);
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                connection_pill(ui, server);
+            });
+        });
+    }
+}
+
+fn header_title(ui: &mut Ui) {
     ui.horizontal(|ui| {
         let (rect, _) = ui.allocate_exact_size(vec2(52.0, 52.0), Sense::hover());
         ui.painter()
@@ -216,12 +231,12 @@ fn header(ui: &mut Ui, server: &ServerState) {
                     .size(13.0),
             );
         });
-
-        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            let (label, colour) = theme::connection_style(&server.connection);
-            theme::pill(ui, &label.to_uppercase(), colour);
-        });
     });
+}
+
+fn connection_pill(ui: &mut Ui, server: &ServerState) {
+    let (label, colour) = theme::connection_style(&server.connection);
+    theme::pill(ui, &label.to_uppercase(), colour);
 }
 
 fn server_card(

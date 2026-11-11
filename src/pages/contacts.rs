@@ -139,24 +139,32 @@ pub fn show(
 }
 
 fn header(ui: &mut Ui, state: &ContactsState) {
-    ui.horizontal(|ui| {
-        ui.vertical(|ui| {
-            ui.horizontal(|ui| {
-                ui.label(RichText::new("Contacts").font(theme::strong_font(26.0)));
-                theme::pill(ui, &format_count(state.total), theme::accent());
+    if ui.available_width() < 460.0 {
+        header_title(ui, state);
+        theme::pill(ui, "SERVER", theme::accent());
+    } else {
+        ui.horizontal(|ui| {
+            header_title(ui, state);
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                theme::pill(ui, "SERVER", theme::accent());
             });
-            ui.label(
-                RichText::new(
-                    "Live contact data from the CareLibre server, fetched by a background worker.",
-                )
-                .color(theme::muted())
-                .size(12.5),
-            );
         });
+    }
+}
 
-        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            theme::pill(ui, "SERVER", theme::accent());
+fn header_title(ui: &mut Ui, state: &ContactsState) {
+    ui.vertical(|ui| {
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("Contacts").font(theme::strong_font(26.0)));
+            theme::pill(ui, &format_count(state.total), theme::accent());
         });
+        ui.label(
+            RichText::new(
+                "Live contact data from the CareLibre server, fetched by a background worker.",
+            )
+            .color(theme::muted())
+            .size(12.5),
+        );
     });
 }
 
@@ -164,41 +172,68 @@ fn header(ui: &mut Ui, state: &ContactsState) {
 /// dual-role contacts count as both clients and workers.
 fn filter_chips(ui: &mut Ui, state: &mut ContactsState) -> Option<ContactsAction> {
     let mut action = None;
-    ui.horizontal_wrapped(|ui| {
+    let narrow = ui.available_width() < 420.0;
+
+    if narrow {
         ui.label(
             RichText::new("Relationship")
                 .color(theme::faint())
                 .size(10.5),
         );
-        ui.add_space(4.0);
         for filter in ContactFilter::ALL {
-            let selected = state.filter == filter;
-            let response = chip(
-                ui,
-                filter.label(),
-                state.counts.for_filter(filter),
-                filter_colour(filter),
-                selected,
-            );
-            if response.clicked() && !selected {
-                state.filter = filter;
-                state.selected = None;
-                action = Some(ContactsAction::FilterChanged(filter));
+            if let Some(next) = filter_chip(ui, state, filter) {
+                action = Some(next);
             }
+            ui.add_space(2.0);
         }
-        if state.counts.dual > 0 {
-            ui.add_space(6.0);
+    } else {
+        ui.horizontal_wrapped(|ui| {
             ui.label(
-                RichText::new(format!(
-                    "{} dual-role contacts appear under both Clients and Workers",
-                    format_count(state.counts.dual)
-                ))
-                .color(theme::faint())
-                .size(10.0),
+                RichText::new("Relationship")
+                    .color(theme::faint())
+                    .size(10.5),
             );
-        }
-    });
+            ui.add_space(4.0);
+            for filter in ContactFilter::ALL {
+                if let Some(next) = filter_chip(ui, state, filter) {
+                    action = Some(next);
+                }
+            }
+            if state.counts.dual > 0 {
+                ui.add_space(6.0);
+                ui.label(
+                    RichText::new(format!(
+                        "{} dual-role contacts appear under both Clients and Workers",
+                        format_count(state.counts.dual)
+                    ))
+                    .color(theme::faint())
+                    .size(10.0),
+                );
+            }
+        });
+    }
     action
+}
+
+fn filter_chip(
+    ui: &mut Ui,
+    state: &mut ContactsState,
+    filter: ContactFilter,
+) -> Option<ContactsAction> {
+    let selected = state.filter == filter;
+    let response = chip(
+        ui,
+        filter.label(),
+        state.counts.for_filter(filter),
+        filter_colour(filter),
+        selected,
+    );
+    if response.clicked() && !selected {
+        state.filter = filter;
+        state.selected = None;
+        return Some(ContactsAction::FilterChanged(filter));
+    }
+    None
 }
 
 fn chip(ui: &mut Ui, label: &str, value: usize, colour: Color32, selected: bool) -> egui::Response {
@@ -257,53 +292,66 @@ fn filter_colour(filter: ContactFilter) -> Color32 {
 
 fn search_row(ui: &mut Ui, state: &mut ContactsState) -> Option<ContactsAction> {
     let mut action = None;
-
-    ui.horizontal(|ui| {
-        let search_width = ui.available_width().min(400.0);
-        let response = ui.add_sized(
-            [search_width, 34.0],
-            egui::TextEdit::singleline(&mut state.search)
-                .hint_text("Search name, email, phone or role…")
-                .margin(Margin::symmetric(10, 8)),
-        );
-        if response.changed() {
-            state.search_due = Some(Instant::now() + SEARCH_DEBOUNCE);
-            state.selected = None;
-            action = Some(ContactsAction::SearchChanged);
-        }
-
-        if !state.search.is_empty()
-            && ui
-                .add(
-                    egui::Button::new(RichText::new("Clear").color(theme::faint()).size(11.0))
-                        .frame(false),
-                )
-                .clicked()
-        {
-            state.search.clear();
-            state.search_due = Some(Instant::now());
-            action = Some(ContactsAction::SearchChanged);
-        }
-
-        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            let loaded = state.rows.load().len();
-            let mut text = format!("{loaded} loaded · {} total", state.total);
-            if state.loading {
-                text.push_str(" · updating");
-            }
-            ui.label(RichText::new(text).color(theme::faint()).size(10.5));
-            if let Some(ms) = state.last_query_ms {
-                ui.label(
-                    RichText::new(format!("{ms:.1} ms"))
-                        .color(theme::faint())
-                        .size(10.5)
-                        .monospace(),
-                );
-            }
+    if ui.available_width() < 520.0 {
+        ui.vertical(|ui| {
+            search_field(ui, state, &mut action);
+            ui.add_space(4.0);
+            search_meta(ui, state);
         });
-    });
-
+    } else {
+        ui.horizontal(|ui| {
+            search_field(ui, state, &mut action);
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                search_meta(ui, state);
+            });
+        });
+    }
     action
+}
+
+fn search_field(ui: &mut Ui, state: &mut ContactsState, action: &mut Option<ContactsAction>) {
+    let search_width = ui.available_width().min(400.0);
+    let response = ui.add_sized(
+        [search_width, 34.0],
+        egui::TextEdit::singleline(&mut state.search)
+            .hint_text("Search name, email, phone or role…")
+            .margin(Margin::symmetric(10, 8)),
+    );
+    if response.changed() {
+        state.search_due = Some(Instant::now() + SEARCH_DEBOUNCE);
+        state.selected = None;
+        *action = Some(ContactsAction::SearchChanged);
+    }
+
+    if !state.search.is_empty()
+        && ui
+            .add(
+                egui::Button::new(RichText::new("Clear").color(theme::faint()).size(11.0))
+                    .frame(false),
+            )
+            .clicked()
+    {
+        state.search.clear();
+        state.search_due = Some(Instant::now());
+        *action = Some(ContactsAction::SearchChanged);
+    }
+}
+
+fn search_meta(ui: &mut Ui, state: &ContactsState) {
+    let loaded = state.rows.load().len();
+    let mut text = format!("{loaded} loaded · {} total", state.total);
+    if state.loading {
+        text.push_str(" · updating");
+    }
+    ui.label(RichText::new(text).color(theme::faint()).size(10.5));
+    if let Some(ms) = state.last_query_ms {
+        ui.label(
+            RichText::new(format!("{ms:.1} ms"))
+                .color(theme::faint())
+                .size(10.5)
+                .monospace(),
+        );
+    }
 }
 
 fn contacts_table(ui: &mut Ui, state: &mut ContactsState, action: &mut Option<ContactsAction>) {

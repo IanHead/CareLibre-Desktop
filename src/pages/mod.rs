@@ -2,7 +2,6 @@ pub mod contact_editor;
 pub mod contacts;
 pub mod intake;
 pub mod placeholder;
-pub mod relationships;
 pub mod rostering;
 pub mod settings;
 
@@ -39,7 +38,6 @@ pub enum Page {
     Intake,
     Contacts,
     Rostering,
-    Relationships,
     Services,
     Documents,
     Communications,
@@ -53,7 +51,6 @@ impl Page {
             Self::Intake => "Intake",
             Self::Contacts => "Contacts",
             Self::Rostering => "Rostering",
-            Self::Relationships => "Relationships",
             Self::Services => "Services & rates",
             Self::Documents => "Documents",
             Self::Communications => "Communications",
@@ -67,7 +64,6 @@ impl Page {
             Self::Intake => "📝",
             Self::Contacts => "👥",
             Self::Rostering => "📅",
-            Self::Relationships => "🔗",
             Self::Services => "🏷",
             Self::Documents => "📄",
             Self::Communications => "✉",
@@ -81,7 +77,6 @@ impl Page {
             Self::Intake => "Guided onboarding for clients, workers and other contacts.",
             Self::Contacts => "Everyone the organisation works with, filtered by relationship.",
             Self::Rostering => "Shifts, client and worker assignments, and sessions.",
-            Self::Relationships => "Two-sided links between contacts and organisations.",
             Self::Services => "Funded services, rate cards and effective-dated rate versions.",
             Self::Documents => "Merge templates for quotes, service agreements and reports.",
             Self::Communications => "Configurable SMS, email and other external channels.",
@@ -103,11 +98,6 @@ impl Page {
                 "Filter by relationship: clients, workers or other contacts",
                 "Support contacts, coordinators, family and health professionals",
                 "Instant search across names, email and phone",
-            ],
-            Self::Relationships => &[
-                "Link any contact to any contact or organisation",
-                "A role for each side of the relationship",
-                "Delete links without touching either record",
             ],
             Self::Rostering => &[
                 "Shifts with client and worker assignments or sessions",

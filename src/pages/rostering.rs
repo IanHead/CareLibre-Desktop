@@ -414,6 +414,21 @@ pub fn show(
 }
 
 fn header(ui: &mut Ui, state: &mut RosteringState, action: &mut Option<RosteringAction>) {
+    if ui.available_width() < 700.0 {
+        header_title(ui);
+        ui.add_space(6.0);
+        ui.horizontal_wrapped(|ui| header_actions(ui, state, action));
+    } else {
+        ui.horizontal(|ui| {
+            header_title(ui);
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                header_actions(ui, state, action);
+            });
+        });
+    }
+}
+
+fn header_title(ui: &mut Ui) {
     ui.horizontal(|ui| {
         let (rect, _) = ui.allocate_exact_size(vec2(52.0, 52.0), Sense::hover());
         ui.painter()
@@ -434,24 +449,23 @@ fn header(ui: &mut Ui, state: &mut RosteringState, action: &mut Option<Rostering
                     .size(13.0),
             );
         });
-
-        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            if ui.add(theme::primary_button("+ New shift")).clicked() {
-                let date = Local::now().format("%Y-%m-%d").to_string();
-                *action = Some(RosteringAction::OpenCreate(date));
-            }
-            if state.clipboard.is_some() && ui.add(theme::secondary_button("Paste shift")).clicked()
-            {
-                state.open_paste();
-            }
-            if ui.add(theme::secondary_button("Refresh")).clicked() {
-                *action = Some(RosteringAction::Refresh);
-            }
-            if state.loading_shifts {
-                ui.label(RichText::new("Loading…").color(theme::warning()).size(11.0));
-            }
-        });
     });
+}
+
+fn header_actions(ui: &mut Ui, state: &mut RosteringState, action: &mut Option<RosteringAction>) {
+    if ui.add(theme::primary_button("+ New shift")).clicked() {
+        let date = Local::now().format("%Y-%m-%d").to_string();
+        *action = Some(RosteringAction::OpenCreate(date));
+    }
+    if state.clipboard.is_some() && ui.add(theme::secondary_button("Paste shift")).clicked() {
+        state.open_paste();
+    }
+    if ui.add(theme::secondary_button("Refresh")).clicked() {
+        *action = Some(RosteringAction::Refresh);
+    }
+    if state.loading_shifts {
+        ui.label(RichText::new("Loading…").color(theme::warning()).size(11.0));
+    }
 }
 
 fn filters(ui: &mut Ui, state: &mut RosteringState, action: &mut Option<RosteringAction>) {
