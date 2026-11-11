@@ -8,7 +8,7 @@ use std::{
 
 use eframe::egui::{
     self, Align, Align2, Color32, CornerRadius, FontId, Frame, Layout, Margin, RichText, Sense,
-    Stroke, Ui, vec2,
+    Stroke, StrokeKind, Ui, vec2,
 };
 use serde_json::Value;
 
@@ -1939,9 +1939,12 @@ impl CareLibreApp {
                             if ui
                                 .add(
                                     egui::Button::new(
-                                        RichText::new("Close all").color(theme::faint()).size(10.0),
+                                        RichText::new("Close all").color(theme::muted()).size(10.0),
                                     )
-                                    .frame(false),
+                                    .fill(theme::surface())
+                                    .stroke(Stroke::new(1.0, theme::border()))
+                                    .corner_radius(CornerRadius::same(6))
+                                    .min_size(vec2(0.0, 22.0)),
                                 )
                                 .clicked()
                             {
@@ -2332,10 +2335,7 @@ impl CareLibreApp {
                         .max_rect(rect)
                         .layout(Layout::right_to_left(Align::Center)),
                 );
-                let close_response = controls.add(
-                    egui::Button::new(RichText::new("×").color(theme::muted()).size(15.0))
-                        .frame(false),
-                );
+                let close_response = column_icon_button(&mut controls, "×", "Close column");
                 if close_response.clicked() {
                     close_clicked = true;
                 }
@@ -2343,29 +2343,19 @@ impl CareLibreApp {
 
                 match kind {
                     ColumnKind::Page(_) => {
-                        let label = if page_popped {
-                            "Dock page"
+                        let (glyph, tooltip) = if page_popped {
+                            ("↙", "Dock page")
                         } else {
-                            "Pop out page"
+                            ("↗", "Pop out page")
                         };
-                        let response = controls.add(
-                            egui::Button::new(
-                                RichText::new(label).color(theme::accent()).size(10.5),
-                            )
-                            .frame(false),
-                        );
+                        let response = column_icon_button(&mut controls, glyph, tooltip);
                         if response.clicked() {
                             toggle_page = true;
                         }
                         control_rects.push(response.rect);
                     }
                     ColumnKind::Contact(_) => {
-                        let response = controls.add(
-                            egui::Button::new(
-                                RichText::new("Pop out").color(theme::accent()).size(10.5),
-                            )
-                            .frame(false),
-                        );
+                        let response = column_icon_button(&mut controls, "↗", "Pop out record");
                         if response.clicked() {
                             pop_out = true;
                         }
@@ -5156,6 +5146,45 @@ impl eframe::App for CareLibreApp {
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         self.show(ui);
     }
+}
+
+fn column_icon_button(ui: &mut Ui, glyph: &str, tooltip: &str) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(vec2(24.0, 24.0), Sense::click());
+    let hovered = response.hovered();
+    let fill = if hovered {
+        theme::surface_raised()
+    } else {
+        theme::surface()
+    };
+    let stroke = if response.is_pointer_button_down_on() {
+        theme::accent()
+    } else {
+        theme::border()
+    };
+    ui.painter().rect(
+        rect,
+        CornerRadius::same(6),
+        fill,
+        Stroke::new(1.0, stroke),
+        StrokeKind::Inside,
+    );
+    ui.painter().text(
+        rect.center(),
+        Align2::CENTER_CENTER,
+        glyph,
+        FontId::proportional(12.5),
+        if hovered {
+            theme::text()
+        } else {
+            theme::muted()
+        },
+    );
+    if hovered {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    response
+        .widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, ui.is_enabled(), tooltip));
+    response.on_hover_text(tooltip)
 }
 
 fn group_label(ui: &mut Ui, text: &str) {

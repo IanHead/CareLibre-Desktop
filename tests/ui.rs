@@ -147,7 +147,7 @@ fn pages_can_be_closed_and_reopened() {
     harness.run();
     assert!(harness.state().page_column_open());
 
-    harness.get_by_label("×").click();
+    harness.get_by_label("Close column").click();
     harness.run();
     assert!(!harness.state().page_column_open());
 
