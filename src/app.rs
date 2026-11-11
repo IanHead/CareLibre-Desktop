@@ -463,6 +463,30 @@ impl CareLibreApp {
         column.anim_start = now;
     }
 
+    fn close_all_columns(&mut self, now: f64) {
+        let ids: Vec<String> = self.contact_windows.keys().cloned().collect();
+        for id in ids {
+            self.close_contact_window(&id);
+        }
+        let pages: Vec<Page> = self
+            .columns
+            .iter()
+            .filter_map(|column| match &column.kind {
+                ColumnKind::Page(page) => Some(*page),
+                ColumnKind::Contact(_) => None,
+            })
+            .collect();
+        for page in pages {
+            if let Some(index) = self
+                .columns
+                .iter()
+                .position(|column| matches!(column.kind, ColumnKind::Page(open) if open == page))
+            {
+                self.begin_column_close(index, now);
+            }
+        }
+    }
+
     fn cancel_column_close(&mut self, index: usize) {
         let column = &mut self.columns[index];
         column.closing = false;
@@ -1854,7 +1878,6 @@ impl CareLibreApp {
         let mut page_action = None;
         let mut close: Option<String> = None;
         let mut close_page: Option<Page> = None;
-        let mut close_all = false;
         let mut resize: Option<(usize, usize, f32)> = None;
         let mut editor_actions: Vec<(String, ContactEditorAction)> = Vec::new();
 
@@ -1875,67 +1898,14 @@ impl CareLibreApp {
         if visible.is_empty() {
             return page_action;
         }
-        let has_contact_columns = visible
-            .iter()
-            .any(|index| matches!(self.columns[*index].kind, ColumnKind::Contact(_)));
-
         let viewport_width = ui.available_width();
         let strip_width = (viewport_width - COLUMN_STRIP_PADDING * 2.0).max(1.0);
         let now = ui.ctx().input(|input| input.time);
         let max_total_columns = (((strip_width + 7.0) / (COLUMN_MIN_WIDTH + 7.0)).floor() as usize)
             .clamp(1, MAX_RECORD_COLUMNS + 1);
         self.max_total_columns = max_total_columns;
-        let over_limit = self.visible_column_count() > self.max_total_columns;
         let content_width = self.normalise_column_widths(&visible, strip_width, now);
         let handle_width = 7.0;
-
-        if has_contact_columns || visible.len() > 1 || over_limit {
-            Frame::new()
-                .fill(theme::sidebar())
-                .inner_margin(Margin::symmetric(12, 6))
-                .show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label(
-                            RichText::new("OPEN COLUMNS")
-                                .color(theme::faint())
-                                .font(theme::strong_font(9.0)),
-                        );
-                        ui.label(
-                            RichText::new(format!(
-                                "Drag :: to reorder · drag a divider to resize · up to {} columns",
-                                self.max_total_columns
-                            ))
-                            .color(theme::faint())
-                            .size(9.0),
-                        );
-                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            if ui
-                                .add(
-                                    egui::Button::new(
-                                        RichText::new("Close all").color(theme::muted()).size(10.0),
-                                    )
-                                    .fill(theme::surface())
-                                    .stroke(Stroke::new(1.0, theme::border()))
-                                    .corner_radius(CornerRadius::same(6))
-                                    .min_size(vec2(0.0, 22.0)),
-                                )
-                                .clicked()
-                            {
-                                close_all = true;
-                            }
-                        });
-                    });
-                    if over_limit {
-                        ui.label(
-                            RichText::new(
-                                "Window too small for these columns — close one or widen the window.",
-                            )
-                            .color(theme::warning())
-                            .size(9.0),
-                        );
-                    }
-                });
-        }
 
         let height = ui.available_height();
 
@@ -2035,7 +2005,7 @@ impl CareLibreApp {
                     .stroke(if is_dragging {
                         Stroke::new(2.0, theme::accent())
                     } else {
-                        Stroke::new(1.0, theme::border())
+                        Stroke::new(1.5, theme::border_strong())
                     })
                     .corner_radius(CornerRadius::same(10))
                     .inner_margin(Margin::ZERO)
@@ -2204,27 +2174,6 @@ impl CareLibreApp {
         }
         if let Some(id) = close {
             self.close_contact_window(&id);
-        }
-        if close_all {
-            let ids: Vec<String> = self.contact_windows.keys().cloned().collect();
-            for id in ids {
-                self.close_contact_window(&id);
-            }
-            let pages: Vec<Page> = self
-                .columns
-                .iter()
-                .filter_map(|column| match &column.kind {
-                    ColumnKind::Page(page) => Some(*page),
-                    ColumnKind::Contact(_) => None,
-                })
-                .collect();
-            for page in pages {
-                if let Some(index) = self.columns.iter().position(
-                    |column| matches!(column.kind, ColumnKind::Page(open) if open == page),
-                ) {
-                    self.begin_column_close(index, now);
-                }
-            }
         }
         for (id, action) in editor_actions {
             let ctx = ui.ctx().clone();
@@ -2561,6 +2510,38 @@ impl CareLibreApp {
             targets[slot] = (targets[slot] + (usable - sum)).max(1.0);
         }
 
+        // Never let a column collapse to the point where its rounded border
+        // disappears. If the window is too small for the minimums, keep them
+        // and let the rightmost columns be clipped rather than shrinking.
+        let min_total = COLUMN_MIN_WIDTH * visible.len() as f32;
+        if usable < min_total {
+            targets.fill(COLUMN_MIN_WIDTH);
+        } else {
+            for _ in 0..visible.len() {
+                let deficit: f32 = targets
+                    .iter()
+                    .map(|target| (COLUMN_MIN_WIDTH - *target).max(0.0))
+                    .sum();
+                if deficit <= 0.5 {
+                    break;
+                }
+                let flexible: f32 = targets
+                    .iter()
+                    .map(|target| (*target - COLUMN_MIN_WIDTH).max(0.0))
+                    .sum();
+                if flexible <= 0.5 {
+                    break;
+                }
+                for target in &mut targets {
+                    if *target < COLUMN_MIN_WIDTH {
+                        *target = COLUMN_MIN_WIDTH;
+                    } else {
+                        *target -= deficit * (*target - COLUMN_MIN_WIDTH) / flexible;
+                    }
+                }
+            }
+        }
+
         let initialise = !self.columns_initialised;
         for (slot, &index) in visible.iter().enumerate() {
             let target = targets[slot];
@@ -2599,7 +2580,7 @@ impl CareLibreApp {
             };
         }
 
-        viewport_width
+        (targets.iter().sum::<f32>() + handle_total).max(viewport_width)
     }
 
     fn next_rostering_request(&mut self) -> u64 {
@@ -4793,6 +4774,13 @@ impl CareLibreApp {
                             self.open_intake();
                         }
 
+                        if self.visible_column_count() > 1 {
+                            ui.add_space(6.0);
+                            if ui.add(theme::secondary_button("Close all")).clicked() {
+                                self.close_all_columns(self.frame_time);
+                            }
+                        }
+
                         ui.add_space(6.0);
 
                         let search = ui.add_sized(
@@ -4857,12 +4845,14 @@ impl CareLibreApp {
             .exact_size(panel_width)
             .resizable(false)
             .show_separator_line(false)
-            .frame(
-                Frame::new()
-                    .fill(theme::sidebar())
-                    .stroke(Stroke::new(1.0, theme::border())),
-            )
+            .frame(Frame::new().fill(theme::sidebar()))
             .show(ui, |ui| {
+                let panel_rect = ui.max_rect();
+                ui.painter().vline(
+                    panel_rect.right() - 0.5,
+                    panel_rect.y_range(),
+                    Stroke::new(1.0, theme::border()),
+                );
                 let panel_height = ui.available_height();
                 let content_height = panel_height
                     + (CENTERED_MENU_HEIGHT.min(panel_height) - panel_height) * centeredness;
@@ -4979,16 +4969,16 @@ impl CareLibreApp {
         };
 
         egui::Panel::bottom("status_bar")
-            .exact_size(30.0)
+            .exact_size(36.0)
             .show_separator_line(false)
             .frame(
                 Frame::new()
                     .fill(theme::sidebar())
-                    .inner_margin(Margin::symmetric(20, 0))
+                    .inner_margin(Margin::symmetric(20, 4))
                     .stroke(Stroke::new(1.0, theme::border())),
             )
             .show(ui, |ui| {
-                ui.horizontal(|ui| {
+                ui.horizontal_centered(|ui| {
                     ui.label(
                         RichText::new("CareLibre Desktop v0.1.0 · Prototype")
                             .color(theme::faint())

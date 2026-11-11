@@ -229,7 +229,7 @@ fn open_contacts_render_the_column_strip() {
     let mut harness = harness(app);
     harness.run();
 
-    harness.get_by_label("OPEN COLUMNS");
+    harness.get_by_label("Pop out record");
 }
 
 #[test]

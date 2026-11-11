@@ -144,6 +144,12 @@ palette_colors!(
     on_accent,
 );
 
+/// Slightly stronger border used by column frames so their rounded edges stay
+/// visible against the workspace background.
+pub fn border_strong() -> Color32 {
+    lerp_color(border(), muted(), 0.35)
+}
+
 fn set_palette(theme: egui::Theme) {
     ACTIVE.store(
         if theme == egui::Theme::Light {
