@@ -1900,15 +1900,6 @@ impl CareLibreApp {
             })
             .collect();
         if visible.is_empty() {
-            ui.vertical_centered(|ui| {
-                ui.add_space(80.0);
-                ui.label(RichText::new("No columns open").font(theme::strong_font(18.0)));
-                ui.label(
-                    RichText::new("Choose a page from the sidebar or open a contact.")
-                        .color(theme::muted())
-                        .size(11.5),
-                );
-            });
             return page_action;
         }
         let has_contact_columns = visible
