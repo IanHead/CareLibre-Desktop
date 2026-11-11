@@ -41,6 +41,8 @@ use crate::{
 const MAX_RECORD_COLUMNS: usize = 5;
 const COLUMN_MIN_WIDTH: f32 = 240.0;
 const COLUMN_STRIP_PADDING: f32 = 10.0;
+const COLUMN_STRIP_TOP_PADDING: f32 = 10.0;
+const COLUMN_STRIP_BOTTOM_PADDING: f32 = 10.0;
 const SIDEBAR_WIDTH: f32 = 232.0;
 const CENTERED_MENU_WIDTH: f32 = 440.0;
 const CENTERED_MENU_HEIGHT: f32 = 710.0;
@@ -1898,6 +1900,7 @@ impl CareLibreApp {
         if visible.is_empty() {
             return page_action;
         }
+        ui.add_space(COLUMN_STRIP_TOP_PADDING);
         let viewport_width = ui.available_width();
         let strip_width = (viewport_width - COLUMN_STRIP_PADDING * 2.0).max(1.0);
         let now = ui.ctx().input(|input| input.time);
@@ -1907,7 +1910,7 @@ impl CareLibreApp {
         let content_width = self.normalise_column_widths(&visible, strip_width, now);
         let handle_width = 7.0;
 
-        let height = ui.available_height();
+        let height = (ui.available_height() - COLUMN_STRIP_BOTTOM_PADDING).max(120.0);
 
         let catalog = self.lookup_parties();
         let roles = self.role_options.clone();
@@ -2005,7 +2008,7 @@ impl CareLibreApp {
                     .stroke(if is_dragging {
                         Stroke::new(2.0, theme::accent())
                     } else {
-                        Stroke::new(1.5, theme::border_strong())
+                        Stroke::new(1.0, theme::border_strong())
                     })
                     .corner_radius(CornerRadius::same(10))
                     .inner_margin(Margin::ZERO)
@@ -2244,6 +2247,12 @@ impl CareLibreApp {
 
         let frame = Frame::new()
             .fill(theme::sidebar())
+            .corner_radius(CornerRadius {
+                nw: 9,
+                ne: 9,
+                sw: 0,
+                se: 0,
+            })
             .inner_margin(Margin::symmetric(10, 6))
             .show(ui, |ui| {
                 let width = ui.available_width();
@@ -4912,6 +4921,7 @@ impl CareLibreApp {
                     menu_ui.scope(|ui| {
                         ui.multiply_opacity(1.0 - centeredness);
                         ui.with_layout(Layout::bottom_up(Align::Min), |ui| {
+                            ui.add_space(8.0);
                             if user_row(ui, account.as_ref()) {
                                 self.open_page(Page::Settings);
                             }
