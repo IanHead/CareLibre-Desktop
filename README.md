@@ -320,33 +320,41 @@ cargo run --example screenshot -- docs/worker-qualities.png workers --live --con
 
 ## Roadmap
 
-The desktop client tracks the wider CareLibre requirements:
+The canonical product roadmap lives in the
+[server repository](https://github.com/IanHead/CareLibre-Server/blob/main/docs/roadmap.md).
+Implemented features are checked off there.
+
+Shipped desktop foundations:
 
 - [x] Native egui/wgpu application shell
-- [x] Contacts workspace and navigation
+- [x] Contacts workspace, client list and virtualised navigation
 - [x] Live server connection, account authentication and organisation onboarding
 - [x] PostgreSQL-backed CareLibre server (via REST API)
 - [x] Server-backed contacts, background API worker and virtualised lists
-- [x] Guided intake wizards that create server contacts
+- [x] Guided client, worker and other-contact intake wizards
 - [x] Docked multi-record editor with drag-reorderable tabs and native pop-out windows
 - [x] Two-sided relationship graph with contact and organisation endpoints
-- [x] Inline relationship management from a contact record
+- [x] Relationship add, transfer, retire, history and removal from a contact record
+- [x] Contact editing with server-stored custom-field metadata
 - [x] Animated page, tab, navigation and notification transitions
 - [x] Client-side title bar by default on new installs, with optional native decorations
 - [x] Light, Dark and Follow System appearance with live desktop detection
 - [x] Encrypted remembered sign-in using the OS keychain or a local vault
-- [x] Contact editing with server-stored custom-field metadata
 - [x] Performance HUD
-- [ ] Delta sync, optimistic local writes and offline cache
-- [ ] Server-side rostering, services and other care-domain modules
-- [ ] Services, rates and effective-dated rate versions
 - [x] Timeline rostering grouped by worker/client with recurrence, copy/paste and explainable suitability
-- [x] Funding sources, client packages, quotes/service agreements and finalise-to-roster generation
+- [x] Client funding packages, quotes/service agreements and finalise-to-roster generation
+
+Desktop work still outstanding:
+
+- [ ] Bulk relationship actions, relationship-action safeguards and the
+  relationship constellation
+- [ ] Finance, document, communications and reporting workspaces
+- [ ] Services, rates and effective-dated rate versions management UI
 - [ ] Learned worker–client preference affinity and relationship-aware recommendations
 - [ ] Natural-language quoting and document merge templates
 - [ ] Configurable forms, fields and cost-centre inheritance
 - [ ] Configurable SMS and email communications
-- [ ] Offline cache and OS keychain-backed sessions
+- [ ] Delta sync, optimistic local writes and offline cache
 - [ ] Android and iOS companions
 
 ## Licence
