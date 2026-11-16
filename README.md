@@ -31,6 +31,13 @@ open-source care management platform for disability and aged care providers.
   </tr>
 </table>
 
+## Download
+
+Portable builds for Windows, macOS (Apple Silicon and Intel) and Linux are attached to
+each [release](https://github.com/IanHead/CareLibre-Desktop/releases/latest). Unpack the
+archive and run `carelibre-desktop`; there is no installer. The Linux build needs an X11
+or Wayland session and a Vulkan or OpenGL driver.
+
 ## Design principles
 
 - **Performance is the feature.** The desktop client is designed to be as fast as
