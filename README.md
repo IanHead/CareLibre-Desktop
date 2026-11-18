@@ -328,7 +328,7 @@ cargo run --example screenshot -- docs/worker-qualities.png workers --live --con
 ## Roadmap
 
 The canonical product roadmap lives in the
-[server repository](https://github.com/IanHead/CareLibre-Server/blob/main/docs/roadmap.md).
+[server repository](https://github.com/IanHead/CareLibre/blob/main/docs/roadmap.md).
 Implemented features are checked off there.
 
 Shipped desktop foundations:
