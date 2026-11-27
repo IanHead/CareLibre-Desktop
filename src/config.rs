@@ -20,6 +20,8 @@ pub const CONSTELLATION_DEFAULT_STEPS: u8 = 1;
 pub struct RelationshipViewPreference {
     pub collapsed: bool,
     pub steps: u8,
+    /// Show highly connected parties without expanding their neighbours.
+    pub skip_hubs: bool,
 }
 
 impl Default for RelationshipViewPreference {
@@ -27,6 +29,7 @@ impl Default for RelationshipViewPreference {
         Self {
             collapsed: true,
             steps: CONSTELLATION_DEFAULT_STEPS,
+            skip_hubs: true,
         }
     }
 }
@@ -59,6 +62,8 @@ pub struct ExplorerPreference {
     pub show_ended: bool,
     pub show_contacts: bool,
     pub show_organisations: bool,
+    /// Show highly connected parties without expanding their neighbours.
+    pub skip_hubs: bool,
 }
 
 impl Default for ExplorerPreference {
@@ -68,6 +73,7 @@ impl Default for ExplorerPreference {
             show_ended: false,
             show_contacts: true,
             show_organisations: true,
+            skip_hubs: true,
         }
     }
 }
@@ -271,6 +277,7 @@ mod tests {
         assert!(preference.collapsed);
         assert_eq!(preference.steps, CONSTELLATION_DEFAULT_STEPS);
         assert_eq!(preference.steps, 1);
+        assert!(preference.skip_hubs);
     }
 
     #[test]
@@ -295,6 +302,7 @@ mod tests {
             RelationshipViewPreference {
                 collapsed: false,
                 steps: 4,
+                skip_hubs: true,
             },
         );
 
@@ -311,11 +319,13 @@ mod tests {
         let preference = RelationshipViewPreference {
             collapsed: true,
             steps: 99,
+            skip_hubs: true,
         };
         assert_eq!(preference.normalised().steps, CONSTELLATION_MAX_STEPS);
         let preference = RelationshipViewPreference {
             collapsed: false,
             steps: 0,
+            skip_hubs: true,
         };
         assert_eq!(preference.normalised().steps, CONSTELLATION_MIN_STEPS);
     }
@@ -329,6 +339,7 @@ mod tests {
             RelationshipViewPreference {
                 collapsed: false,
                 steps: 3,
+                skip_hubs: true,
             },
         );
 
@@ -345,6 +356,7 @@ mod tests {
         assert!(!preference.show_ended);
         assert!(preference.show_contacts);
         assert!(preference.show_organisations);
+        assert!(preference.skip_hubs);
     }
 
     #[test]
@@ -370,6 +382,7 @@ mod tests {
                 show_ended: true,
                 show_contacts: false,
                 show_organisations: true,
+                skip_hubs: true,
             },
         );
 
@@ -385,6 +398,7 @@ mod tests {
             show_ended: false,
             show_contacts: false,
             show_organisations: false,
+            skip_hubs: true,
         }
         .normalised();
         assert_eq!(preference.levels, EXPLORER_MAX_LEVELS);
@@ -399,6 +413,21 @@ mod tests {
     }
 
     #[test]
+    fn preferences_saved_before_hub_suppression_default_to_skipping_hubs() {
+        let config: Config = serde_json::from_str(
+            r#"{
+                "relationship_views": {"key": {"collapsed": false, "steps": 3}},
+                "explorer_views": {"key": {"levels": 4, "show_ended": true}}
+            }"#,
+        )
+        .unwrap();
+        assert!(config.relationship_view("key").skip_hubs);
+        assert!(config.explorer_view("key").skip_hubs);
+        assert_eq!(config.relationship_view("key").steps, 3);
+        assert_eq!(config.explorer_view("key").levels, 4);
+    }
+
+    #[test]
     fn explorer_preferences_round_trip() {
         let mut config = Config::default();
         let key = relationship_view_key("http://server", "org", "user");
@@ -409,6 +438,7 @@ mod tests {
                 show_ended: true,
                 show_contacts: true,
                 show_organisations: false,
+                skip_hubs: true,
             },
         );
 

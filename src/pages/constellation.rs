@@ -13,7 +13,10 @@ use eframe::egui::{
 
 use crate::config::{CONSTELLATION_MAX_STEPS, CONSTELLATION_MIN_STEPS, RelationshipViewPreference};
 use crate::contact::{ApiGraphNode, ApiRelationship, PartyKind, relationship_role_label};
-use crate::graph::{GraphFilters, RelationshipGraph, node_key, transition_factor};
+use crate::graph::{
+    GraphFilters, HUB_BADGE_MIN, HUB_DEGREE, RelationshipGraph, WalkPolicy, node_key,
+    transition_factor,
+};
 use crate::theme;
 
 pub use crate::graph::RelationshipNetwork;
@@ -154,6 +157,7 @@ pub struct ViewKey {
     height: u32,
     revision: u64,
     focus: String,
+    skip_hubs: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -182,6 +186,8 @@ pub struct ConstellationView {
     pub key: ViewKey,
     pub nodes: Vec<ViewNode>,
     pub edges: Vec<ViewEdge>,
+    /// Suppressed parties and their direct link counts.
+    pub hubs: BTreeMap<String, usize>,
     pub truncated: bool,
 }
 
@@ -238,7 +244,7 @@ pub fn section(
     }
 
     ui.add_space(4.0);
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         ui.label(RichText::new("Show up to").color(theme::muted()).size(10.5));
         let decrease = ui.add_enabled(
             preference.steps > CONSTELLATION_MIN_STEPS,
@@ -278,6 +284,17 @@ pub fn section(
                 .color(theme::faint())
                 .size(10.0),
         );
+
+        ui.add_space(4.0);
+        if ui
+            .checkbox(&mut preference.skip_hubs, "Skip hubs")
+            .on_hover_text(
+                "Show highly connected parties, such as the organisation everyone belongs to, without expanding all of their links",
+            )
+            .changed()
+        {
+            result.preference_changed = true;
+        }
     });
 
     ui.label(
@@ -322,6 +339,7 @@ pub fn section(
         height: height.round() as u32,
         revision: source.network.revision,
         focus: focus_id.to_owned(),
+        skip_hubs: preference.skip_hubs,
     };
     if cache.as_ref().map(|view| &view.key) != Some(&key) {
         let mut view = build_view(
@@ -331,6 +349,7 @@ pub fn section(
             focus_label,
             preference.steps,
             vec2(width, height),
+            preference.skip_hubs,
         );
         view.key = key.clone();
         *cache = Some(view);
@@ -384,6 +403,15 @@ pub fn section(
 
     ui.add_space(3.0);
     legend(ui, preference.steps);
+    if !view.hubs.is_empty() {
+        ui.label(
+            RichText::new(
+                "Highly connected parties are shown but not expanded. Clear Skip hubs to include their links.",
+            )
+            .color(theme::faint())
+            .size(9.5),
+        );
+    }
 
     result
 }
@@ -586,6 +614,34 @@ fn draw_canvas(
 
         if is_target
             && alpha > 0.55
+            && let Some(links) = view.hubs.get(key)
+            && *links >= HUB_BADGE_MIN
+        {
+            let galley = painter.layout_no_wrap(
+                format!("{links}"),
+                FontId::proportional(8.5),
+                with_alpha(theme::warning(), alpha),
+            );
+            let badge = Rect::from_min_size(
+                centre + vec2(node.radius + 2.0, -node.radius - 9.0),
+                galley.size() + vec2(6.0, 2.0),
+            );
+            painter.rect_filled(badge, CornerRadius::same(3), theme::bg());
+            painter.rect_stroke(
+                badge,
+                CornerRadius::same(3),
+                Stroke::new(1.0, with_alpha(theme::border(), alpha)),
+                StrokeKind::Inside,
+            );
+            painter.galley(
+                badge.min + vec2(3.0, 1.0),
+                galley,
+                with_alpha(theme::warning(), alpha),
+            );
+        }
+
+        if is_target
+            && alpha > 0.55
             && (is_focus
                 || is_hovered
                 || (node.hop == 1 && label_first_hop)
@@ -667,6 +723,13 @@ fn draw_canvas(
                 ui.label(
                     RichText::new(format!("…and {} more", roles.len() - 3))
                         .color(theme::faint())
+                        .size(10.0),
+                );
+            }
+            if let Some(links) = view.hubs.get(&node_key(node.kind, &node.id)) {
+                ui.label(
+                    RichText::new(format!("{links} links · neighbours not expanded"))
+                        .color(theme::warning())
                         .size(10.0),
                 );
             }
@@ -785,6 +848,7 @@ fn draw_node_label(
 }
 
 /// Build a depth-limited view and place its nodes on concentric rings.
+#[allow(clippy::too_many_arguments)]
 pub fn build_view(
     catalog: &[ApiGraphNode],
     edges: &[ApiRelationship],
@@ -792,6 +856,7 @@ pub fn build_view(
     focus_label: &str,
     steps: u8,
     size: Vec2,
+    skip_hubs: bool,
 ) -> ConstellationView {
     let focus_key = node_key(PartyKind::Contact, focus_id);
     let mut graph =
@@ -805,7 +870,13 @@ pub fn build_view(
             focus_label
         },
     );
-    let walk = graph.walk(&focus_key, steps, MAX_NODES);
+    let policy = WalkPolicy {
+        max_nodes: MAX_NODES,
+        skip_hubs,
+        hub_degree: HUB_DEGREE,
+        expanded: &BTreeSet::new(),
+    };
+    let walk = graph.walk_with(&focus_key, steps, &policy);
 
     let mut nodes: Vec<ViewNode> = Vec::with_capacity(walk.hops.len());
     let mut index_by_key: BTreeMap<String, usize> = BTreeMap::new();
@@ -890,6 +961,19 @@ pub fn build_view(
         }
     }
 
+    let mut hubs = BTreeMap::new();
+    if skip_hubs {
+        for node in &nodes {
+            let key = node_key(node.kind, &node.id);
+            if !graph.expands_through(&key, &focus_key, &policy) {
+                let links = graph.degree(&key);
+                if links > 0 {
+                    hubs.insert(key, links);
+                }
+            }
+        }
+    }
+
     ConstellationView {
         key: ViewKey {
             steps,
@@ -897,9 +981,11 @@ pub fn build_view(
             height: size.y.round() as u32,
             revision: 0,
             focus: focus_id.to_owned(),
+            skip_hubs,
         },
         nodes,
         edges: view_edges,
+        hubs,
         truncated: walk.truncated,
     }
 }
@@ -987,12 +1073,12 @@ mod tests {
             edge("3", "c", "d"),
         ];
 
-        let one = build_view(&catalog, &edges, "a", "Alice", 1, vec2(400.0, 300.0));
+        let one = build_view(&catalog, &edges, "a", "Alice", 1, vec2(400.0, 300.0), false);
         assert_eq!(one.nodes.len(), 2);
         assert!(one.nodes.iter().any(|node| node.id == "b"));
         assert!(!one.nodes.iter().any(|node| node.id == "c"));
 
-        let two = build_view(&catalog, &edges, "a", "Alice", 2, vec2(400.0, 300.0));
+        let two = build_view(&catalog, &edges, "a", "Alice", 2, vec2(400.0, 300.0), false);
         assert_eq!(two.nodes.len(), 3);
         assert!(two.nodes.iter().any(|node| node.id == "c"));
     }
@@ -1006,7 +1092,15 @@ mod tests {
         let mut ended = edge("1", "a", "b");
         ended.status = "ended".to_owned();
 
-        let view = build_view(&catalog, &[ended], "a", "Alice", 4, vec2(400.0, 300.0));
+        let view = build_view(
+            &catalog,
+            &[ended],
+            "a",
+            "Alice",
+            4,
+            vec2(400.0, 300.0),
+            false,
+        );
         assert_eq!(view.nodes.len(), 1);
         assert!(view.edges.is_empty());
     }
@@ -1023,7 +1117,7 @@ mod tests {
             edge("3", "a", "b"),
         ];
 
-        let view = build_view(&catalog, &edges, "a", "Alice", 2, vec2(400.0, 300.0));
+        let view = build_view(&catalog, &edges, "a", "Alice", 2, vec2(400.0, 300.0), false);
         assert_eq!(view.nodes.len(), 2);
     }
 
@@ -1041,8 +1135,8 @@ mod tests {
             edge("3", "a", "d"),
         ];
 
-        let first = build_view(&catalog, &edges, "a", "Alice", 2, vec2(400.0, 300.0));
-        let second = build_view(&catalog, &edges, "a", "Alice", 2, vec2(400.0, 300.0));
+        let first = build_view(&catalog, &edges, "a", "Alice", 2, vec2(400.0, 300.0), false);
+        let second = build_view(&catalog, &edges, "a", "Alice", 2, vec2(400.0, 300.0), false);
         assert_eq!(first.nodes.len(), second.nodes.len());
         for (left, right) in first.nodes.iter().zip(&second.nodes) {
             assert_eq!(left.pos, right.pos);
@@ -1060,7 +1154,15 @@ mod tests {
         let mut org_edge = edge("1", "a", "org");
         org_edge.to_kind = PartyKind::Organisation;
 
-        let view = build_view(&catalog, &[org_edge], "a", "Alice", 1, vec2(400.0, 300.0));
+        let view = build_view(
+            &catalog,
+            &[org_edge],
+            "a",
+            "Alice",
+            1,
+            vec2(400.0, 300.0),
+            false,
+        );
         let org = view
             .nodes
             .iter()
@@ -1080,7 +1182,7 @@ mod tests {
         let ctx = egui::Context::default();
         let size = vec2(400.0, 300.0);
 
-        let one = build_view(&catalog, &edges, "a", "Alice", 1, size);
+        let one = build_view(&catalog, &edges, "a", "Alice", 1, size, false);
         let mut animation = ConstellationAnimation::default();
         animation.update(&one, &ctx, 0.0);
         for step in 1..=30 {
@@ -1091,7 +1193,7 @@ mod tests {
             .expect("the focus is drawn");
         assert!(focus.alpha > 0.95);
 
-        let two = build_view(&catalog, &edges, "a", "Alice", 2, size);
+        let two = build_view(&catalog, &edges, "a", "Alice", 2, size, false);
         animation.update(&two, &ctx, 0.5);
         let carol = animation
             .get(PartyKind::Contact, "c")
@@ -1120,6 +1222,39 @@ mod tests {
         );
         animation.clear();
         assert!(animation.displayed.is_empty());
+    }
+
+    #[test]
+    fn hubs_are_shown_without_expanding_their_links() {
+        let mut catalog = vec![
+            node(PartyKind::Contact, "a", "Alice"),
+            node(PartyKind::Organisation, "org", "Care Co"),
+        ];
+        let mut to_org = edge("0", "a", "org");
+        to_org.to_kind = PartyKind::Organisation;
+        to_org.to_name = "Care Co".to_owned();
+        let mut edges = vec![to_org];
+        for index in 0..12 {
+            let id = format!("n{index}");
+            catalog.push(node(PartyKind::Contact, &id, &format!("Node {index}")));
+            let mut link = edge(&format!("e{index}"), "org", &id);
+            link.from_kind = PartyKind::Organisation;
+            link.from_name = "Care Co".to_owned();
+            edges.push(link);
+        }
+
+        let size = vec2(400.0, 300.0);
+        let hidden = build_view(&catalog, &edges, "a", "Alice", 2, size, true);
+        assert!(hidden.nodes.iter().any(|node| node.id == "org"));
+        assert!(!hidden.nodes.iter().any(|node| node.id == "n0"));
+        assert_eq!(
+            hidden.hubs.get(&node_key(PartyKind::Organisation, "org")),
+            Some(&13)
+        );
+
+        let shown = build_view(&catalog, &edges, "a", "Alice", 2, size, false);
+        assert!(shown.nodes.iter().any(|node| node.id == "n0"));
+        assert!(shown.hubs.is_empty());
     }
 
     #[test]
@@ -1235,7 +1370,15 @@ mod tests {
             edges.push(edge(&format!("e{index}"), "focus", &id));
         }
 
-        let view = build_view(&catalog, &edges, "focus", "Focus", 1, vec2(400.0, 300.0));
+        let view = build_view(
+            &catalog,
+            &edges,
+            "focus",
+            "Focus",
+            1,
+            vec2(400.0, 300.0),
+            false,
+        );
         assert_eq!(view.nodes.len(), MAX_NODES);
         assert!(view.truncated);
     }

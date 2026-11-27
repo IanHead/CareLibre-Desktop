@@ -19,7 +19,8 @@ use crate::config::{
 };
 use crate::contact::{ApiGraphNode, ApiRelationship, PartyKind, relationship_role_label};
 use crate::graph::{
-    GraphFilters, RelationshipGraph, RelationshipNetwork, node_key, transition_factor,
+    GraphFilters, HUB_BADGE_MIN, HUB_DEGREE, RelationshipGraph, RelationshipNetwork, WalkPolicy,
+    node_key, transition_factor,
 };
 use crate::theme;
 
@@ -95,6 +96,10 @@ pub struct ExplorerState {
     history: Vec<Visited>,
     levels: u8,
     filters: GraphFilters,
+    /// Show highly connected parties without expanding their neighbours.
+    skip_hubs: bool,
+    /// Hubs the user explicitly expanded for this visit.
+    expanded: BTreeSet<String>,
     search: String,
     picking: bool,
     pan: Vec2,
@@ -120,6 +125,8 @@ impl Default for ExplorerState {
             history: Vec::new(),
             levels: EXPLORER_DEFAULT_LEVELS,
             filters: GraphFilters::default(),
+            skip_hubs: true,
+            expanded: BTreeSet::new(),
             search: String::new(),
             picking: true,
             pan: Vec2::ZERO,
@@ -166,6 +173,7 @@ impl ExplorerState {
         self.search.clear();
         self.picking = false;
         self.levels = self.levels.clamp(EXPLORER_MIN_LEVELS, EXPLORER_MAX_LEVELS);
+        self.expanded.clear();
         self.auto_fit = true;
         self.layout = None;
     }
@@ -185,6 +193,7 @@ impl ExplorerState {
             show_ended: self.filters.show_ended,
             show_contacts: self.filters.show_contacts,
             show_organisations: self.filters.show_organisations,
+            skip_hubs: self.skip_hubs,
         }
         .normalised()
     }
@@ -195,13 +204,15 @@ impl ExplorerState {
         let filters_changed = preference.show_ended != self.filters.show_ended
             || preference.show_contacts != self.filters.show_contacts
             || preference.show_organisations != self.filters.show_organisations;
+        let hubs_changed = preference.skip_hubs != self.skip_hubs;
         self.levels = preference.levels;
         self.filters.show_ended = preference.show_ended;
         self.filters.show_contacts = preference.show_contacts;
         self.filters.show_organisations = preference.show_organisations;
+        self.skip_hubs = preference.skip_hubs;
         // A periodic token refresh re-applies the saved preference; only
         // rebuild and re-fit when the settings actually moved.
-        if levels_changed || filters_changed {
+        if levels_changed || filters_changed || hubs_changed {
             self.invalidate();
         }
     }
@@ -252,6 +263,7 @@ impl ExplorerState {
     fn restore(&mut self, visited: Visited) {
         self.focus = Some(visited.focus);
         self.levels = visited.levels;
+        self.expanded.clear();
         // Keep the current camera so returning to a party glides back to the
         // view it was left in rather than snapping.
         self.target_pan = visited.pan;
@@ -286,6 +298,8 @@ struct LayoutKey {
     focus: String,
     levels: u8,
     filters: GraphFilters,
+    skip_hubs: bool,
+    expanded: BTreeSet<String>,
 }
 
 pub struct ExplorerNode {
@@ -314,6 +328,9 @@ struct ExplorerLayout {
     edges: Vec<ExplorerEdge>,
     rings: Vec<Ring>,
     roles: BTreeSet<String>,
+    /// Suppressed parties and their direct link counts, for badges and the
+    /// panel's expand control.
+    hubs: BTreeMap<String, usize>,
     radius: f32,
     truncated: bool,
 }
@@ -447,7 +464,7 @@ pub fn show(
     ui.add_space(4.0);
     ui.label(
         RichText::new(
-            "Click a party to see its direct relationships · double-click to focus it · drag to pan · scroll to zoom",
+            "Click a party to see its direct relationships · double-click to focus it · hubs show their links but are not expanded",
         )
         .color(theme::faint())
         .size(10.0),
@@ -502,6 +519,8 @@ fn ensure_layout(state: &mut ExplorerState, source: &ExplorerSource<'_>) {
         focus: focus.key.clone(),
         levels: state.levels,
         filters: state.filters.clone(),
+        skip_hubs: state.skip_hubs,
+        expanded: state.expanded.clone(),
     };
     if state.layout.as_ref().map(|layout| &layout.key) == Some(&key) {
         return;
@@ -513,10 +532,13 @@ fn ensure_layout(state: &mut ExplorerState, source: &ExplorerSource<'_>) {
         state.levels,
         &state.filters,
         source.network.revision,
+        state.skip_hubs,
+        &state.expanded,
     ));
     state.auto_fit = true;
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_layout(
     catalog: &[ApiGraphNode],
     edges: &[ApiRelationship],
@@ -524,9 +546,17 @@ fn build_layout(
     levels: u8,
     filters: &GraphFilters,
     revision: u64,
+    skip_hubs: bool,
+    expanded: &BTreeSet<String>,
 ) -> ExplorerLayout {
     let mut graph = RelationshipGraph::build(catalog, edges, filters, Some(&focus.key));
     graph.ensure_label(focus.kind, &focus.id, &focus.label);
+    let policy = WalkPolicy {
+        max_nodes: MAX_NODES,
+        skip_hubs,
+        hub_degree: HUB_DEGREE,
+        expanded,
+    };
 
     let mut roles = BTreeSet::new();
     for edge in edges.iter().filter(|edge| !edge.is_ended()) {
@@ -534,7 +564,7 @@ fn build_layout(
         roles.insert(edge.to_role.clone());
     }
 
-    let walk = graph.walk(&focus.key, levels, MAX_NODES);
+    let walk = graph.walk_with(&focus.key, levels, &policy);
     let mut nodes: Vec<ExplorerNode> = Vec::with_capacity(walk.hops.len());
     let mut index_by_key: BTreeMap<String, usize> = BTreeMap::new();
 
@@ -649,18 +679,33 @@ fn build_layout(
         }
     }
 
+    let mut hubs = BTreeMap::new();
+    if skip_hubs {
+        for node in &nodes {
+            if !graph.expands_through(&node.key, &focus.key, &policy) {
+                let links = graph.degree(&node.key);
+                if links > 0 {
+                    hubs.insert(node.key.clone(), links);
+                }
+            }
+        }
+    }
+
     ExplorerLayout {
         key: LayoutKey {
             revision,
             focus: focus.key.clone(),
             levels,
             filters: filters.clone(),
+            skip_hubs,
+            expanded: expanded.clone(),
         },
         graph,
         nodes,
         edges: view_edges,
         rings,
         roles,
+        hubs,
         radius: (previous_radius + 90.0).max(160.0),
         truncated: walk.truncated,
     }
@@ -807,6 +852,16 @@ fn toolbar(
         if ui
             .checkbox(&mut state.filters.show_ended, "Show ended")
             .on_hover_text("Include relationships that have ended")
+            .changed()
+        {
+            state.invalidate();
+            changed = true;
+        }
+        if ui
+            .checkbox(&mut state.skip_hubs, "Skip hubs")
+            .on_hover_text(
+                "Show highly connected parties, such as the organisation everyone belongs to, without expanding all of their clients. Select a party to expand it.",
+            )
             .changed()
         {
             state.invalidate();
@@ -1187,7 +1242,7 @@ fn canvas(
         let Some(index) = layout.node_index(key) else {
             if node.alpha > 0.02 {
                 draw_node(
-                    &painter, rect, centre, state.zoom, node, false, false, false,
+                    &painter, rect, centre, state.zoom, node, false, false, false, None,
                 );
             }
             continue;
@@ -1205,6 +1260,11 @@ fn canvas(
             is_focus,
             is_selected,
             emphasis,
+            layout
+                .hubs
+                .get(key)
+                .copied()
+                .filter(|links| *links >= HUB_BADGE_MIN),
         );
 
         if node.alpha > 0.55
@@ -1298,6 +1358,13 @@ fn canvas(
                         .size(10.0),
                 );
             }
+            if let Some(links) = layout.hubs.get(&node.key) {
+                ui.label(
+                    RichText::new(format!("{links} links · neighbours not expanded"))
+                        .color(theme::warning())
+                        .size(10.0),
+                );
+            }
             if node.hop > 0 {
                 ui.label(
                     RichText::new("Click to select · double-click to focus here")
@@ -1342,6 +1409,7 @@ fn draw_node(
     is_focus: bool,
     is_selected: bool,
     emphasis: bool,
+    hub_links: Option<usize>,
 ) {
     let position = centre + node.pos.to_vec2() * zoom;
     if !rect.expand(30.0).contains(position) {
@@ -1404,6 +1472,32 @@ fn draw_node(
             initials(&node.label),
             FontId::proportional((radius * 0.72).clamp(5.0, 10.5)),
             with_alpha(colour, alpha),
+        );
+    }
+
+    if let Some(links) = hub_links
+        && zoom > 0.28
+        && alpha > 0.55
+    {
+        let galley = painter.layout_no_wrap(
+            format!("{links}"),
+            FontId::proportional(8.5),
+            with_alpha(theme::warning(), alpha),
+        );
+        let size = galley.size() + vec2(9.0, 3.0);
+        let anchor = position + vec2(radius * 0.65, -radius - size.y * 0.5);
+        let badge = Rect::from_min_size(anchor, size);
+        painter.rect_filled(badge, CornerRadius::same(4), theme::bg());
+        painter.rect_stroke(
+            badge,
+            CornerRadius::same(4),
+            Stroke::new(1.0, with_alpha(theme::border(), alpha)),
+            StrokeKind::Inside,
+        );
+        painter.galley(
+            badge.min + vec2(4.5, 1.5),
+            galley,
+            with_alpha(theme::warning(), alpha),
         );
     }
 }
@@ -1647,6 +1741,51 @@ fn panel(
                     .size(10.0),
                 );
             });
+
+            if let Some(links) = layout.hubs.get(&selected_key).copied() {
+                ui.add_space(3.0);
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(
+                        RichText::new(format!("{links} links · neighbours held back"))
+                            .color(theme::warning())
+                            .size(9.5),
+                    );
+                    if ui
+                        .add(
+                            egui::Button::new(
+                                RichText::new("Expand").color(theme::accent()).size(10.0),
+                            )
+                            .frame(false),
+                        )
+                        .on_hover_text("Show this party's neighbours")
+                        .clicked()
+                    {
+                        state.expanded.insert(selected_key.clone());
+                        state.invalidate();
+                    }
+                });
+            } else if state.expanded.contains(&selected_key) {
+                ui.add_space(3.0);
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(
+                        RichText::new("Neighbours expanded")
+                            .color(theme::success())
+                            .size(9.5),
+                    );
+                    if ui
+                        .add(
+                            egui::Button::new(
+                                RichText::new("Collapse").color(theme::muted()).size(10.0),
+                            )
+                            .frame(false),
+                        )
+                        .clicked()
+                    {
+                        state.expanded.remove(&selected_key);
+                        state.invalidate();
+                    }
+                });
+            }
 
             ui.add_space(6.0);
             ui.horizontal_wrapped(|ui| {
@@ -2028,6 +2167,8 @@ mod tests {
             levels,
             &GraphFilters::default(),
             1,
+            true,
+            &BTreeSet::new(),
         )
     }
 
@@ -2112,6 +2253,7 @@ mod tests {
             show_ended: true,
             show_contacts: false,
             show_organisations: false,
+            skip_hubs: true,
         });
         assert_eq!(state.levels, 4);
         assert!(state.filters.show_ended);
@@ -2135,9 +2277,78 @@ mod tests {
             1,
             &GraphFilters::default(),
             1,
+            true,
+            &BTreeSet::new(),
         );
         assert_eq!(layout.nodes.len(), MAX_NODES);
         assert!(layout.truncated);
+    }
+
+    #[test]
+    fn hubs_are_badged_and_can_be_expanded() {
+        let mut catalog = vec![
+            node(PartyKind::Contact, "a", "Alice"),
+            node(PartyKind::Organisation, "org", "Care Co"),
+        ];
+        let mut org_edge = edge("0", "a", "org");
+        org_edge.to_kind = PartyKind::Organisation;
+        org_edge.to_name = "Care Co".to_owned();
+        let mut edges = vec![org_edge];
+        for index in 0..20 {
+            let id = format!("n{index}");
+            catalog.push(node(PartyKind::Contact, &id, &format!("Node {index}")));
+            let mut link = edge(&format!("e{index}"), "org", &id);
+            link.from_kind = PartyKind::Organisation;
+            link.from_name = "Care Co".to_owned();
+            edges.push(link);
+        }
+        let focus = Focus::new(PartyKind::Contact, "a", "Alice");
+        let org_key = node_key(PartyKind::Organisation, "org");
+
+        let layout = build_layout(
+            &catalog,
+            &edges,
+            &focus,
+            2,
+            &GraphFilters::default(),
+            1,
+            true,
+            &BTreeSet::new(),
+        );
+        assert!(layout.nodes.iter().any(|node| node.id == "org"));
+        assert!(!layout.nodes.iter().any(|node| node.id == "n0"));
+        assert_eq!(layout.hubs.get(&org_key), Some(&21));
+
+        let mut expanded = BTreeSet::new();
+        expanded.insert(org_key.clone());
+        let layout = build_layout(
+            &catalog,
+            &edges,
+            &focus,
+            2,
+            &GraphFilters::default(),
+            1,
+            true,
+            &expanded,
+        );
+        assert!(layout.nodes.iter().any(|node| node.id == "n0"));
+        assert!(
+            layout.hubs.is_empty(),
+            "an expanded hub is no longer held back"
+        );
+
+        let layout = build_layout(
+            &catalog,
+            &edges,
+            &focus,
+            2,
+            &GraphFilters::default(),
+            1,
+            false,
+            &BTreeSet::new(),
+        );
+        assert!(layout.nodes.iter().any(|node| node.id == "n0"));
+        assert!(layout.hubs.is_empty());
     }
 
     #[test]
@@ -2160,6 +2371,8 @@ mod tests {
             2,
             &filters,
             1,
+            true,
+            &BTreeSet::new(),
         );
         assert_eq!(layout.nodes.len(), 2);
         assert!(layout.nodes.iter().any(|node| node.id == "org"));
@@ -2189,6 +2402,8 @@ mod tests {
             2,
             &GraphFilters::default(),
             1,
+            true,
+            &BTreeSet::new(),
         );
         for _ in 0..60 {
             update_displayed(&mut state, &second, 0.016);
@@ -2346,6 +2561,86 @@ mod tests {
                 .next()
                 .is_some(),
             "the side pane now lists Bob's relationships"
+        );
+    }
+
+    #[test]
+    fn a_hub_can_be_expanded_from_the_panel() {
+        use egui_kittest::{Harness, kittest::Queryable};
+
+        struct PageState {
+            explorer: ExplorerState,
+            catalog: Vec<ApiGraphNode>,
+            network: RelationshipNetwork,
+        }
+
+        let mut catalog = vec![
+            node(PartyKind::Contact, "a", "Alice"),
+            node(PartyKind::Organisation, "org", "Care Co"),
+        ];
+        let mut org_edge = edge("0", "a", "org");
+        org_edge.to_kind = PartyKind::Organisation;
+        org_edge.to_name = "Care Co".to_owned();
+        let mut edges = vec![org_edge];
+        for index in 0..20 {
+            let id = format!("n{index}");
+            catalog.push(node(PartyKind::Contact, &id, &format!("Node {index}")));
+            let mut link = edge(&format!("e{index}"), "org", &id);
+            link.from_kind = PartyKind::Organisation;
+            link.from_name = "Care Co".to_owned();
+            edges.push(link);
+        }
+
+        let mut explorer = ExplorerState::default();
+        explorer.focus_on(PartyKind::Contact, "a", "Alice");
+        explorer.selection = Some(node_key(PartyKind::Organisation, "org"));
+
+        let page = PageState {
+            explorer,
+            catalog,
+            network: RelationshipNetwork { edges, revision: 1 },
+        };
+
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(1100.0, 760.0))
+            .with_max_steps(20)
+            .with_context_setup(|ctx| theme::apply(ctx, theme::ThemeMode::Dark))
+            .build_ui_state(
+                move |ui, page: &mut PageState| {
+                    let source = ExplorerSource {
+                        nodes: &page.catalog,
+                        network: &page.network,
+                        loading: false,
+                        error: None,
+                    };
+                    show(ui, &mut page.explorer, &source);
+                },
+                page,
+            );
+
+        harness.run();
+        assert!(
+            harness
+                .query_all_by_label_contains("neighbours held back")
+                .next()
+                .is_some(),
+            "a hub shows that its links are held back"
+        );
+
+        harness.get_by_label("Expand").click();
+        harness.run();
+        assert!(
+            harness
+                .state()
+                .explorer
+                .expanded
+                .contains(&node_key(PartyKind::Organisation, "org"))
+        );
+        assert!(
+            harness
+                .query_all_by_label_contains("Neighbours expanded")
+                .next()
+                .is_some()
         );
     }
 }

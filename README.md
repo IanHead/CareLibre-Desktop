@@ -213,6 +213,10 @@ from the sidebar, or use **Explore network** on a contact or organisation record
 - Use **−** / **+** to change how many levels are shown around the focus party.
 - Click a party to select it; the side panel lists its direct relationships with roles,
   status and dates, and can open a contact or make that party the new focus.
+- **Skip hubs** is on by default. Highly connected parties such as Blue Dreams Care are
+  drawn with their link count but not expanded, so a client's second level is not simply
+  every other client of the same provider. Select a hub and choose **Expand** to walk
+  through it.
 - Double-click a party to focus it in place. Nodes glide to their new positions and the
   camera eases to the new view instead of jumping.
 - Use **← Back** or the breadcrumb to retrace your path; the level count, pan and zoom

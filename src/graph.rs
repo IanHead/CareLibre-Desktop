@@ -20,6 +20,39 @@ pub fn transition_factor(dt_seconds: f32) -> f32 {
     }
 }
 
+/// Parties above this many links are treated as hubs. Personal relationships
+/// are rarely this wide; organisations and a few administrative contacts are.
+pub const HUB_DEGREE: usize = 30;
+
+/// Suppressed parties at or above this many links get a count badge.
+pub const HUB_BADGE_MIN: usize = 10;
+
+/// How a walk treats highly connected parties.
+#[derive(Clone, Copy, Debug)]
+pub struct WalkPolicy<'a> {
+    pub max_nodes: usize,
+    /// Show hubs but do not walk through them unless they are focused or in
+    /// `expanded`.
+    pub skip_hubs: bool,
+    pub hub_degree: usize,
+    pub expanded: &'a BTreeSet<String>,
+}
+
+static NO_EXPANSIONS: BTreeSet<String> = BTreeSet::new();
+
+impl WalkPolicy<'_> {
+    /// Walk every reachable party. Used by tests and by views that have not
+    /// opted into hub suppression.
+    pub fn simple(max_nodes: usize) -> Self {
+        Self {
+            max_nodes,
+            skip_hubs: false,
+            hub_degree: HUB_DEGREE,
+            expanded: &NO_EXPANSIONS,
+        }
+    }
+}
+
 /// A stable key for one party, shared by the catalogue and every edge.
 pub fn node_key(kind: PartyKind, id: &str) -> String {
     format!("{}:{id}", kind.as_str())
@@ -198,8 +231,37 @@ impl RelationshipGraph {
         indices.iter().map(|index| &self.edges[*index]).collect()
     }
 
+    /// The number of links attached to one party.
+    pub fn degree(&self, key: &str) -> usize {
+        self.adjacency.get(key).map_or(0, Vec::len)
+    }
+
+    /// Whether a party's neighbours should be walked through under this
+    /// policy. Views use it to badge parties whose links are held back.
+    pub fn expands_through(&self, key: &str, focus: &str, policy: &WalkPolicy<'_>) -> bool {
+        if key == focus || !policy.skip_hubs || policy.expanded.contains(key) {
+            return true;
+        }
+        // An organisation is an affiliation: every client of the same provider
+        // is not a meaningful indirect relationship.
+        if self
+            .label(key)
+            .is_some_and(|label| label.kind == PartyKind::Organisation)
+        {
+            return false;
+        }
+        self.degree(key) <= policy.hub_degree
+    }
+
     /// Breadth-first walk from `focus`, stopping at `levels` and `max_nodes`.
     pub fn walk(&self, focus: &str, levels: u8, max_nodes: usize) -> GraphWalk {
+        self.walk_with(focus, levels, &WalkPolicy::simple(max_nodes))
+    }
+
+    /// Breadth-first walk with a hub policy. Hubs are still included as nodes;
+    /// only their neighbours are held back, so the user can expand them from
+    /// the side panel.
+    pub fn walk_with(&self, focus: &str, levels: u8, policy: &WalkPolicy<'_>) -> GraphWalk {
         let mut hops: BTreeMap<String, usize> = BTreeMap::new();
         let mut roles: BTreeMap<String, String> = BTreeMap::new();
         let mut parents: BTreeMap<String, String> = BTreeMap::new();
@@ -210,6 +272,9 @@ impl RelationshipGraph {
         while let Some(current) = queue.pop_front() {
             let hop = hops[&current];
             if hop >= levels as usize {
+                continue;
+            }
+            if !self.expands_through(&current, focus, policy) {
                 continue;
             }
 
@@ -234,7 +299,7 @@ impl RelationshipGraph {
             neighbours.sort();
 
             for (neighbour, role) in neighbours {
-                if hops.len() >= max_nodes {
+                if hops.len() >= policy.max_nodes {
                     truncated = true;
                     break;
                 }
@@ -418,6 +483,90 @@ mod tests {
         let walk = graph.walk(&key("focus"), 1, 60);
         assert_eq!(walk.hops.len(), 60);
         assert!(walk.truncated);
+    }
+
+    #[test]
+    fn organisations_are_shown_but_not_expanded() {
+        let catalog = vec![
+            node(PartyKind::Contact, "a", "Alice"),
+            node(PartyKind::Contact, "b", "Bob"),
+            node(PartyKind::Organisation, "org", "Care Co"),
+            node(PartyKind::Contact, "c", "Carol"),
+        ];
+        let mut to_org = edge("1", "a", "org");
+        to_org.to_kind = PartyKind::Organisation;
+        to_org.to_name = "Care Co".to_owned();
+        let mut from_org = edge("2", "org", "c");
+        from_org.from_kind = PartyKind::Organisation;
+        from_org.from_name = "Care Co".to_owned();
+        let edges = vec![to_org, from_org, edge("3", "a", "b")];
+        let graph =
+            RelationshipGraph::build(&catalog, &edges, &GraphFilters::default(), Some(&key("a")));
+
+        let empty = BTreeSet::new();
+        let policy = WalkPolicy {
+            max_nodes: 60,
+            skip_hubs: true,
+            hub_degree: HUB_DEGREE,
+            expanded: &empty,
+        };
+        let walk = graph.walk_with(&key("a"), 2, &policy);
+        assert!(
+            walk.hops
+                .contains_key(&node_key(PartyKind::Organisation, "org"))
+        );
+        assert!(!walk.hops.contains_key(&key("c")));
+
+        // Explicit expansion, and focusing the organisation, both walk through.
+        let mut expanded = BTreeSet::new();
+        expanded.insert(node_key(PartyKind::Organisation, "org"));
+        let policy = WalkPolicy {
+            expanded: &expanded,
+            ..policy
+        };
+        assert!(
+            graph
+                .walk_with(&key("a"), 2, &policy)
+                .hops
+                .contains_key(&key("c"))
+        );
+
+        let empty = BTreeSet::new();
+        let policy = WalkPolicy {
+            expanded: &empty,
+            ..policy
+        };
+        assert!(
+            graph
+                .walk_with(&node_key(PartyKind::Organisation, "org"), 1, &policy)
+                .hops
+                .contains_key(&key("c"))
+        );
+    }
+
+    #[test]
+    fn a_well_connected_contact_is_not_expanded() {
+        let mut catalog = vec![node(PartyKind::Contact, "hub", "Hub")];
+        let mut edges = vec![edge("0", "a", "hub")];
+        for index in 0..40 {
+            let id = format!("n{index}");
+            catalog.push(node(PartyKind::Contact, &id, &format!("Node {index}")));
+            edges.push(edge(&format!("{index}"), "hub", &id));
+        }
+        let graph =
+            RelationshipGraph::build(&catalog, &edges, &GraphFilters::default(), Some(&key("a")));
+
+        let empty = BTreeSet::new();
+        let policy = WalkPolicy {
+            max_nodes: 60,
+            skip_hubs: true,
+            hub_degree: HUB_DEGREE,
+            expanded: &empty,
+        };
+        let walk = graph.walk_with(&key("a"), 3, &policy);
+        assert!(walk.hops.contains_key(&key("hub")));
+        assert!(!walk.hops.contains_key(&key("n0")));
+        assert_eq!(graph.degree(&key("hub")), 41);
     }
 
     #[test]

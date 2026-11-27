@@ -4622,7 +4622,12 @@ impl CareLibreApp {
     /// record without writing the user's saved preference. Used by headless
     /// screenshot builds so previews are deterministic.
     pub fn preview_constellation(&mut self, collapsed: bool, steps: u8) {
-        let preference = RelationshipViewPreference { collapsed, steps }.normalised();
+        let preference = RelationshipViewPreference {
+            collapsed,
+            steps,
+            skip_hubs: true,
+        }
+        .normalised();
         for window in self.contact_windows.values_mut() {
             window.constellation = preference;
         }
