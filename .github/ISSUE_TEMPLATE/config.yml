@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: CareLibre product roadmap
+    url: https://github.com/IanHead/CareLibre/blob/main/docs/roadmap.md
+    about: Check what is already planned before opening a feature request.
+  - name: CareLibre server issues
+    url: https://github.com/IanHead/CareLibre/issues
+    about: Report server, API, or data-model problems in the server repository.
+  - name: Development and troubleshooting
+    url: https://github.com/IanHead/CareLibre-Desktop#readme
+    about: Build, run, sign-in, and architecture documentation.

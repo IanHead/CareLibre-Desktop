@@ -1,0 +1,128 @@
+name: Bug report
+description: Report a crash, regression, or behaviour that is not working as expected.
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug.
+
+        Please search [existing issues](https://github.com/IanHead/CareLibre-Desktop/issues)
+        first. Do not include passwords, access tokens, or client and health information in
+        this report. Report security vulnerabilities privately instead of in a public issue.
+
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Before you start
+      options:
+        - label: I have searched existing issues and this is not a duplicate.
+          required: true
+        - label: I have removed passwords, tokens, and personal or health information from this report.
+          required: true
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: Describe the actual behaviour, including the exact error or crash if there is one.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect to happen?
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: A minimal sequence that reliably triggers the problem.
+      placeholder: |
+        1. Open ...
+        2. Select ...
+        3. See ...
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      description: Which part of the desktop client is affected?
+      options:
+        - Launch / workspace
+        - Contacts
+        - Contact editor
+        - Relationships / constellation
+        - Intake
+        - Organisations
+        - Rostering / suitability
+        - Funding / quotes / agreements
+        - Settings / sign-in
+        - Appearance / windows
+        - Performance
+        - Other / not sure
+    validations:
+      required: true
+
+  - type: input
+    id: desktop-version
+    attributes:
+      label: Desktop version
+      description: Release tag, or the commit SHA if you built from source.
+      placeholder: e.g. v0.1.0 or e9f291a
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - Windows
+        - macOS (Apple Silicon)
+        - macOS (Intel)
+        - Linux (Wayland)
+        - Linux (X11)
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: server
+    attributes:
+      label: CareLibre server version / edition
+      description: Optional, but helpful for API or data problems.
+      placeholder: e.g. Community Edition, server version or commit
+    validations:
+      required: false
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs and diagnostics
+      description: Paste relevant terminal output or F12 performance HUD readings. This is formatted as code.
+      render: shell
+    validations:
+      required: false
+
+  - type: textarea
+    id: screenshots
+    attributes:
+      label: Screenshots or recordings
+      description: Drag in images or short recordings if they help explain the problem.
+    validations:
+      required: false
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Anything else?
+      description: Workarounds, when the problem started, related issues, or other context.
+    validations:
+      required: false
