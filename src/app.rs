@@ -6995,29 +6995,40 @@ fn menu_toggle(ui: &mut Ui, collapsed: bool, rail: f32) -> egui::Response {
         "Collapse menu"
     };
     let glyph = if collapsed { "»" } else { "«" };
-    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 28.0), Sense::hover());
-    let x = rect.center().x + (rect.right() - 14.0 - rect.center().x) * rail;
-    let hit = egui::Rect::from_center_size(egui::pos2(x, rect.center().y), vec2(28.0, 28.0));
+    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 32.0), Sense::hover());
+    let x = rect.center().x + (rect.right() - 16.0 - rect.center().x) * rail;
+    let hit = egui::Rect::from_center_size(egui::pos2(x, rect.center().y), vec2(32.0, 32.0));
     let response = ui.interact(hit, ui.scope_id().with("menu-toggle"), Sense::click());
+    let hovered = response.hovered();
 
-    if response.hovered() {
-        ui.painter()
-            .rect_filled(hit, CornerRadius::same(7), theme::surface_raised());
-    }
+    ui.painter().rect(
+        hit,
+        CornerRadius::same(8),
+        if hovered {
+            theme::hover()
+        } else {
+            theme::surface_raised()
+        },
+        Stroke::new(
+            1.0,
+            if hovered {
+                theme::accent()
+            } else {
+                theme::border()
+            },
+        ),
+        StrokeKind::Inside,
+    );
 
     ui.painter().text(
         hit.center(),
         Align2::CENTER_CENTER,
         glyph,
-        FontId::proportional(15.0),
-        if response.hovered() {
-            theme::text()
-        } else {
-            theme::muted()
-        },
+        FontId::proportional(16.0),
+        theme::text(),
     );
 
-    if response.hovered() {
+    if hovered {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
 
