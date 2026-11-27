@@ -184,7 +184,9 @@ pub struct CareLibreApp {
     last_page: Page,
     page_changed_at: f64,
     frame_time: f64,
-    popped_pages: BTreeSet<Page>,
+    /// Detached pages mapped to the column slot they should return to when
+    /// docked. A popped-out page has no column in the main work area.
+    popped_pages: BTreeMap<Page, usize>,
     remote: Option<RemoteHandle>,
     app_ctx: Option<egui::Context>,
     store: Option<StoreHandle>,
@@ -323,7 +325,7 @@ impl CareLibreApp {
             last_page: Page::Contacts,
             page_changed_at: f64::NEG_INFINITY,
             frame_time: 0.0,
-            popped_pages: BTreeSet::new(),
+            popped_pages: BTreeMap::new(),
             remote: None,
             app_ctx: None,
             store: None,
@@ -457,8 +459,16 @@ impl CareLibreApp {
         self.last_page = page;
     }
 
-    /// Show a page and make sure it has a column in the work area.
+    /// Show a page and make sure it has a column in the work area. A page that
+    /// is open in its own window is focused instead: the main work area keeps
+    /// its spaces for the columns that are still docked.
     fn open_page(&mut self, page: Page) {
+        if self.popped_pages.contains_key(&page) {
+            if let Some(ctx) = &self.app_ctx {
+                ctx.send_viewport_cmd_to(page_viewport_id(page), egui::ViewportCommand::Focus);
+            }
+            return;
+        }
         if let Some(index) = self
             .columns
             .iter()
@@ -509,6 +519,18 @@ impl CareLibreApp {
         self.open_page(page);
     }
 
+    /// Detach a page into its own window without a live viewport. Used by
+    /// previews and tests.
+    pub fn pop_out_page_column(&mut self, page: Page) {
+        self.pop_out_page(page);
+    }
+
+    /// Close every docked column and detached page window. Used by previews and
+    /// tests; the UI uses the top-bar button.
+    pub fn close_all(&mut self) {
+        self.close_all_columns(self.frame_time);
+    }
+
     /// Give every open column the same share of the window. Called whenever a
     /// column is added or removed so the remaining columns redistribute evenly.
     fn reset_column_weights(&mut self) {
@@ -530,6 +552,15 @@ impl CareLibreApp {
     }
 
     fn close_all_columns(&mut self, now: f64) {
+        // Pages in their own windows are not columns in the work area, so they
+        // need closing explicitly.
+        if let Some(ctx) = &self.app_ctx {
+            for page in self.popped_pages.keys() {
+                ctx.send_viewport_cmd_to(page_viewport_id(*page), egui::ViewportCommand::Close);
+            }
+        }
+        self.popped_pages.clear();
+
         let ids: Vec<String> = self.contact_windows.keys().cloned().collect();
         for id in ids {
             self.close_contact_window(&id);
@@ -576,7 +607,7 @@ impl CareLibreApp {
         for id in self.contact_windows.keys() {
             ctx.send_viewport_cmd_to(contact_viewport_id(id), egui::ViewportCommand::Close);
         }
-        for page in &self.popped_pages {
+        for page in self.popped_pages.keys() {
             ctx.send_viewport_cmd_to(page_viewport_id(*page), egui::ViewportCommand::Close);
         }
         if self.intake.popped_out {
@@ -678,6 +709,17 @@ impl CareLibreApp {
         self.columns.iter().any(|column| {
             matches!(column.kind, ColumnKind::Page(open) if open == self.page) && !column.closing
         })
+    }
+
+    /// Pages with a live column in the main work area, in column order.
+    pub fn docked_page_columns(&self) -> Vec<Page> {
+        self.columns
+            .iter()
+            .filter_map(|column| match &column.kind {
+                ColumnKind::Page(page) if !column.closing => Some(*page),
+                _ => None,
+            })
+            .collect()
     }
 
     fn visible_column_count(&self) -> usize {
@@ -2677,65 +2719,68 @@ impl CareLibreApp {
         }
     }
 
-    /// Placeholder shown in the main window when the current page lives in its
-    /// own native window.
-    fn detached_page_placeholder(&mut self, ui: &mut Ui, page: Page) {
-        let mut focus = false;
-        let mut dock = false;
-        ui.vertical_centered(|ui| {
-            ui.add_space(70.0);
-            let (rect, _) = ui.allocate_exact_size(vec2(56.0, 56.0), Sense::hover());
-            ui.painter()
-                .rect_filled(rect, CornerRadius::same(15), theme::surface_raised());
-            ui.painter().text(
-                rect.center(),
-                Align2::CENTER_CENTER,
-                page.icon(),
-                FontId::proportional(24.0),
-                theme::text(),
-            );
-            ui.add_space(12.0);
-            ui.label(RichText::new(page.label()).font(theme::strong_font(24.0)));
-            ui.label(
-                RichText::new("This page is open in its own window.")
-                    .color(theme::muted())
-                    .size(12.5),
-            );
-            ui.add_space(14.0);
-            ui.horizontal(|ui| {
-                if ui.add(theme::primary_button("Focus window")).clicked() {
-                    focus = true;
-                }
-                if ui.add(theme::secondary_button("Dock back")).clicked() {
-                    dock = true;
-                }
-            });
-        });
-
-        if focus {
-            ui.ctx()
-                .send_viewport_cmd_to(page_viewport_id(page), egui::ViewportCommand::Focus);
-        }
-        if dock {
-            self.dock_page(ui.ctx(), page);
-        }
-    }
-
     pub fn page_popped_out(&self, page: Page) -> bool {
-        self.popped_pages.contains(&page)
+        self.popped_pages.contains_key(&page)
     }
 
-    fn toggle_page_popout(&mut self, ctx: &egui::Context, page: Page) {
-        if self.popped_pages.contains(&page) {
-            self.dock_page(ctx, page);
-        } else {
-            self.popped_pages.insert(page);
+    /// Detach a page into its own native window. Its column leaves the work
+    /// area immediately so the freed space goes to the remaining columns; the
+    /// remembered slot restores the page when it is docked again.
+    fn pop_out_page(&mut self, page: Page) {
+        if self.popped_pages.contains_key(&page) {
+            return;
+        }
+        let Some(index) = self
+            .columns
+            .iter()
+            .position(|column| matches!(column.kind, ColumnKind::Page(open) if open == page))
+        else {
+            return;
+        };
+        self.columns.remove(index);
+        self.popped_pages.insert(page, index);
+        self.reset_column_weights();
+        if self.page == page {
+            self.page = self
+                .columns
+                .iter()
+                .find_map(|column| match &column.kind {
+                    ColumnKind::Page(open) if !column.closing => Some(*open),
+                    _ => None,
+                })
+                .unwrap_or(self.page);
+        }
+        if let Some(ctx) = &self.app_ctx {
             ctx.request_repaint();
         }
     }
 
+    /// Bring a detached page back into the work area, reusing its previous
+    /// column slot, and close its native window.
     fn dock_page(&mut self, ctx: &egui::Context, page: Page) {
-        self.popped_pages.remove(&page);
+        if let Some(index) = self.popped_pages.remove(&page) {
+            let index = index.min(self.columns.len());
+            self.columns.insert(
+                index,
+                ColumnState {
+                    kind: ColumnKind::Page(page),
+                    width: 760.0,
+                    weight: 1.0,
+                    display_width: 0.0,
+                    anim_from: 0.0,
+                    anim_to: 760.0,
+                    anim_start: 0.0,
+                    position_x: -1.0,
+                    pos_from: 0.0,
+                    pos_to: 0.0,
+                    pos_start: 0.0,
+                    closing: false,
+                    close_start: 0.0,
+                },
+            );
+            self.reset_column_weights();
+            self.page = page;
+        }
         ctx.send_viewport_cmd_to(page_viewport_id(page), egui::ViewportCommand::Close);
         ctx.request_repaint();
     }
@@ -2743,7 +2788,7 @@ impl CareLibreApp {
     /// Render every page that has been detached into a native window. Each
     /// window reuses the page renderer, so pop-out/dock works for every page.
     fn render_page_viewports(&mut self, ctx: &egui::Context) {
-        let pages: Vec<Page> = self.popped_pages.iter().copied().collect();
+        let pages: Vec<Page> = self.popped_pages.keys().copied().collect();
         for page in pages {
             let viewport_id = page_viewport_id(page);
             let title = format!("{} — CareLibre", page.label());
@@ -2829,8 +2874,7 @@ impl CareLibreApp {
             });
 
             if close {
-                self.popped_pages.remove(&page);
-                ctx.send_viewport_cmd_to(viewport_id, egui::ViewportCommand::Close);
+                self.dock_page(ctx, page);
                 continue;
             }
             if let Some(action) = contacts_action {
@@ -2932,6 +2976,7 @@ impl CareLibreApp {
         let mut close_organisation: Option<String> = None;
         let mut close_intake_case: Option<String> = None;
         let mut close_page: Option<Page> = None;
+        let mut detach_page: Option<Page> = None;
         let mut resize: Option<(usize, usize, f32)> = None;
         let mut editor_actions: Vec<(String, ContactEditorAction)> = Vec::new();
         let mut organisation_editor_actions: Vec<(String, OrganisationEditorAction)> = Vec::new();
@@ -3075,33 +3120,29 @@ impl CareLibreApp {
                     .inner_margin(Margin::same(1))
                     .show(&mut column_ui, |ui| {
                         ui.set_min_height(height);
-                        let column_page = match &kind {
-                            ColumnKind::Page(open) => *open,
-                            ColumnKind::Contact(_)
-                            | ColumnKind::Organisation(_)
-                            | ColumnKind::IntakeCase(_) => self.page,
-                        };
-                        let column_popped = self.page_popped_out(column_page);
-                        let (drag, close_clicked, pop_out, toggle_page) = Self::column_header(
-                            ui,
-                            &kind,
-                            column_popped,
-                            &self.contact_windows,
-                            &self.organisation_editors,
-                            &self.intake_case_columns,
-                        );
+                        let (drag, close_clicked, pop_out_record, pop_out_page) =
+                            Self::column_header(
+                                ui,
+                                &kind,
+                                &self.contact_windows,
+                                &self.organisation_editors,
+                                &self.intake_case_columns,
+                            );
                         if !closing {
                             match &kind {
                                 ColumnKind::Page(open) => {
                                     if close_clicked {
                                         close_page = Some(*open);
                                     }
+                                    if pop_out_page {
+                                        detach_page = Some(*open);
+                                    }
                                 }
                                 ColumnKind::Contact(id) => {
                                     if close_clicked {
                                         close = Some(id.clone());
                                     }
-                                    if pop_out {
+                                    if pop_out_record {
                                         editor_actions
                                             .push((id.clone(), ContactEditorAction::PopOut));
                                     }
@@ -3116,9 +3157,6 @@ impl CareLibreApp {
                                         close_intake_case = Some(id.clone());
                                     }
                                 }
-                            }
-                            if toggle_page {
-                                self.toggle_page_popout(ui.ctx(), column_page);
                             }
                             if drag.drag_started() {
                                 self.drag_column = Some(kind.key());
@@ -3142,32 +3180,28 @@ impl CareLibreApp {
                                     .inner_margin(Margin::same(16))
                                     .show(ui, |ui| {
                                         ui.set_min_height((height - 40.0).max(120.0));
-                                        if column_popped {
-                                            self.detached_page_placeholder(ui, *open_page);
+                                        let now = ui.ctx().input(|input| input.time);
+                                        let progress = if *open_page == self.page {
+                                            ((now - self.page_changed_at) / PAGE_ANIM_DURATION)
+                                                .clamp(0.0, 1.0)
+                                                as f32
                                         } else {
-                                            let now = ui.ctx().input(|input| input.time);
-                                            let progress = if *open_page == self.page {
-                                                ((now - self.page_changed_at) / PAGE_ANIM_DURATION)
-                                                    .clamp(0.0, 1.0)
-                                                    as f32
-                                            } else {
-                                                1.0
-                                            };
-                                            if progress < 1.0 {
-                                                let enter = theme::ease_in_out(progress);
-                                                ui.multiply_opacity(0.35 + 0.65 * enter);
-                                                ui.add_space((1.0 - enter) * 8.0);
-                                            }
-                                            if let Some(action) = self.page_contents(
-                                                ui,
-                                                *open_page,
-                                                contacts_action,
-                                                organisations_action,
-                                                intake_action,
-                                                rostering_action,
-                                            ) {
-                                                page_action = Some(action);
-                                            }
+                                            1.0
+                                        };
+                                        if progress < 1.0 {
+                                            let enter = theme::ease_in_out(progress);
+                                            ui.multiply_opacity(0.35 + 0.65 * enter);
+                                            ui.add_space((1.0 - enter) * 8.0);
+                                        }
+                                        if let Some(action) = self.page_contents(
+                                            ui,
+                                            *open_page,
+                                            contacts_action,
+                                            organisations_action,
+                                            intake_action,
+                                            rostering_action,
+                                        ) {
+                                            page_action = Some(action);
                                         }
                                     });
                             }
@@ -3325,6 +3359,9 @@ impl CareLibreApp {
         if let Some(id) = close {
             self.close_contact_window(&id);
         }
+        if let Some(page) = detach_page {
+            self.pop_out_page(page);
+        }
         if let Some(key) = close_organisation {
             self.close_organisation_editor(&key);
         }
@@ -3352,7 +3389,6 @@ impl CareLibreApp {
         for kind in finished {
             match kind {
                 ColumnKind::Page(page) => {
-                    self.dock_page(ui.ctx(), page);
                     let before = self.columns.len();
                     self.columns.retain(
                         |column| !matches!(column.kind, ColumnKind::Page(open) if open == page),
@@ -3413,14 +3449,13 @@ impl CareLibreApp {
     fn column_header(
         ui: &mut Ui,
         kind: &ColumnKind,
-        page_popped: bool,
         windows: &BTreeMap<String, ContactWindowState>,
         organisations: &BTreeMap<String, OrganisationEditorState>,
         intake_cases: &BTreeMap<String, pages::intake::board::IntakeCaseColumnState>,
     ) -> (egui::Response, bool, bool, bool) {
         let mut close_clicked = false;
-        let mut pop_out = false;
-        let mut toggle_page = false;
+        let mut pop_out_record = false;
+        let mut pop_out_page = false;
 
         let frame = Frame::new()
             .fill(theme::sidebar())
@@ -3450,21 +3485,16 @@ impl CareLibreApp {
 
                 match kind {
                     ColumnKind::Page(_) => {
-                        let (glyph, tooltip) = if page_popped {
-                            ("↙", "Dock page")
-                        } else {
-                            ("↗", "Pop out page")
-                        };
-                        let response = column_icon_button(&mut controls, glyph, tooltip);
+                        let response = column_icon_button(&mut controls, "↗", "Pop out page");
                         if response.clicked() {
-                            toggle_page = true;
+                            pop_out_page = true;
                         }
                         control_rects.push(response.rect);
                     }
                     ColumnKind::Contact(_) => {
                         let response = column_icon_button(&mut controls, "↗", "Pop out record");
                         if response.clicked() {
-                            pop_out = true;
+                            pop_out_record = true;
                         }
                         control_rects.push(response.rect);
                     }
@@ -3574,7 +3604,7 @@ impl CareLibreApp {
 
                 drag
             });
-        (frame.inner, close_clicked, pop_out, toggle_page)
+        (frame.inner, close_clicked, pop_out_record, pop_out_page)
     }
 
     /// Build the order used while dragging: the dragged column is shown in its
@@ -6577,11 +6607,12 @@ impl CareLibreApp {
 
                         ui.add_space(4.0);
 
-                        let close_all_target = if self.visible_column_count() > 1 {
-                            1.0
-                        } else {
-                            0.0
-                        };
+                        let close_all_target =
+                            if self.visible_column_count() > 1 || !self.popped_pages.is_empty() {
+                                1.0
+                            } else {
+                                0.0
+                            };
                         let close_all_now = ui.ctx().input(|input| input.time);
                         if !self.close_all_initialised {
                             self.close_all_anim = close_all_target;

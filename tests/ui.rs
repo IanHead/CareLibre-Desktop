@@ -500,10 +500,59 @@ fn pages_can_pop_out_and_dock() {
         .click();
     harness.run_steps(2);
     assert!(harness.state().page_popped_out(Page::Rostering));
+    assert!(
+        !harness.state().page_column_open(),
+        "a popped-out page should not keep a column in the main window"
+    );
+    assert_eq!(
+        harness
+            .query_all_by_label("This page is open in its own window.")
+            .count(),
+        0,
+        "a popped-out page should not leave a placeholder behind"
+    );
 
-    harness.get_by_label("Dock page").click_accesskit();
+    harness.get_by_label("Dock").click_accesskit();
     harness.run_steps(2);
     assert!(!harness.state().page_popped_out(Page::Rostering));
+    assert!(harness.state().page_column_open());
+}
+
+#[test]
+fn popped_out_pages_free_their_column_for_other_pages() {
+    let mut app = CareLibreApp::new();
+    app.set_page(Page::Rostering);
+    for page in [Page::Contacts, Page::Services, Page::Documents] {
+        app.open_page_column(page);
+    }
+    assert_eq!(app.docked_page_columns().len(), 4);
+
+    app.pop_out_page_column(Page::Rostering);
+    assert!(app.page_popped_out(Page::Rostering));
+    assert_eq!(
+        app.docked_page_columns(),
+        vec![Page::Documents, Page::Services, Page::Contacts]
+    );
+    assert_eq!(app.page(), Page::Documents);
+
+    // The freed slot can be used by another page while Rostering is detached.
+    app.open_page_column(Page::Communications);
+    assert!(
+        app.docked_page_columns().contains(&Page::Communications),
+        "the column limit should count only columns docked in the main window"
+    );
+
+    // Selecting the detached page focuses its window rather than opening a
+    // placeholder column in the main window.
+    let page_before_focus = app.page();
+    app.open_page_column(Page::Rostering);
+    assert_eq!(app.page(), page_before_focus);
+    assert_eq!(app.docked_page_columns().len(), 4);
+
+    // Close all also closes pages that live in their own windows.
+    app.close_all();
+    assert!(app.docked_page_columns().is_empty());
+    assert!(!app.page_popped_out(Page::Rostering));
 }
 
 #[test]
