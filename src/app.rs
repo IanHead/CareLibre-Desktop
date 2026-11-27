@@ -6367,20 +6367,15 @@ impl CareLibreApp {
         let account = self.account_badge();
         let signed_in = self.signed_in();
 
-        egui::Panel::top("top_bar")
+        let top_bar = egui::Panel::top("top_bar")
             .exact_size(64.0)
             .show_separator_line(false)
-            .frame(
-                Frame::new()
-                    .fill(theme::bg())
-                    .inner_margin(Margin {
-                        left: 20,
-                        right: 20,
-                        top: 0,
-                        bottom: 0,
-                    })
-                    .stroke(Stroke::new(1.0, theme::border())),
-            )
+            .frame(Frame::new().fill(theme::bg()).inner_margin(Margin {
+                left: 20,
+                right: 20,
+                top: 0,
+                bottom: 0,
+            }))
             .show(ui, |ui| {
                 ui.horizontal_centered(|ui| {
                     // Brand
@@ -6534,6 +6529,12 @@ impl CareLibreApp {
                     });
                 });
             });
+
+        ui.painter().hline(
+            top_bar.response.rect.x_range(),
+            top_bar.response.rect.bottom() - 0.5,
+            Stroke::new(1.0, theme::border()),
+        );
     }
 
     /// Collapse or expand the docked main menu and remember the choice.
@@ -6848,14 +6849,13 @@ impl CareLibreApp {
             ),
         };
 
-        egui::Panel::bottom("status_bar")
+        let status_bar = egui::Panel::bottom("status_bar")
             .exact_size(36.0)
             .show_separator_line(false)
             .frame(
                 Frame::new()
                     .fill(theme::sidebar())
-                    .inner_margin(Margin::symmetric(20, 4))
-                    .stroke(Stroke::new(1.0, theme::border())),
+                    .inner_margin(Margin::symmetric(20, 4)),
             )
             .show(ui, |ui| {
                 ui.horizontal_centered(|ui| {
@@ -6884,6 +6884,12 @@ impl CareLibreApp {
                     });
                 });
             });
+
+        ui.painter().hline(
+            status_bar.response.rect.x_range(),
+            status_bar.response.rect.top() + 0.5,
+            Stroke::new(1.0, theme::border()),
+        );
     }
 
     fn show_notice(&mut self, ctx: &egui::Context) {
