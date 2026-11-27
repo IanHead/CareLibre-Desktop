@@ -972,7 +972,11 @@ pub fn show_column(
 
     ui.add_space(4.0);
     let footer_height = 54.0;
-    let body_height = (ui.available_height() - footer_height).max(120.0);
+    // `available_height` can extend past the column's clip rect while the
+    // outer layout is still settling, so size the body against the clipped
+    // bottom. This keeps the save/cancel footer visible at any window height.
+    let bottom = ui.clip_rect().bottom().min(ui.max_rect().bottom());
+    let body_height = (bottom - ui.cursor().top() - footer_height).max(120.0);
     ScrollArea::vertical()
         .id_salt(("contact-column-body", &state.contact_id))
         .max_height(body_height)
