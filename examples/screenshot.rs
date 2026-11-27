@@ -33,6 +33,7 @@ fn main() {
     };
     let page = match args.get(1).map(String::as_str) {
         Some("contacts" | "clients" | "workers") => Page::Contacts,
+        Some("relationships") => Page::Relationships,
         Some("organisations") => Page::Organisations,
         Some("rostering") => Page::Rostering,
         Some("services") => Page::Services,
@@ -74,6 +75,12 @@ fn main() {
     let intake_case = args.iter().any(|arg| arg == "--intake-case");
     let new_intake = args.iter().any(|arg| arg == "--new-intake");
     let intake_path = args.iter().any(|arg| arg == "--intake-path");
+    let explore = args.iter().find_map(|arg| arg.strip_prefix("--explore="));
+    let select = args.iter().find_map(|arg| arg.strip_prefix("--select="));
+    let explore_levels = args
+        .iter()
+        .find_map(|arg| arg.strip_prefix("--levels="))
+        .and_then(|value| value.parse::<u8>().ok());
     // With --relationships: open the first relationship's history or actions menu.
     let history = args.iter().any(|arg| arg == "--history");
     let actions = args.iter().any(|arg| arg == "--actions");
@@ -94,6 +101,7 @@ fn main() {
             list.split(',')
                 .filter_map(|name| match name.trim() {
                     "contacts" | "clients" | "workers" => Some(Page::Contacts),
+                    "relationships" => Some(Page::Relationships),
                     "organisations" => Some(Page::Organisations),
                     "rostering" => Some(Page::Rostering),
                     "services" => Some(Page::Services),
@@ -197,6 +205,33 @@ fn main() {
             }
         }
 
+        if page == Page::Relationships {
+            let deadline = Instant::now() + Duration::from_secs(15);
+            while !harness.state().relationship_graph_ready() && Instant::now() < deadline {
+                harness.step();
+                std::thread::sleep(Duration::from_millis(25));
+            }
+            if let Some(query) = explore
+                && harness.state_mut().focus_explorer_by_label(query)
+            {
+                for _ in 0..10 {
+                    harness.run();
+                    std::thread::sleep(Duration::from_millis(25));
+                }
+            }
+            if let Some(levels) = explore_levels {
+                harness.state_mut().preview_explorer_levels(levels);
+            }
+            if let Some(query) = select {
+                harness.state_mut().preview_explorer_selection(query);
+            }
+            // Let node and camera transitions finish before the capture.
+            for _ in 0..40 {
+                harness.run();
+                std::thread::sleep(Duration::from_millis(16));
+            }
+        }
+
         if page == Page::Organisations {
             let deadline = Instant::now() + Duration::from_secs(10);
             while !harness.state().organisations_ready() && Instant::now() < deadline {
@@ -291,7 +326,11 @@ fn main() {
                 harness
                     .get_by_label_contains("records within")
                     .scroll_to_me();
-                harness.run();
+                // Let the constellation settle before capturing the frame.
+                for _ in 0..30 {
+                    harness.run();
+                    std::thread::sleep(Duration::from_millis(16));
+                }
             }
             if funding {
                 harness.get_by_label("Funding & agreements").scroll_to_me();

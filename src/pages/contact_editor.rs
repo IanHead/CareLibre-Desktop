@@ -144,6 +144,12 @@ pub enum ContactEditorAction {
     LoadRelationshipHistory(String),
     /// Collapse/expand or change the constellation's step count.
     SetConstellationPreference(RelationshipViewPreference),
+    /// Open the full relationship explorer focused on this record.
+    OpenRelationshipExplorer {
+        kind: PartyKind,
+        id: String,
+        label: String,
+    },
     /// Retry fetching the whole relationship graph.
     ReloadConstellation,
     CreateContact {
@@ -364,6 +370,10 @@ pub struct ContactWindowState {
     /// The per-user constellation preference and its cached layout.
     pub constellation: RelationshipViewPreference,
     pub constellation_view: Option<constellation::ConstellationView>,
+    /// Interpolated node positions while the constellation changes shape.
+    pub constellation_animation: constellation::ConstellationAnimation,
+    /// The party selected inside the constellation, opened on double-click.
+    pub constellation_selection: Option<String>,
     pub error: Option<String>,
     pub close_requested: bool,
     pub popped_out: bool,
@@ -451,6 +461,8 @@ impl ContactWindowState {
             relationship_error: None,
             constellation: RelationshipViewPreference::default(),
             constellation_view: None,
+            constellation_animation: constellation::ConstellationAnimation::default(),
+            constellation_selection: None,
             error: None,
             close_requested: false,
             popped_out: false,
@@ -2492,7 +2504,29 @@ fn relationships_card(
 
     theme::card().show(ui, |ui| {
         ui.set_width(ui.available_width());
-        ui.label(RichText::new("Relationships").font(theme::strong_font(15.0)));
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("Relationships").font(theme::strong_font(15.0)));
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if ui
+                    .add(
+                        egui::Button::new(
+                            RichText::new("Explore network →")
+                                .color(theme::accent())
+                                .size(10.5),
+                        )
+                        .frame(false),
+                    )
+                    .on_hover_text("Open the relationship explorer focused on this record")
+                    .clicked()
+                {
+                    action = Some(ContactEditorAction::OpenRelationshipExplorer {
+                        kind: PartyKind::Contact,
+                        id: state.contact_id.clone(),
+                        label: state.computed_display_name(),
+                    });
+                }
+            });
+        });
         ui.label(
             RichText::new(
                 "Two-sided links stored by the server. Connect this record to any contact or organisation; new contacts can be created here and used immediately.",
@@ -2510,6 +2544,8 @@ fn relationships_card(
             &focus_label,
             &mut state.constellation,
             &mut state.constellation_view,
+            &mut state.constellation_animation,
+            &mut state.constellation_selection,
         );
         if constellation.preference_changed {
             action = Some(ContactEditorAction::SetConstellationPreference(

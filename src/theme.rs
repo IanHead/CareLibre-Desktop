@@ -209,6 +209,13 @@ pub fn accent_soft(alpha: u8) -> Color32 {
     Color32::from_rgba_unmultiplied(accent.r(), accent.g(), accent.b(), alpha)
 }
 
+/// Colour for the shortest route from a hovered or selected party back to the
+/// graph's focus. Kept distinct from the accent green used for direct links and
+/// from the amber used for organisations.
+pub fn relationship_path() -> Color32 {
+    lerp_color(accent_blue(), danger(), 0.45)
+}
+
 /// Blend two colours in sRGB space. Used for animated hover and selection states.
 pub fn lerp_color(from: Color32, to: Color32, t: f32) -> Color32 {
     let t = t.clamp(0.0, 1.0);

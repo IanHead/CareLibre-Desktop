@@ -4,6 +4,7 @@ pub mod contacts;
 pub mod intake;
 pub mod organisations;
 pub mod placeholder;
+pub mod relationships;
 pub mod rostering;
 pub mod settings;
 
@@ -39,6 +40,7 @@ pub enum Action {
 pub enum Page {
     Intake,
     Contacts,
+    Relationships,
     Organisations,
     Rostering,
     Services,
@@ -53,6 +55,7 @@ impl Page {
         match self {
             Self::Intake => "Intake",
             Self::Contacts => "Contacts",
+            Self::Relationships => "Relationships",
             Self::Organisations => "Organisations",
             Self::Rostering => "Rostering",
             Self::Services => "Services & rates",
@@ -67,6 +70,7 @@ impl Page {
         match self {
             Self::Intake => "📝",
             Self::Contacts => "👥",
+            Self::Relationships => "🔗",
             Self::Organisations => "🏢",
             Self::Rostering => "📅",
             Self::Services => "🏷",
@@ -81,6 +85,9 @@ impl Page {
         match self {
             Self::Intake => "Guided onboarding for clients, workers and other contacts.",
             Self::Contacts => "Everyone the organisation works with, filtered by relationship.",
+            Self::Relationships => {
+                "Walk the relationship graph and inspect each party's direct links."
+            }
             Self::Organisations => "External providers, brokers, health services and agencies.",
             Self::Rostering => "Shifts, client and worker assignments, and sessions.",
             Self::Services => "Funded services, rate cards and effective-dated rate versions.",
@@ -110,6 +117,12 @@ impl Page {
                 "ABN, contact details, notes and active status",
                 "Search and filter active or archived records",
                 "Relationship counts for every counterparty",
+            ],
+            Self::Relationships => &[
+                "Explore the graph from any contact or organisation",
+                "Change how many levels away you see",
+                "Select a party to read their direct relationships",
+                "Re-root the graph and retrace your path",
             ],
             Self::Rostering => &[
                 "Shifts with client and worker assignments or sessions",
