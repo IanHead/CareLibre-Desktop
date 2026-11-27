@@ -14,7 +14,7 @@ use serde_json::{Value, json};
 
 use crate::{
     api, chrome,
-    config::{Config, RelationshipViewPreference, relationship_view_key},
+    config::{Config, ExplorerPreference, RelationshipViewPreference, relationship_view_key},
     contact::{
         ApiAgreementLineWrite, ApiAgreementWrite, ApiClientRequirementWrite, ApiContactDetail,
         ApiContactWrite, ApiFundingPackageWrite, ApiGraphNode, ApiRelationship,
@@ -34,6 +34,7 @@ use crate::{
             OrganisationEditorAction, OrganisationEditorState, OrganisationsAction,
             OrganisationsState,
         },
+        relationships::{ExplorerAction, ExplorerSource, ExplorerState},
         rostering::{RosteringAction, RosteringState},
         settings::SettingsForm,
     },
@@ -174,6 +175,8 @@ pub struct CareLibreApp {
     /// Bumped whenever the graph changes; constellation layouts rebuild once.
     relationship_graph_revision: u64,
     relationship_network: Option<Arc<RelationshipNetwork>>,
+    /// The full-window relationship explorer's navigation and layout state.
+    relationship_explorer: ExplorerState,
     rostering: RosteringState,
     rostering_request_seq: u64,
     rostering_requests: BTreeMap<u64, RosterRequest>,
@@ -311,6 +314,7 @@ impl CareLibreApp {
             relationship_graph_error: None,
             relationship_graph_revision: 0,
             relationship_network: None,
+            relationship_explorer: ExplorerState::default(),
             rostering: RosteringState::default(),
             // Rostering request ids live in their own range.
             rostering_request_seq: 1 << 40,
@@ -617,9 +621,11 @@ impl CareLibreApp {
         self.party_catalog_request = None;
         self.relationship_edges.clear();
         self.relationship_graph_loaded = false;
+        self.relationship_graph_revision = 0;
         self.relationship_graph_error = None;
         self.note_relationship_network_changed();
         self.relationship_network = None;
+        self.relationship_explorer = ExplorerState::default();
 
         self.organisation_list_request = None;
         self.organisation_save_requests.clear();
@@ -715,7 +721,7 @@ impl CareLibreApp {
             auth,
         });
         self.settings.on_signed_in();
-        self.apply_constellation_preferences();
+        self.apply_relationship_preferences();
     }
 
     /// Change the decoration mode for previews/tests without persisting it.
@@ -1031,6 +1037,24 @@ impl CareLibreApp {
                     server_error.as_deref(),
                 ) {
                     *contacts_action = Some(action);
+                }
+                None
+            }
+            Page::Relationships => {
+                self.ensure_party_catalog();
+                let catalog = self.lookup_parties();
+                let network = self.relationship_network();
+                let graph_error = self.relationship_graph_error.clone();
+                let source = ExplorerSource {
+                    nodes: &catalog,
+                    network: &network,
+                    loading: self.party_catalog_request.is_some(),
+                    error: graph_error.as_deref(),
+                };
+                if let Some(action) =
+                    pages::relationships::show(ui, &mut self.relationship_explorer, &source)
+                {
+                    self.handle_explorer_action(ui.ctx(), action);
                 }
                 None
             }
@@ -1371,6 +1395,9 @@ impl CareLibreApp {
             OrganisationEditorAction::Save => self.save_organisation(key),
             OrganisationEditorAction::Cancel => self.close_organisation_editor(key),
             OrganisationEditorAction::Delete => self.delete_organisation_from_editor(key),
+            OrganisationEditorAction::Explore { id, label } => {
+                self.open_relationship_explorer(PartyKind::Organisation, &id, &label);
+            }
         }
     }
 
@@ -4097,6 +4124,9 @@ impl CareLibreApp {
             ContactEditorAction::LoadRelationshipHistory(edge_id) => {
                 self.load_relationship_history(id, edge_id);
             }
+            ContactEditorAction::OpenRelationshipExplorer { kind, id, label } => {
+                self.open_relationship_explorer(kind, &id, &label);
+            }
             ContactEditorAction::SetConstellationPreference(preference) => {
                 let preference = preference.normalised();
                 // The setting belongs to the signed-in user, so every open
@@ -4410,13 +4440,21 @@ impl CareLibreApp {
             .unwrap_or_default()
     }
 
-    /// Load the signed-in account's saved constellation settings into every
-    /// open record once the session is known.
-    fn apply_constellation_preferences(&mut self) {
+    fn explorer_preference(&self) -> ExplorerPreference {
+        self.constellation_key()
+            .map(|key| self.config.explorer_view(&key))
+            .unwrap_or_default()
+    }
+
+    /// Load the signed-in account's saved relationship view settings into the
+    /// open record and the explorer once the session is known.
+    fn apply_relationship_preferences(&mut self) {
         let preference = self.constellation_preference();
         for window in self.contact_windows.values_mut() {
             window.constellation = preference;
         }
+        let explorer = self.explorer_preference();
+        self.relationship_explorer.apply_preference(explorer);
     }
 
     fn save_constellation_preference(&mut self, id: &str) -> Result<(), String> {
@@ -4429,6 +4467,37 @@ impl CareLibreApp {
         self.config
             .set_relationship_view(key, window.constellation.normalised());
         self.config.save()
+    }
+
+    fn save_explorer_preference(&mut self) -> Result<(), String> {
+        let Some(key) = self.constellation_key() else {
+            return Ok(());
+        };
+        self.config
+            .set_explorer_view(key, self.relationship_explorer.preference());
+        self.config.save()
+    }
+
+    fn handle_explorer_action(&mut self, ctx: &egui::Context, action: ExplorerAction) {
+        match action {
+            ExplorerAction::OpenContact(id) => self.open_contact(&id),
+            ExplorerAction::Reload => {
+                if self.party_catalog_request.is_none() {
+                    self.relationship_graph_loaded = false;
+                    self.relationship_graph_error = None;
+                    self.note_relationship_network_changed();
+                    self.ensure_party_catalog();
+                }
+            }
+            ExplorerAction::PreferenceChanged => {
+                if let Err(error) = self.save_explorer_preference() {
+                    self.notify(
+                        ctx,
+                        format!("The relationship explorer settings could not be saved: {error}"),
+                    );
+                }
+            }
+        }
     }
 
     /// Insert a newly created contact into the local list snapshots so it can be
@@ -4557,6 +4626,44 @@ impl CareLibreApp {
         for window in self.contact_windows.values_mut() {
             window.constellation = preference;
         }
+    }
+
+    /// Open the relationship explorer on a party and bring the page forward.
+    pub fn open_relationship_explorer(&mut self, kind: PartyKind, id: &str, label: &str) {
+        self.relationship_explorer.focus_on(kind, id, label);
+        self.ensure_party_catalog();
+        self.open_page(Page::Relationships);
+    }
+
+    /// The party the explorer is focused on, for deep-link and UI tests.
+    pub fn relationship_explorer_focus(&self) -> Option<(PartyKind, String)> {
+        self.relationship_explorer
+            .current_focus()
+            .map(|focus| (focus.kind, focus.id.clone()))
+    }
+
+    /// Focus the first directory party whose name contains `query`. Used by
+    /// headless screenshot runs, where the live ids are not known in advance.
+    pub fn focus_explorer_by_label(&mut self, query: &str) -> bool {
+        let query = query.trim().to_lowercase();
+        let mut parties = self.lookup_parties();
+        parties.sort_by_key(|party| party.label.to_lowercase());
+        let Some(party) = parties
+            .into_iter()
+            .find(|party| party.label.to_lowercase().contains(&query))
+        else {
+            return false;
+        };
+        self.open_relationship_explorer(party.kind, &party.id, &party.label);
+        true
+    }
+
+    /// Set the explorer's levels without writing the saved preference. Used by
+    /// headless screenshot builds so previews are deterministic.
+    pub fn preview_explorer_levels(&mut self, levels: u8) {
+        let mut preference = self.relationship_explorer.preference();
+        preference.levels = levels;
+        self.relationship_explorer.apply_preference(preference);
     }
 
     pub fn contact_editor_ready(&self) -> bool {
@@ -6096,7 +6203,7 @@ impl CareLibreApp {
                         self.server.refresh_in_flight = false;
                         self.restoring_session = false;
                         self.settings.on_signed_in();
-                        self.apply_constellation_preferences();
+                        self.apply_relationship_preferences();
                         self.organisations.reset();
                         if self.config.remember_login {
                             if let Err(error) = self.remember_current_session() {
@@ -6137,7 +6244,7 @@ impl CareLibreApp {
                             self.settings.error =
                                 Some(format!("Could not refresh the saved login: {error}"));
                         }
-                        self.apply_constellation_preferences();
+                        self.apply_relationship_preferences();
                         if was_restoring {
                             self.settings.on_signed_in();
                             self.refresh_contact_lists();
@@ -6655,7 +6762,12 @@ impl CareLibreApp {
                 {
                     self.open_intake();
                 }
-                for page in [Page::Contacts, Page::Organisations, Page::Rostering] {
+                for page in [
+                    Page::Contacts,
+                    Page::Relationships,
+                    Page::Organisations,
+                    Page::Rostering,
+                ] {
                     if nav_item(&mut menu_ui, page, rail, rail).clicked() {
                         self.open_page(page);
                     }
@@ -7737,6 +7849,72 @@ mod tests {
         assert!(app.intake.draft.is_none());
         assert!(app.search.is_empty());
         assert_eq!(app.page, Page::Contacts);
+    }
+
+    #[test]
+    fn the_relationship_explorer_opens_on_the_requested_party() {
+        let mut app = CareLibreApp::new();
+        app.use_session(test_auth());
+
+        app.open_relationship_explorer(PartyKind::Contact, "alice", "Alice Example");
+
+        assert_eq!(app.page(), Page::Relationships);
+        assert_eq!(
+            app.relationship_explorer_focus(),
+            Some((PartyKind::Contact, "alice".to_owned()))
+        );
+    }
+
+    #[test]
+    fn a_contact_record_can_open_the_relationship_explorer() {
+        use egui_kittest::{Harness, kittest::Queryable};
+
+        let mut app = CareLibreApp::new();
+        app.use_session(test_auth());
+        app.party_catalog = vec![
+            graph_node("alice", "Alice Example"),
+            graph_node("bob", "Bob Example"),
+        ];
+        app.relationship_edges = vec![graph_edge("edge-1", "alice", "bob")];
+        app.relationship_graph_loaded = true;
+        app.note_relationship_network_changed();
+
+        let mut window = ContactWindowState::new("alice".to_owned());
+        window.loading = false;
+        window.given_name = "Alice".to_owned();
+        window.family_name = "Example".to_owned();
+        window.role = "client".to_owned();
+        app.contact_windows.insert("alice".to_owned(), window);
+        app.columns
+            .push(test_column(ColumnKind::Contact("alice".to_owned()), 560.0));
+        app.columns_initialised = true;
+        app.active_contact = Some("alice".to_owned());
+
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(1000.0, 800.0))
+            .with_max_steps(30)
+            .with_context_setup(|ctx| theme::apply(ctx, theme::ThemeMode::Dark))
+            .build_ui_state(|ui, app: &mut CareLibreApp| app.show(ui), app);
+
+        harness.run();
+        let button = harness
+            .get_all_by_label_contains("Explore network")
+            .next()
+            .expect("the record's explorer entry point");
+        button.scroll_to_me();
+        harness.run();
+        harness
+            .get_all_by_label_contains("Explore network")
+            .next()
+            .expect("the record's explorer entry point")
+            .click();
+        harness.run();
+
+        assert_eq!(harness.state().page(), Page::Relationships);
+        assert_eq!(
+            harness.state().relationship_explorer_focus(),
+            Some((PartyKind::Contact, "alice".to_owned()))
+        );
     }
 
     #[test]

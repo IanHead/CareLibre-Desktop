@@ -207,8 +207,21 @@ server stores a role for each endpoint (`person_supported` / `emergency_contact`
 search the whole graph, so both contacts and organisations are selectable and links can be
 removed without touching either record.
 
-Relationships are managed from inside contact records. If the network needs to be
-manipulated manually, that capability lives in the server's Admin UI.
+The **Relationships** workspace is a read-only explorer for the whole network. Open it
+from the sidebar, or use **Explore network** on a contact or organisation record, then:
+
+- Use **−** / **+** to change how many levels are shown around the focus party.
+- Click a party to select it; the side panel lists its direct relationships with roles,
+  status and dates, and can open a contact or make that party the new focus.
+- Use **← Back** or the breadcrumb to retrace your path; the level count, pan and zoom
+  are restored.
+- Drag to pan, scroll to zoom, and choose **Fit** to bring the whole network back into
+  view.
+- Filter by contacts, organisations, ended relationships and relationship role. Level
+  and filter choices are remembered per signed-in user.
+
+Relationship data itself is managed from inside contact records. If the network needs to
+be manipulated manually, that capability lives in the server's Admin UI.
 
 ## Rostering and worker suitability
 
@@ -315,6 +328,10 @@ cargo run --example screenshot -- docs/contact-editor.png contacts --live --cont
   --relationships --login=you@example.com:your-password
 cargo run --example screenshot -- docs/contact-constellation.png contacts --live --contact \
   --constellation --login=you@example.com:your-password
+cargo run --example screenshot -- docs/relationship-explorer-picker.png relationships --live \
+  --login=you@example.com:your-password
+cargo run --example screenshot -- docs/relationship-explorer.png relationships --live \
+  --explore='Ashley Rossi' --levels=2 --login=you@example.com:your-password
 cargo run --example screenshot -- docs/organisations.png organisations --live \
   --login=you@example.com:your-password
 cargo run --example screenshot -- docs/funding.png clients --live --contact --funding \
@@ -336,6 +353,7 @@ cargo run --example screenshot -- docs/worker-qualities.png workers --live --con
 | `src/credentials.rs` | OS keychain / encrypted-vault refresh-token storage |
 | `src/chrome.rs` | Optional client-side window title bar and resize handles |
 | `src/contact.rs` | Full contact, custom-field and update models |
+| `src/graph.rs` | Shared filter, index and breadth-first walk of the relationship graph |
 | `src/intake.rs` | Intake draft model and shared types |
 | `src/store/` | Local SQLite store for intake drafts and development tooling |
 | `src/perf.rs` | F12 performance HUD |
@@ -367,6 +385,7 @@ Shipped desktop foundations:
 - [x] Two-sided relationship graph with contact and organisation endpoints
 - [x] Relationship add, transfer, retire, history and removal from a contact record
 - [x] Collapsible relationship constellation with per-user step and visibility preferences
+- [x] Relationship explorer with levels, pan/zoom, direct-relationship panel and breadcrumbs
 - [x] Contact editing with server-stored custom-field metadata
 - [x] Animated page, tab, navigation and notification transitions
 - [x] Collapsible docked main menu that remembers the user's choice

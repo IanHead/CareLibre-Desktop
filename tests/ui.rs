@@ -56,6 +56,7 @@ fn harness(app: CareLibreApp) -> Harness<'static, CareLibreApp> {
 fn every_page_renders() {
     for page in [
         Page::Contacts,
+        Page::Relationships,
         Page::Organisations,
         Page::Rostering,
         Page::Services,
@@ -117,6 +118,26 @@ fn sidebar_navigation_works() {
     harness.run();
 
     assert_eq!(harness.state().page(), Page::Rostering);
+}
+
+#[test]
+fn sidebar_opens_the_relationship_explorer() {
+    let mut harness = harness(CareLibreApp::new());
+    harness.run();
+
+    harness
+        .get_by_role_and_label(egui::Role::Button, "Relationships")
+        .click();
+    harness.run();
+
+    assert_eq!(harness.state().page(), Page::Relationships);
+    assert!(
+        harness
+            .query_all_by_label_contains("Choose a starting point")
+            .next()
+            .is_some(),
+        "a fresh explorer asks for a starting party"
+    );
 }
 
 #[test]

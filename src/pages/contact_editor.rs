@@ -144,6 +144,12 @@ pub enum ContactEditorAction {
     LoadRelationshipHistory(String),
     /// Collapse/expand or change the constellation's step count.
     SetConstellationPreference(RelationshipViewPreference),
+    /// Open the full relationship explorer focused on this record.
+    OpenRelationshipExplorer {
+        kind: PartyKind,
+        id: String,
+        label: String,
+    },
     /// Retry fetching the whole relationship graph.
     ReloadConstellation,
     CreateContact {
@@ -2492,7 +2498,29 @@ fn relationships_card(
 
     theme::card().show(ui, |ui| {
         ui.set_width(ui.available_width());
-        ui.label(RichText::new("Relationships").font(theme::strong_font(15.0)));
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("Relationships").font(theme::strong_font(15.0)));
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if ui
+                    .add(
+                        egui::Button::new(
+                            RichText::new("Explore network →")
+                                .color(theme::accent())
+                                .size(10.5),
+                        )
+                        .frame(false),
+                    )
+                    .on_hover_text("Open the relationship explorer focused on this record")
+                    .clicked()
+                {
+                    action = Some(ContactEditorAction::OpenRelationshipExplorer {
+                        kind: PartyKind::Contact,
+                        id: state.contact_id.clone(),
+                        label: state.computed_display_name(),
+                    });
+                }
+            });
+        });
         ui.label(
             RichText::new(
                 "Two-sided links stored by the server. Connect this record to any contact or organisation; new contacts can be created here and used immediately.",

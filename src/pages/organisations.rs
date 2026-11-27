@@ -24,11 +24,16 @@ pub enum OrganisationsAction {
     Edit(String),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum OrganisationEditorAction {
     Save,
     Cancel,
     Delete,
+    /// Open the relationship explorer focused on this organisation.
+    Explore {
+        id: String,
+        label: String,
+    },
 }
 
 /// The state behind one organisation column. Creating uses a `new` editor;
@@ -530,6 +535,26 @@ pub fn show_editor(
                 .color(theme::muted())
                 .size(10.5),
             );
+            if let Some(id) = state.record_id.clone() {
+                ui.add_space(2.0);
+                if ui
+                    .add(
+                        egui::Button::new(
+                            RichText::new("Explore network →")
+                                .color(theme::accent())
+                                .size(10.5),
+                        )
+                        .frame(false),
+                    )
+                    .on_hover_text("Open the relationship explorer focused on this organisation")
+                    .clicked()
+                {
+                    action = Some(OrganisationEditorAction::Explore {
+                        id,
+                        label: state.form.name.clone(),
+                    });
+                }
+            }
             ui.add_space(8.0);
 
             field(ui, "Name", &mut state.form.name);

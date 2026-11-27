@@ -42,6 +42,48 @@ impl RelationshipViewPreference {
     }
 }
 
+/// Lower bound for the relationship explorer's level control.
+pub const EXPLORER_MIN_LEVELS: u8 = 1;
+/// The explorer is a large, zoomable canvas, so it can show more depth than a
+/// record's constellation before it becomes unreadable.
+pub const EXPLORER_MAX_LEVELS: u8 = 6;
+/// The explorer opens with the focus and its immediate neighbours.
+pub const EXPLORER_DEFAULT_LEVELS: u8 = 2;
+
+/// How one user last left the relationship explorer. The focus party is a
+/// navigation choice, so it is not persisted.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ExplorerPreference {
+    pub levels: u8,
+    pub show_ended: bool,
+    pub show_contacts: bool,
+    pub show_organisations: bool,
+}
+
+impl Default for ExplorerPreference {
+    fn default() -> Self {
+        Self {
+            levels: EXPLORER_DEFAULT_LEVELS,
+            show_ended: false,
+            show_contacts: true,
+            show_organisations: true,
+        }
+    }
+}
+
+impl ExplorerPreference {
+    pub fn normalised(mut self) -> Self {
+        self.levels = self.levels.clamp(EXPLORER_MIN_LEVELS, EXPLORER_MAX_LEVELS);
+        // Hiding both party kinds would leave only the focus node, which is
+        // never what the user means: keep contacts as the floor.
+        if !self.show_contacts && !self.show_organisations {
+            self.show_contacts = true;
+        }
+        self
+    }
+}
+
 /// Preferences are scoped to the signed-in account, not just the machine, so
 /// two people sharing a desktop do not inherit each other's view settings.
 pub fn relationship_view_key(server_url: &str, organisation_id: &str, user_id: &str) -> String {
@@ -65,6 +107,10 @@ pub struct Config {
     pub remembered_email: Option<String>,
     #[serde(default)]
     pub relationship_views: BTreeMap<String, RelationshipViewPreference>,
+    /// Explorer level and filter settings, keyed the same way as the
+    /// constellation preferences.
+    #[serde(default)]
+    pub explorer_views: BTreeMap<String, ExplorerPreference>,
 }
 
 impl Default for Config {
@@ -81,6 +127,7 @@ impl Default for Config {
             remember_login: false,
             remembered_email: None,
             relationship_views: BTreeMap::new(),
+            explorer_views: BTreeMap::new(),
         }
     }
 }
@@ -98,6 +145,20 @@ impl Config {
 
     pub fn set_relationship_view(&mut self, key: String, preference: RelationshipViewPreference) {
         self.relationship_views.insert(key, preference.normalised());
+    }
+
+    /// The relationship explorer settings for an account, defaulting to two
+    /// levels with active contacts and organisations.
+    pub fn explorer_view(&self, key: &str) -> ExplorerPreference {
+        self.explorer_views
+            .get(key)
+            .copied()
+            .unwrap_or_default()
+            .normalised()
+    }
+
+    pub fn set_explorer_view(&mut self, key: String, preference: ExplorerPreference) {
+        self.explorer_views.insert(key, preference.normalised());
     }
 
     /// Load the config, falling back to defaults if it is missing or invalid.
@@ -138,6 +199,7 @@ pub fn config_path() -> Option<PathBuf> {
 mod tests {
     use super::{
         CONSTELLATION_DEFAULT_STEPS, CONSTELLATION_MAX_STEPS, CONSTELLATION_MIN_STEPS, Config,
+        EXPLORER_DEFAULT_LEVELS, EXPLORER_MAX_LEVELS, EXPLORER_MIN_LEVELS, ExplorerPreference,
         RelationshipViewPreference, relationship_view_key,
     };
     use crate::theme::ThemeMode;
@@ -274,5 +336,86 @@ mod tests {
         let reloaded: Config = serde_json::from_str(&json).unwrap();
         assert_eq!(reloaded.relationship_view(&key).steps, 3);
         assert!(!reloaded.relationship_view(&key).collapsed);
+    }
+
+    #[test]
+    fn explorer_defaults_to_two_levels() {
+        let preference = ExplorerPreference::default();
+        assert_eq!(preference.levels, EXPLORER_DEFAULT_LEVELS);
+        assert!(!preference.show_ended);
+        assert!(preference.show_contacts);
+        assert!(preference.show_organisations);
+    }
+
+    #[test]
+    fn old_configs_have_no_explorer_preferences() {
+        let config: Config =
+            serde_json::from_str(r#"{"server_url":"http://127.0.0.1:8484"}"#).unwrap();
+        assert!(config.explorer_views.is_empty());
+        assert_eq!(
+            config.explorer_view("server|org|user"),
+            ExplorerPreference::default()
+        );
+    }
+
+    #[test]
+    fn explorer_preferences_are_scoped_per_account() {
+        let mut config = Config::default();
+        let alice = relationship_view_key("http://server", "org-a", "user-a");
+        let bob = relationship_view_key("http://server", "org-a", "user-b");
+        config.set_explorer_view(
+            alice.clone(),
+            ExplorerPreference {
+                levels: 4,
+                show_ended: true,
+                show_contacts: false,
+                show_organisations: true,
+            },
+        );
+
+        assert_eq!(config.explorer_view(&alice).levels, 4);
+        assert!(config.explorer_view(&alice).show_ended);
+        assert_eq!(config.explorer_view(&bob), ExplorerPreference::default());
+    }
+
+    #[test]
+    fn explorer_levels_are_clamped_and_one_kind_stays_visible() {
+        let preference = ExplorerPreference {
+            levels: 99,
+            show_ended: false,
+            show_contacts: false,
+            show_organisations: false,
+        }
+        .normalised();
+        assert_eq!(preference.levels, EXPLORER_MAX_LEVELS);
+        assert!(preference.show_contacts);
+
+        let preference = ExplorerPreference {
+            levels: 0,
+            ..ExplorerPreference::default()
+        }
+        .normalised();
+        assert_eq!(preference.levels, EXPLORER_MIN_LEVELS);
+    }
+
+    #[test]
+    fn explorer_preferences_round_trip() {
+        let mut config = Config::default();
+        let key = relationship_view_key("http://server", "org", "user");
+        config.set_explorer_view(
+            key.clone(),
+            ExplorerPreference {
+                levels: 3,
+                show_ended: true,
+                show_contacts: true,
+                show_organisations: false,
+            },
+        );
+
+        let json = serde_json::to_string(&config).unwrap();
+        let reloaded: Config = serde_json::from_str(&json).unwrap();
+        assert_eq!(reloaded.explorer_view(&key).levels, 3);
+        assert!(reloaded.explorer_view(&key).show_ended);
+        assert!(!reloaded.explorer_view(&key).show_organisations);
     }
 }
