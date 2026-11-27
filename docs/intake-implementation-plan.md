@@ -1,6 +1,6 @@
 # Intake implementation plan
 
-**Status:** Phases 1–2 delivered; desktop board next
+**Status:** Phases 0–2 delivered; desktop board, creation and inline case editing delivered
 
 **Scope:** CareLibre Server + CareLibre Desktop
 
@@ -430,7 +430,7 @@ models. Each item is expressed as a requirement and a proposed solution.
 | 0 | ADR, API contract, universal default templates, design decisions | Done |
 | 1 | Intake schema, capabilities, field catalogue, default flow seed, config API and admin configuration | Done |
 | 2 | Contact matching, case creation, board/list API, transitions, checklists, assignment, notifications, onboarding, lifecycle | Done |
-| 3 | Desktop kanban board, case detail column, filters, drag/drop transitions, blocker dialogs | Next |
+| 3 | Desktop kanban board, case detail column, filters, drag/drop transitions, blocker dialogs | In progress — board, filters, docked case columns and inline editing delivered |
 | 4 | Desktop notification bell/toast, my-cases/unassigned views, assignment UX | Planned |
 | 5 | Desktop action-policy disabling, field visibility, checklist UX, configuration links | Planned |
 | 6 | Referrals, waitlists, lifecycle polish and reporting | Planned |
@@ -454,9 +454,17 @@ Delivered on `CareLibre` branch `feature/intake-cases`:
 - Referral and waitlist data structures.
 - Schema, API and HTTP smoke tests.
 
+Delivered on `CareLibre-Desktop` branch `feature/intake-board`:
+
+- Live multi-path board with path, type, assignee and search filters.
+- Docked intake case columns with stage fields and checklist progress.
+- New intake from a new or matched contact.
+- Inline field saving, checklist toggles, stage moves and cancellation.
+- Responsive column reflow that keeps the board inside the window.
+
 Next:
 
-1. Build the desktop board and case detail.
+1. Add drag/drop transitions and blocker dialogs for gated moves.
 2. Add the notification bell and assignment filters.
 3. Apply action policy in the contact editor, funding and rostering pages.
 4. Add referral and waitlist UI.
