@@ -7022,7 +7022,85 @@ fn menu_toggle(ui: &mut Ui, collapsed: bool, rail: f32) -> egui::Response {
     }
 
     response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, ui.is_enabled(), label));
-    response.on_hover_text(format!("{label} (Ctrl+B)"))
+    let shortcut = ui.ctx().format_shortcut(&egui::KeyboardShortcut::new(
+        egui::Modifiers::COMMAND,
+        egui::Key::B,
+    ));
+    bubble_tooltip(ui, &response, label, &format!("Shortcut: {shortcut}"), hit);
+    response
+}
+
+/// An instant, bubble-styled tooltip anchored to `anchor`.
+///
+/// egui's built-in tooltip waits for the pointer to settle and points at the
+/// widget's whole rect. The icon rail needs a tooltip that appears straight away
+/// and points at the glyph, so draw one in the tooltip layer and add a small
+/// tail on its left edge.
+fn bubble_tooltip(
+    ui: &Ui,
+    response: &egui::Response,
+    title: &str,
+    detail: &str,
+    anchor: egui::Rect,
+) {
+    if !response.hovered() {
+        return;
+    }
+
+    let anchor = response
+        .ctx
+        .layer_transform_to_global(response.layer_id)
+        .map_or(anchor, |transform| transform * anchor);
+
+    let mut tooltip =
+        egui::Tooltip::always_open(response.ctx.clone(), response.layer_id, response.id, anchor)
+            .gap(6.0);
+    tooltip.popup = tooltip
+        .popup
+        .align(egui::RectAlign::RIGHT)
+        .align_alternatives(&[])
+        .width(260.0)
+        .frame(
+            Frame::new()
+                .fill(theme::surface())
+                .stroke(Stroke::new(1.0, theme::border()))
+                .corner_radius(CornerRadius::same(10))
+                .inner_margin(Margin::symmetric(12, 9))
+                .shadow(egui::epaint::Shadow {
+                    offset: [0, 2],
+                    blur: 10,
+                    spread: 0,
+                    color: Color32::from_black_alpha(70),
+                }),
+        );
+
+    let Some(shown) = tooltip.show(|ui| {
+        ui.set_max_width(236.0);
+        ui.label(
+            RichText::new(title)
+                .font(theme::strong_font(12.5))
+                .color(theme::text()),
+        );
+        ui.add_space(1.0);
+        ui.label(RichText::new(detail).color(theme::muted()).size(10.5));
+    }) else {
+        return;
+    };
+
+    let bubble = shown.response.rect;
+    let painter = ui.ctx().layer_painter(shown.response.layer_id);
+    let centre_y = bubble.center().y;
+    let tip = egui::pos2(bubble.left() - 7.0, centre_y);
+    let base_top = egui::pos2(bubble.left() + 1.0, centre_y - 6.0);
+    let base_bottom = egui::pos2(bubble.left() + 1.0, centre_y + 6.0);
+    painter.add(egui::Shape::convex_polygon(
+        vec![tip, base_top, base_bottom],
+        theme::surface(),
+        Stroke::NONE,
+    ));
+    let edge = Stroke::new(1.0, theme::border());
+    painter.line_segment([tip, base_top], edge);
+    painter.line_segment([tip, base_bottom], edge);
 }
 
 fn nav_item(ui: &mut Ui, page: Page, rail: f32, detail: f32) -> egui::Response {
@@ -7055,13 +7133,22 @@ fn nav_button(
             .rect_filled(rect, CornerRadius::same(9), theme::surface_raised());
     }
 
-    let icon_x = 20.0 + 4.0 * rail;
+    let icon_font = FontId::proportional(14.0);
+    let icon_width = ui
+        .painter()
+        .layout_no_wrap(icon.to_owned(), icon_font.clone(), theme::faint())
+        .size()
+        .x;
+    // Centre the glyph on the rail, and keep its left edge at 24 px when the
+    // menu is expanded.
+    let icon_x = rect.width() / 2.0 + (24.0 + icon_width / 2.0 - rect.width() / 2.0) * rail;
+    let icon_center = rect.left_center() + vec2(icon_x, 0.0);
 
     ui.painter().text(
-        rect.left_center() + vec2(icon_x, 0.0),
-        Align2::LEFT_CENTER,
+        icon_center,
+        Align2::CENTER_CENTER,
         icon,
-        FontId::proportional(14.0),
+        icon_font,
         theme::faint(),
     );
     if rail > 0.01 {
@@ -7093,7 +7180,18 @@ fn nav_button(
 
     response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, ui.is_enabled(), label));
 
-    response.on_hover_text(format!("{label}\n{tooltip}"))
+    if rail < 0.5 {
+        bubble_tooltip(
+            ui,
+            &response,
+            label,
+            tooltip,
+            egui::Rect::from_center_size(icon_center, vec2(18.0, 18.0)),
+        );
+        response
+    } else {
+        response.on_hover_text(tooltip)
+    }
 }
 
 fn user_row(ui: &mut Ui, account: Option<&AccountBadge>, rail: f32) -> bool {
@@ -7110,10 +7208,20 @@ fn user_row(ui: &mut Ui, account: Option<&AccountBadge>, rail: f32) -> bool {
                 if response.clicked() {
                     clicked = true;
                 }
-                response.on_hover_text(format!(
-                    "{}\n{} · {}",
-                    account.name, account.organisation, account.role
-                ));
+                if expanded {
+                    response.on_hover_text(format!(
+                        "{}\n{} · {}",
+                        account.name, account.organisation, account.role
+                    ));
+                } else {
+                    bubble_tooltip(
+                        ui,
+                        &response,
+                        &account.name,
+                        &format!("{} · {}", capitalize(&account.role), account.organisation),
+                        response.rect,
+                    );
+                }
                 if expanded {
                     ui.vertical(|ui| {
                         ui.label(RichText::new(&account.name).font(theme::strong_font(12.0)));
@@ -7133,6 +7241,15 @@ fn user_row(ui: &mut Ui, account: Option<&AccountBadge>, rail: f32) -> bool {
                 let response = theme::avatar(ui, "?", 28.0, theme::surface_raised());
                 if response.clicked() {
                     clicked = true;
+                }
+                if !expanded {
+                    bubble_tooltip(
+                        ui,
+                        &response,
+                        "Not signed in",
+                        "Open settings to connect to your server.",
+                        response.rect,
+                    );
                 }
                 if expanded {
                     ui.vertical(|ui| {

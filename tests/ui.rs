@@ -157,6 +157,28 @@ fn ctrl_b_does_not_collapse_the_launcher() {
 }
 
 #[test]
+fn rail_icons_show_instant_bubble_tooltips() {
+    let mut app = CareLibreApp::new();
+    app.set_page(Page::Contacts);
+    let mut harness = harness(app);
+    harness.state_mut().set_menu_collapsed(true);
+    harness.run_steps(40);
+
+    harness
+        .get_by_role_and_label(egui::Role::Button, "Contacts")
+        .hover();
+    harness.run();
+
+    assert_eq!(
+        harness
+            .query_all_by_label_contains("Everyone the organisation works with")
+            .count(),
+        1,
+        "hovering a rail icon should show its description straight away"
+    );
+}
+
+#[test]
 fn docked_menu_collapses_to_a_rail_and_expands_again() {
     let mut app = CareLibreApp::new();
     app.set_page(Page::Contacts);
