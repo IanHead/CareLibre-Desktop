@@ -70,6 +70,7 @@ fn main() {
     let funding = args.iter().any(|arg| arg == "--funding");
     let qualities = args.iter().any(|arg| arg == "--qualities");
     let intake_case = args.iter().any(|arg| arg == "--intake-case");
+    let new_intake = args.iter().any(|arg| arg == "--new-intake");
     // With --relationships: open the first relationship's history or actions menu.
     let history = args.iter().any(|arg| arg == "--history");
     let actions = args.iter().any(|arg| arg == "--actions");
@@ -229,6 +230,10 @@ fn main() {
                     harness.step();
                     std::thread::sleep(Duration::from_millis(25));
                 }
+            }
+            if new_intake {
+                harness.get_by_label("+ New intake").click();
+                harness.run();
             }
         }
 

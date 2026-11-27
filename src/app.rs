@@ -10,7 +10,7 @@ use eframe::egui::{
     self, Align, Align2, Color32, CornerRadius, FontId, Frame, Layout, Margin, RichText, Sense,
     Stroke, StrokeKind, Ui, vec2,
 };
-use serde_json::Value;
+use serde_json::{Value, json};
 
 use crate::{
     api, chrome,
@@ -1315,6 +1315,13 @@ impl CareLibreApp {
             return;
         }
 
+        if self.intake_board.fields.is_empty()
+            && !self.intake_board.fields_loading
+            && !self.intake_board.fields_requested
+        {
+            self.request_intake_fields();
+        }
+
         let known: BTreeSet<String> = self
             .intake_board
             .flows
@@ -1346,6 +1353,21 @@ impl CareLibreApp {
         self.intake_board.flows_error = None;
         self.intake_board.flows_request_id = Some(request_id);
         remote.load_intake_flows(request_id, self.server.base_url.clone(), token);
+    }
+
+    fn request_intake_fields(&mut self) {
+        let Some(token) = self.access_token() else {
+            return;
+        };
+        let Some(remote) = &self.remote else {
+            return;
+        };
+        let request_id = self.intake_board.next_request();
+        self.intake_board.fields_loading = true;
+        self.intake_board.fields_requested = true;
+        self.intake_board.fields_request_id = Some(request_id);
+        self.intake_board.fields_error = None;
+        remote.load_intake_fields(request_id, self.server.base_url.clone(), token);
     }
 
     fn request_intake_board(&mut self) {
@@ -1392,10 +1414,9 @@ impl CareLibreApp {
             }
             return;
         }
-        self.intake_case_columns.insert(
-            case_id.clone(),
-            pages::intake::board::IntakeCaseColumnState::new(case_id.clone()),
-        );
+        self.intake_case_columns
+            .entry(case_id.clone())
+            .or_insert_with(|| pages::intake::board::IntakeCaseColumnState::new(case_id.clone()));
         self.columns.push(ColumnState {
             kind: ColumnKind::IntakeCase(case_id.clone()),
             width: 520.0,
@@ -1463,6 +1484,180 @@ impl CareLibreApp {
                 to_stage_id: stage_id,
                 version,
             },
+        );
+    }
+
+    fn request_intake_contacts(&mut self) {
+        let Some(token) = self.access_token() else {
+            return;
+        };
+        let Some(remote) = &self.remote else {
+            return;
+        };
+        let search = self.intake_board.new_search.trim().to_owned();
+        if search.is_empty() {
+            self.intake_board.new_error =
+                Some("Enter a name, email or phone to search.".to_owned());
+            return;
+        }
+        let request_id = self.intake_board.next_request();
+        self.intake_board.contacts_request_id = Some(request_id);
+        self.intake_board.new_candidates.clear();
+        self.intake_board.new_error = None;
+        remote.match_intake_contacts(request_id, self.server.base_url.clone(), token, search);
+    }
+
+    fn request_create_intake(&mut self) {
+        let Some(token) = self.access_token() else {
+            return;
+        };
+        let Some(remote) = &self.remote else {
+            return;
+        };
+        let Some(flow_id) = self.intake_board.new_flow_id.clone() else {
+            self.intake_board.new_error = Some("Choose an intake path.".to_owned());
+            return;
+        };
+        let contact = if self.intake_board.new_mode == "existing" {
+            None
+        } else {
+            let given = self.intake_board.new_given_name.trim().to_owned();
+            let family = self.intake_board.new_family_name.trim().to_owned();
+            if given.is_empty() && family.is_empty() {
+                self.intake_board.new_error =
+                    Some("Enter at least a given or family name.".to_owned());
+                return;
+            }
+            Some(crate::intake_board::ApiIntakeContactWrite {
+                given_name: (!given.is_empty()).then_some(given),
+                family_name: (!family.is_empty()).then_some(family),
+                preferred_name: None,
+                pronouns: None,
+                date_of_birth: {
+                    let value = self.intake_board.new_date_of_birth.trim();
+                    (!value.is_empty()).then(|| value.to_owned())
+                },
+                gender: None,
+                languages: Vec::new(),
+                cultural_identity: None,
+                email: (!self.intake_board.new_email.trim().is_empty())
+                    .then(|| self.intake_board.new_email.trim().to_owned()),
+                phone: (!self.intake_board.new_phone.trim().is_empty())
+                    .then(|| self.intake_board.new_phone.trim().to_owned()),
+                notes: None,
+                details: json!({}),
+            })
+        };
+        let contact_id = if self.intake_board.new_mode == "existing" {
+            let Some(contact_id) = self.intake_board.new_contact_id.clone() else {
+                self.intake_board.new_error = Some("Select an existing contact.".to_owned());
+                return;
+            };
+            Some(contact_id)
+        } else {
+            None
+        };
+        let request_id = self.intake_board.next_request();
+        self.intake_board.new_saving = true;
+        self.intake_board.new_request_id = Some(request_id);
+        self.intake_board.new_error = None;
+        remote.create_intake_case(
+            request_id,
+            self.server.base_url.clone(),
+            token,
+            crate::intake_board::ApiIntakeCaseCreate {
+                flow_id,
+                contact_id,
+                contact,
+                display_name: None,
+                source: Some("enquiry".to_owned()),
+                data: json!({}),
+                allow_duplicate_contact: false,
+                duplicate_reason: None,
+            },
+        );
+    }
+
+    fn request_intake_case_update(&mut self, case_id: String) {
+        let Some(token) = self.access_token() else {
+            return;
+        };
+        let Some(remote) = &self.remote else {
+            return;
+        };
+        let Some(state) = self.intake_case_columns.get_mut(&case_id) else {
+            return;
+        };
+        let Some(case) = &state.case else {
+            return;
+        };
+        let data = state.build_patch(&self.intake_board.fields);
+        let request_id = self.intake_board.next_request();
+        let version = case.case.version;
+        state.saving = true;
+        state.save_request_id = Some(request_id);
+        state.save_error = None;
+        remote.update_intake_case(
+            request_id,
+            self.server.base_url.clone(),
+            token,
+            case_id,
+            crate::intake_board::ApiIntakeCaseUpdate {
+                version,
+                data,
+                force: false,
+            },
+        );
+    }
+
+    fn request_intake_checklist(&mut self, case_id: String, item_id: String, completed: bool) {
+        let Some(token) = self.access_token() else {
+            return;
+        };
+        let Some(remote) = &self.remote else {
+            return;
+        };
+        let request_id = self.intake_board.next_request();
+        if let Some(state) = self.intake_case_columns.get_mut(&case_id) {
+            state.checklist_pending = true;
+            state.checklist_request_id = Some(request_id);
+        }
+        remote.toggle_intake_checklist(
+            request_id,
+            self.server.base_url.clone(),
+            token,
+            case_id,
+            item_id,
+            crate::intake_board::ApiChecklistToggleWrite {
+                completed,
+                note: None,
+            },
+        );
+    }
+
+    fn request_intake_cancel(&mut self, case_id: String, reason: String) {
+        let Some(token) = self.access_token() else {
+            return;
+        };
+        let Some(remote) = &self.remote else {
+            return;
+        };
+        let Some(state) = self.intake_case_columns.get_mut(&case_id) else {
+            return;
+        };
+        let Some(case) = &state.case else {
+            return;
+        };
+        let request_id = self.intake_board.next_request();
+        let version = case.case.version;
+        state.cancel_saving = true;
+        state.cancel_request_id = Some(request_id);
+        remote.cancel_intake_case(
+            request_id,
+            self.server.base_url.clone(),
+            token,
+            case_id,
+            crate::intake_board::ApiIntakeCancelWrite { version, reason },
         );
     }
 
@@ -1593,6 +1788,33 @@ impl CareLibreApp {
             IntakeBoardAction::OpenCase(case_id) => {
                 self.open_intake_case(case_id);
             }
+            IntakeBoardAction::OpenNewIntake => {
+                self.intake_board.new_open = true;
+                self.intake_board.new_error = None;
+                if self.intake_board.new_flow_id.is_none() {
+                    self.intake_board.new_flow_id = self
+                        .intake_board
+                        .flows
+                        .iter()
+                        .find(|flow| flow.is_active)
+                        .or_else(|| self.intake_board.flows.first())
+                        .map(|flow| flow.id.clone());
+                }
+                if self.intake_board.fields.is_empty()
+                    && !self.intake_board.fields_loading
+                    && !self.intake_board.fields_requested
+                {
+                    self.request_intake_fields();
+                }
+            }
+            IntakeBoardAction::CloseNewIntake => {
+                self.intake_board.new_open = false;
+                self.intake_board.new_error = None;
+                self.intake_board.new_saving = false;
+                self.intake_board.new_request_id = None;
+            }
+            IntakeBoardAction::SearchNewContacts => self.request_intake_contacts(),
+            IntakeBoardAction::CreateIntake => self.request_create_intake(),
         }
     }
 
@@ -1604,11 +1826,18 @@ impl CareLibreApp {
         use pages::intake::board::IntakeCaseAction;
         match action {
             IntakeCaseAction::Reload => self.request_intake_case(case_id.to_owned()),
+            IntakeCaseAction::SaveFields => self.request_intake_case_update(case_id.to_owned()),
+            IntakeCaseAction::ToggleChecklist { item_id, completed } => {
+                self.request_intake_checklist(case_id.to_owned(), item_id, completed);
+            }
             IntakeCaseAction::Transition {
                 case_id,
                 stage_id,
                 version,
             } => self.request_intake_transition(case_id, stage_id, version),
+            IntakeCaseAction::Cancel { reason } => {
+                self.request_intake_cancel(case_id.to_owned(), reason);
+            }
             IntakeCaseAction::OpenContact(contact_id) => self.open_contact(&contact_id),
         }
     }
@@ -2750,7 +2979,11 @@ impl CareLibreApp {
                                         ui.set_min_height((height - 40.0).max(120.0));
                                         if let Some(state) = self.intake_case_columns.get_mut(id)
                                             && let Some(action) =
-                                                pages::intake::board::show_case_column(ui, state)
+                                                pages::intake::board::show_case_column(
+                                                    ui,
+                                                    state,
+                                                    &self.intake_board.fields,
+                                                )
                                         {
                                             intake_case_actions.push((id.clone(), action));
                                         }
@@ -4210,6 +4443,170 @@ impl CareLibreApp {
                         }
                     }
                 }
+                RemoteEvent::IntakeFieldsLoaded { request_id, result } => {
+                    if self.intake_board.fields_request_id != Some(request_id) {
+                        continue;
+                    }
+                    self.intake_board.fields_request_id = None;
+                    self.intake_board.fields_loading = false;
+                    match result {
+                        Ok(catalog) => {
+                            self.intake_board.fields = catalog.fields;
+                            self.intake_board.fields_error = None;
+                            let fields = self.intake_board.fields.clone();
+                            for state in self.intake_case_columns.values_mut() {
+                                if !state.dirty {
+                                    state.load_drafts(&fields);
+                                }
+                            }
+                        }
+                        Err(error) => {
+                            self.intake_board.fields_error = Some(error);
+                        }
+                    }
+                }
+                RemoteEvent::IntakeContactsMatched { request_id, result } => {
+                    if self.intake_board.contacts_request_id != Some(request_id) {
+                        continue;
+                    }
+                    self.intake_board.contacts_request_id = None;
+                    match result {
+                        Ok(list) => {
+                            self.intake_board.new_candidates = list.candidates;
+                            self.intake_board.new_error = None;
+                        }
+                        Err(error) => {
+                            self.intake_board.new_error = Some(error);
+                        }
+                    }
+                }
+                RemoteEvent::IntakeCaseCreated { request_id, result } => {
+                    if self.intake_board.new_request_id != Some(request_id) {
+                        continue;
+                    }
+                    self.intake_board.new_request_id = None;
+                    self.intake_board.new_saving = false;
+                    match result {
+                        Ok(response) => {
+                            let detail = response.case;
+                            let case_id = detail.case.id.clone();
+                            self.intake_board.new_open = false;
+                            self.intake_board.new_error = None;
+                            self.intake_board.new_candidates.clear();
+                            self.intake_board.new_contact_id = None;
+                            let fields = self.intake_board.fields.clone();
+                            let mut state =
+                                pages::intake::board::IntakeCaseColumnState::new(case_id.clone());
+                            state.apply_case(detail, &fields);
+                            self.intake_case_columns.insert(case_id.clone(), state);
+                            self.open_intake_case(case_id);
+                            self.intake_board.reset_board();
+                            self.request_intake_board();
+                        }
+                        Err(error) => {
+                            self.intake_board.new_error = Some(error);
+                        }
+                    }
+                }
+                RemoteEvent::IntakeCaseUpdated {
+                    request_id,
+                    case_id,
+                    result,
+                } => {
+                    let matches = self
+                        .intake_case_columns
+                        .get(&case_id)
+                        .is_some_and(|state| state.save_request_id == Some(request_id));
+                    if !matches {
+                        continue;
+                    }
+                    let fields = self.intake_board.fields.clone();
+                    let case = self.intake_case_columns.get_mut(&case_id);
+                    let Some(state) = case else {
+                        continue;
+                    };
+                    state.saving = false;
+                    state.save_request_id = None;
+                    match result {
+                        Ok(detail) => {
+                            state.apply_case(detail, &fields);
+                            self.intake_board.reset_board();
+                            self.request_intake_board();
+                        }
+                        Err(error) => {
+                            state.save_error = Some(error);
+                        }
+                    }
+                }
+                RemoteEvent::IntakeChecklistToggled {
+                    request_id,
+                    case_id,
+                    result,
+                } => {
+                    let matches = self
+                        .intake_case_columns
+                        .get(&case_id)
+                        .is_some_and(|state| state.checklist_request_id == Some(request_id));
+                    if !matches {
+                        continue;
+                    }
+                    let state = self.intake_case_columns.get_mut(&case_id);
+                    let Some(state) = state else {
+                        continue;
+                    };
+                    state.checklist_pending = false;
+                    state.checklist_request_id = None;
+                    match result {
+                        Ok(response) => {
+                            state.save_error = None;
+                            if let Some(case) = state.case.as_mut() {
+                                let item_id = response.item.id.clone();
+                                if let Some(item) =
+                                    case.checklist.iter_mut().find(|item| item.id == item_id)
+                                {
+                                    *item = response.item;
+                                }
+                                case.case.checklist = response.checklist;
+                            }
+                            self.intake_board.reset_board();
+                            self.request_intake_board();
+                        }
+                        Err(error) => {
+                            state.save_error = Some(error);
+                        }
+                    }
+                }
+                RemoteEvent::IntakeCaseCancelled {
+                    request_id,
+                    case_id,
+                    result,
+                } => {
+                    let matches = self
+                        .intake_case_columns
+                        .get(&case_id)
+                        .is_some_and(|state| state.cancel_request_id == Some(request_id));
+                    if !matches {
+                        continue;
+                    }
+                    let fields = self.intake_board.fields.clone();
+                    let state = self.intake_case_columns.get_mut(&case_id);
+                    let Some(state) = state else {
+                        continue;
+                    };
+                    state.cancel_saving = false;
+                    state.cancel_request_id = None;
+                    match result {
+                        Ok(detail) => {
+                            state.apply_case(detail, &fields);
+                            self.intake_board.reset_board();
+                            self.request_intake_board();
+                            self.notify(ctx, "Intake case cancelled.");
+                        }
+                        Err(error) => {
+                            state.save_error = Some(error);
+                        }
+                    }
+                }
                 RemoteEvent::IntakeBoardLoaded { request_id, result } => {
                     if self.intake_board.board_request_id != Some(request_id) {
                         continue;
@@ -4232,22 +4629,29 @@ impl CareLibreApp {
                     case_id,
                     result,
                 } => {
-                    let Some(state) = self.intake_case_columns.get_mut(&case_id) else {
-                        continue;
-                    };
-                    if state.request_id != Some(request_id) {
+                    let matches = self
+                        .intake_case_columns
+                        .get(&case_id)
+                        .is_some_and(|state| state.request_id == Some(request_id));
+                    if !matches {
                         continue;
                     }
-                    state.request_id = None;
-                    state.loading = false;
-                    state.requested = false;
+                    if let Some(state) = self.intake_case_columns.get_mut(&case_id) {
+                        state.request_id = None;
+                        state.loading = false;
+                        state.requested = false;
+                    }
                     match result {
                         Ok(case) => {
-                            state.case = Some(case);
-                            state.error = None;
+                            let fields = self.intake_board.fields.clone();
+                            if let Some(state) = self.intake_case_columns.get_mut(&case_id) {
+                                state.apply_case(case, &fields);
+                            }
                         }
                         Err(error) => {
-                            state.error = Some(error);
+                            if let Some(state) = self.intake_case_columns.get_mut(&case_id) {
+                                state.error = Some(error);
+                            }
                         }
                     }
                 }
@@ -4266,10 +4670,9 @@ impl CareLibreApp {
                     self.intake_board.reset_board();
                     match result {
                         Ok(case) => {
+                            let fields = self.intake_board.fields.clone();
                             if let Some(state) = self.intake_case_columns.get_mut(&case_id) {
-                                state.case = Some(case);
-                                state.error = None;
-                                state.transition_error = None;
+                                state.apply_case(case, &fields);
                             }
                             self.request_intake_board();
                         }

@@ -218,3 +218,99 @@ pub struct ApiTransitionWrite {
     pub to_stage_id: String,
     pub version: i32,
 }
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct ApiIntakeFieldCatalog {
+    #[serde(default)]
+    pub fields: Vec<ApiIntakeField>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct ApiIntakeField {
+    pub key: String,
+    pub label: String,
+    pub data_type: String,
+    pub section: String,
+    pub source: String,
+    #[serde(default)]
+    pub options: Vec<String>,
+    pub required_by_default: bool,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct ApiContactMatchList {
+    #[serde(default)]
+    pub candidates: Vec<ApiContactMatch>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct ApiContactMatch {
+    pub id: String,
+    pub display_name: String,
+    pub email: Option<String>,
+    pub phone: Option<String>,
+    pub date_of_birth: Option<String>,
+    pub lifecycle_status: String,
+    #[serde(rename = "match")]
+    pub match_kind: String,
+    pub open_case: Option<Value>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct ApiIntakeContactWrite {
+    pub given_name: Option<String>,
+    pub family_name: Option<String>,
+    pub preferred_name: Option<String>,
+    pub pronouns: Option<String>,
+    pub date_of_birth: Option<String>,
+    pub gender: Option<String>,
+    pub languages: Vec<String>,
+    pub cultural_identity: Option<String>,
+    pub email: Option<String>,
+    pub phone: Option<String>,
+    pub notes: Option<String>,
+    pub details: Value,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct ApiIntakeCaseCreate {
+    pub flow_id: String,
+    pub contact_id: Option<String>,
+    pub contact: Option<ApiIntakeContactWrite>,
+    pub display_name: Option<String>,
+    pub source: Option<String>,
+    pub data: Value,
+    pub allow_duplicate_contact: bool,
+    pub duplicate_reason: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct ApiIntakeCaseCreateResponse {
+    pub case: ApiIntakeCaseDetail,
+    pub contact: Option<ApiContactSummary>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct ApiIntakeCaseUpdate {
+    pub version: i32,
+    pub data: Value,
+    pub force: bool,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct ApiChecklistToggleWrite {
+    pub completed: bool,
+    pub note: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct ApiChecklistToggleResponse {
+    pub item: ApiCaseChecklistItem,
+    pub checklist: ApiChecklistProgress,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct ApiIntakeCancelWrite {
+    pub version: i32,
+    pub reason: String,
+}
