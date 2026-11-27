@@ -1621,6 +1621,7 @@ impl CareLibreApp {
         if let Some(state) = self.intake_case_columns.get_mut(&case_id) {
             state.checklist_pending = true;
             state.checklist_request_id = Some(request_id);
+            state.checklist_error = None;
         }
         remote.toggle_intake_checklist(
             request_id,
@@ -1652,6 +1653,7 @@ impl CareLibreApp {
         let version = case.case.version;
         state.cancel_saving = true;
         state.cancel_request_id = Some(request_id);
+        state.cancel_error = None;
         remote.cancel_intake_case(
             request_id,
             self.server.base_url.clone(),
@@ -4559,6 +4561,7 @@ impl CareLibreApp {
                     match result {
                         Ok(response) => {
                             state.save_error = None;
+                            state.checklist_error = None;
                             if let Some(case) = state.case.as_mut() {
                                 let item_id = response.item.id.clone();
                                 if let Some(item) =
@@ -4572,7 +4575,7 @@ impl CareLibreApp {
                             self.request_intake_board();
                         }
                         Err(error) => {
-                            state.save_error = Some(error);
+                            state.checklist_error = Some(error);
                         }
                     }
                 }
@@ -4603,7 +4606,7 @@ impl CareLibreApp {
                             self.notify(ctx, "Intake case cancelled.");
                         }
                         Err(error) => {
-                            state.save_error = Some(error);
+                            state.cancel_error = Some(error);
                         }
                     }
                 }

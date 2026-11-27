@@ -145,8 +145,10 @@ pub struct IntakeCaseColumnState {
     pub cancel_reason: String,
     pub cancel_saving: bool,
     pub cancel_request_id: Option<u64>,
+    pub cancel_error: Option<String>,
     pub checklist_pending: bool,
     pub checklist_request_id: Option<u64>,
+    pub checklist_error: Option<String>,
 }
 
 impl IntakeCaseColumnState {
@@ -171,8 +173,10 @@ impl IntakeCaseColumnState {
             cancel_reason: String::new(),
             cancel_saving: false,
             cancel_request_id: None,
+            cancel_error: None,
             checklist_pending: false,
             checklist_request_id: None,
+            checklist_error: None,
         }
     }
 
@@ -190,8 +194,10 @@ impl IntakeCaseColumnState {
         self.cancel_open = false;
         self.cancel_saving = false;
         self.cancel_request_id = None;
+        self.cancel_error = None;
         self.checklist_pending = false;
         self.checklist_request_id = None;
+        self.checklist_error = None;
         self.load_drafts(fields);
     }
 
@@ -1017,6 +1023,9 @@ fn case_body(
                 ui.label(RichText::new(description).color(theme::faint()).size(11.0));
             }
         }
+        if let Some(error) = &state.checklist_error {
+            ui.colored_label(theme::danger(), error);
+        }
 
         ui.add_space(12.0);
         ui.label(RichText::new("Move to stage").font(theme::strong_font(14.0)));
@@ -1089,10 +1098,15 @@ fn case_body(
                     if ui.button("Keep case").clicked() {
                         state.cancel_open = false;
                         state.cancel_reason.clear();
+                        state.cancel_error = None;
+                    }
+                    if let Some(error) = &state.cancel_error {
+                        ui.colored_label(theme::danger(), error);
                     }
                 });
             } else if ui.button("Cancel case").clicked() {
                 state.cancel_open = true;
+                state.cancel_error = None;
             }
         }
     });
