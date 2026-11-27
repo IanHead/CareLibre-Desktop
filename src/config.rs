@@ -11,8 +11,8 @@ use crate::theme::ThemeMode;
 pub const CONSTELLATION_MIN_STEPS: u8 = 1;
 /// Upper bound keeps dense tenant graphs readable.
 pub const CONSTELLATION_MAX_STEPS: u8 = 4;
-/// New records start at two steps, matching the roadmap.
-pub const CONSTELLATION_DEFAULT_STEPS: u8 = 2;
+/// New records start one step deep, showing only direct connections.
+pub const CONSTELLATION_DEFAULT_STEPS: u8 = 1;
 
 /// How one user last left the relationship constellation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -83,7 +83,7 @@ impl Default for Config {
 
 impl Config {
     /// The constellation preference for an account, defaulting to collapsed
-    /// with two steps on first use.
+    /// with one step on first use.
     pub fn relationship_view(&self, key: &str) -> RelationshipViewPreference {
         self.relationship_views
             .get(key)
@@ -180,10 +180,11 @@ mod tests {
     }
 
     #[test]
-    fn constellation_defaults_to_collapsed_with_two_steps() {
+    fn constellation_defaults_to_collapsed_with_one_step() {
         let preference = RelationshipViewPreference::default();
         assert!(preference.collapsed);
         assert_eq!(preference.steps, CONSTELLATION_DEFAULT_STEPS);
+        assert_eq!(preference.steps, 1);
     }
 
     #[test]

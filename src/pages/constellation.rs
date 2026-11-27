@@ -1046,7 +1046,19 @@ mod tests {
             .get_by_role_and_label(egui::Role::Button, "+")
             .click();
         harness.run();
-        assert_eq!(harness.state().preference.steps, 3);
+        assert_eq!(
+            harness.state().preference.steps,
+            crate::config::CONSTELLATION_DEFAULT_STEPS + 1
+        );
+
+        harness
+            .get_by_role_and_label(egui::Role::Button, "+")
+            .click();
+        harness.run();
+        assert_eq!(
+            harness.state().preference.steps,
+            crate::config::CONSTELLATION_DEFAULT_STEPS + 2
+        );
 
         harness
             .get_by_role_and_label(egui::Role::Button, "+")
