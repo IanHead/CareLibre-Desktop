@@ -5971,8 +5971,8 @@ impl CareLibreApp {
                 if nav_button(
                     &mut menu_ui,
                     "📝",
-                    "Start intake",
-                    "Guided onboarding for clients, workers and other contacts.",
+                    "Intake",
+                    "Enquiries, referrals and onboarding across configurable stages.",
                     centeredness,
                     38.0 + 8.0 * centeredness,
                 )
