@@ -529,6 +529,13 @@ fn draw_canvas(
             focus,
         )
     });
+    let trace_colour = trace.as_ref().map(|trace| {
+        if trace.path_length() == 1 {
+            theme::accent()
+        } else {
+            theme::relationship_path()
+        }
+    });
 
     for edge in &view.edges {
         let from_node = &view.nodes[edge.from];
@@ -550,7 +557,10 @@ fn draw_canvas(
             .as_ref()
             .is_some_and(|trace| trace.touches_start(edge.from, edge.to));
         let (colour, width) = if on_path {
-            (with_alpha(theme::relationship_path(), alpha), 2.6)
+            (
+                with_alpha(trace_colour.unwrap_or_else(theme::accent), alpha),
+                2.6,
+            )
         } else if direct {
             (with_alpha(theme::accent(), alpha), 2.2)
         } else {
@@ -649,7 +659,7 @@ fn draw_canvas(
         );
 
         if on_path {
-            let colour = with_alpha(theme::relationship_path(), alpha);
+            let colour = with_alpha(trace_colour.unwrap_or_else(theme::accent), alpha);
             match node.kind {
                 PartyKind::Contact => {
                     painter.circle_stroke(centre, node.radius + 3.5, Stroke::new(2.0, colour));
@@ -805,11 +815,19 @@ fn draw_canvas(
         && highlight_index != focus_index
     {
         let anchor = rect.left_top() + vec2(10.0, 8.0);
-        painter.circle_filled(anchor + vec2(4.0, 5.0), 4.0, theme::relationship_path());
+        painter.circle_filled(
+            anchor + vec2(4.0, 5.0),
+            4.0,
+            trace_colour.unwrap_or_else(theme::accent),
+        );
         painter.text(
             anchor + vec2(13.0, 0.0),
             Align2::LEFT_TOP,
-            "Path to focus",
+            if trace.path_length() == 1 {
+                "Direct link to focus"
+            } else {
+                "Path to focus"
+            },
             FontId::proportional(9.0),
             theme::faint(),
         );

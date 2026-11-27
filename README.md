@@ -214,7 +214,8 @@ from the sidebar, or use **Explore network** on a contact or organisation record
 - Click a party to select it; the side panel lists its direct relationships with roles,
   status and dates, and can open a contact or make that party the new focus.
 - Hover or select any party to paint its direct links green and trace the shortest
-  route back to the focus in violet. Only the parties on that route are highlighted;
+  route back to the focus in violet. A route that is a single hop stays green, since
+  it is a direct relationship. Only the parties on that route are highlighted;
   everything else dims so the path is easy to follow.
 - **Skip hubs** is on by default. Highly connected parties such as Blue Dreams Care are
   drawn with their link count but not expanded, so a client's second level is not simply

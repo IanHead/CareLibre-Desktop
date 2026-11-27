@@ -1180,6 +1180,15 @@ fn canvas(
             focus,
         )
     });
+    // A one-hop route is simply a direct relationship, so it keeps the green
+    // treatment instead of introducing the violet path colour.
+    let trace_colour = trace.as_ref().map(|trace| {
+        if trace.path_length() == 1 {
+            theme::accent()
+        } else {
+            theme::relationship_path()
+        }
+    });
 
     let mut ring_hop = 0;
     for ring in &layout.rings {
@@ -1228,7 +1237,10 @@ fn canvas(
             .as_ref()
             .is_some_and(|trace| trace.touches_start(edge.from, edge.to));
         let (colour, width) = if on_path {
-            (with_alpha(theme::relationship_path(), alpha), 2.6)
+            (
+                with_alpha(trace_colour.unwrap_or_else(theme::accent), alpha),
+                2.6,
+            )
         } else if direct {
             (with_alpha(theme::accent(), alpha), 2.0)
         } else {
@@ -1261,7 +1273,7 @@ fn canvas(
         let Some(index) = layout.node_index(key) else {
             if node.alpha > 0.02 {
                 draw_node(
-                    &painter, rect, centre, state.zoom, node, false, false, false, false, false,
+                    &painter, rect, centre, state.zoom, node, false, false, false, None, false,
                     None,
                 );
             }
@@ -1274,6 +1286,7 @@ fn canvas(
         let on_path = trace.as_ref().is_some_and(|trace| trace.is_on_path(index));
         let direct = trace.as_ref().is_some_and(|trace| trace.is_direct(index));
         let dimmed = trace.is_some() && !on_path && !direct;
+        let path_colour = on_path.then_some(trace_colour).flatten();
         draw_node(
             &painter,
             rect,
@@ -1283,7 +1296,7 @@ fn canvas(
             is_focus,
             is_selected,
             emphasis,
-            on_path,
+            path_colour,
             dimmed,
             layout
                 .hubs
@@ -1331,11 +1344,19 @@ fn canvas(
         && highlight_index != focus_index
     {
         let anchor = rect.left_top() + vec2(12.0, 11.0);
-        painter.circle_filled(anchor + vec2(4.0, 5.0), 4.0, theme::relationship_path());
+        painter.circle_filled(
+            anchor + vec2(4.0, 5.0),
+            4.0,
+            trace_colour.unwrap_or_else(theme::accent),
+        );
         painter.text(
             anchor + vec2(13.0, 0.0),
             Align2::LEFT_TOP,
-            "Path to focus",
+            if trace.path_length() == 1 {
+                "Direct link to focus"
+            } else {
+                "Path to focus"
+            },
             FontId::proportional(9.5),
             theme::faint(),
         );
@@ -1453,7 +1474,7 @@ fn draw_node(
     is_focus: bool,
     is_selected: bool,
     emphasis: bool,
-    on_path: bool,
+    path_colour: Option<Color32>,
     dimmed: bool,
     hub_links: Option<usize>,
 ) {
@@ -1521,8 +1542,8 @@ fn draw_node(
         );
     }
 
-    if on_path {
-        let colour = with_alpha(theme::relationship_path(), alpha);
+    if let Some(colour) = path_colour {
+        let colour = with_alpha(colour, alpha);
         match node.kind {
             PartyKind::Contact => {
                 painter.circle_stroke(position, radius + 3.5, Stroke::new(2.0, colour));
