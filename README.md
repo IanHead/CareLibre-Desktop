@@ -17,7 +17,7 @@ open-source care management platform for disability and aged care providers.
 
 <table>
   <tr>
-    <td align="center" colspan="3"><a href="docs/launch.png"><img src="docs/thumbs/launch.png" alt="CareLibre centred launch menu"></a><br><sub><b>Launch</b> — a centred menu until the first column opens</sub></td>
+    <td align="center" colspan="3"><a href="docs/launch.png"><img src="docs/thumbs/launch.png" alt="CareLibre signed-out launch screen"></a><br><sub><b>Launch</b> — sign in before the workspace opens</sub></td>
   </tr>
   <tr>
     <td align="center"><a href="docs/contacts.png"><img src="docs/thumbs/contacts.png" alt="CareLibre contacts workspace"></a><br><sub><b>Contacts</b> — live directory with role filters and search</sub></td>
@@ -100,15 +100,18 @@ cargo run
 The client talks to the CareLibre Server REST API. A local development server listens
 on `http://127.0.0.1:8484` by default.
 
-Open **Settings** in the sidebar to:
+While signed out, the launch screen replaces the main menu with the sign-in form.
+Use it to:
 
 - change the server URL (saved to the platform config directory)
 - check liveness and database readiness (`/healthz` and `/readyz`)
 - sign in, or create the first organisation with an owner account
-- sign out and inspect the active organisation and edition
-- choose Light, Dark or Follow System appearance (Follow System by default)
-- choose client-side or native window decorations
 - remember your sign-in securely on this device
+
+No workspace pages, records or account data are rendered until a session is
+active. After signing in, **Settings** shows the active account and organisation,
+lets you sign out, and keeps the server, appearance and window preferences. The
+sign-in form is never shown again inside Settings.
 
 The connection is checked every 15 seconds and the status is shown in the status bar.
 Signing in is required for all contact data and intake completion: the desktop no longer
@@ -263,6 +266,12 @@ desktop exchanges it for a fresh access token and restores the session before lo
 contacts. The token is encrypted at rest through the OS credential store, with an
 encrypted local-vault fallback for minimal environments. Passwords are never saved.
 
+The sign-in form lives on the launch/main-menu surface and only appears while no
+session is active. When you are signed in, Settings shows your account, organisation
+and sign-out control, and never repeats the sign-in form. Signing out or losing a
+session closes the workspace and any detached windows, so no records or pages remain
+visible without an account.
+
 ## Server data and performance
 
 Contacts are read from `GET /api/v1/contacts` and detail/custom-field data from
@@ -332,7 +341,7 @@ cargo run --example screenshot -- docs/worker-qualities.png workers --live --con
 | `src/perf.rs` | F12 performance HUD |
 | `src/theme.rs` | Palette, typography and shared card/pill widgets |
 | `src/rostering.rs` | Rostering API models and local-time conversion |
-| `src/pages/` | One module per area: `contacts.rs` virtualised list, `contact_editor.rs` record editor, `rostering.rs` shifts and suitability, `intake/` wizards, `settings.rs` connection/account UI |
+| `src/pages/` | One module per area: `contacts.rs` virtualised list, `contact_editor.rs` record editor, `rostering.rs` shifts and suitability, `intake/` wizards, `settings.rs` connection, account and application UI |
 | `assets/fonts/` | Bundled Inter font (SIL OFL 1.1) and licence |
 | `examples/screenshot.rs` | Headless renderer used for snapshots |
 | `tests/ui.rs` | Headless rendering and sidebar navigation tests |
