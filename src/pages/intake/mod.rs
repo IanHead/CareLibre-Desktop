@@ -1,5 +1,6 @@
 //! Intake picker and guided onboarding wizards.
 
+pub mod board;
 pub(crate) mod fields;
 
 use std::{
@@ -145,6 +146,7 @@ impl Default for IntakeState {
 }
 
 pub enum IntakeAction {
+    Board(board::IntakeBoardAction),
     Start(IntakeKind),
     Resume(String),
     Discard(String),

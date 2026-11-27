@@ -14,6 +14,9 @@ use crate::contact::{
     ApiRelationshipGraph, ApiRelationshipHistory, ApiRelationshipList, ApiRelationshipTypeList,
     ApiRelationshipWrite, ApiWorkerQualityValue, ApiWorkerQualityValueWrite, RelationshipChange,
 };
+use crate::intake_board::{
+    ApiIntakeBoard, ApiIntakeCaseDetail, ApiIntakeFlowList, ApiTransitionWrite,
+};
 use crate::organisation::{ApiOrganisation, ApiOrganisationList, ApiOrganisationWrite};
 use crate::rostering::{
     ApiAssignment, ApiAssignmentUpdate, ApiAssignmentWrite, ApiBatchShiftWrite, ApiCopyShiftWrite,
@@ -280,6 +283,47 @@ impl ApiClient {
 
     pub fn get_contact(&self, access_token: &str, id: &str) -> ApiResult<ApiContactDetail> {
         self.get_json_with_token(&format!("/api/v1/contacts/{id}"), access_token)
+    }
+
+    pub fn list_intake_flows(&self, access_token: &str) -> ApiResult<ApiIntakeFlowList> {
+        self.get_json_with_token("/api/v1/intake/flows", access_token)
+    }
+
+    pub fn get_intake_board(
+        &self,
+        access_token: &str,
+        flow_id: &str,
+        search: &str,
+    ) -> ApiResult<ApiIntakeBoard> {
+        let mut query = url::form_urlencoded::Serializer::new(String::new());
+        query.append_pair("flow_id", flow_id);
+        query.append_pair("limit_per_stage", "100");
+        if !search.trim().is_empty() {
+            query.append_pair("search", search.trim());
+        }
+        self.get_json_with_token(
+            &format!("/api/v1/intake/board?{}", query.finish()),
+            access_token,
+        )
+    }
+
+    pub fn get_intake_case(&self, access_token: &str, id: &str) -> ApiResult<ApiIntakeCaseDetail> {
+        self.get_json_with_token(&format!("/api/v1/intake/cases/{id}"), access_token)
+    }
+
+    pub fn transition_intake_case(
+        &self,
+        access_token: &str,
+        id: &str,
+        payload: &ApiTransitionWrite,
+    ) -> ApiResult<ApiIntakeCaseDetail> {
+        let (status, body) = self.send_with_token(
+            "POST",
+            &format!("/api/v1/intake/cases/{id}/transition"),
+            access_token,
+            payload,
+        )?;
+        decode(status, &body)
     }
 
     pub fn update_contact(

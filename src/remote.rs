@@ -18,6 +18,7 @@ use crate::{
         ApiRelationshipType, ApiRelationshipWrite, ApiWorkerQualityValue,
         ApiWorkerQualityValueWrite, RelationshipChange,
     },
+    intake_board::{ApiIntakeBoard, ApiIntakeCaseDetail, ApiIntakeFlowList, ApiTransitionWrite},
     organisation::{ApiOrganisation, ApiOrganisationList, ApiOrganisationWrite},
     rostering::{
         ApiAssignment, ApiAssignmentUpdate, ApiAssignmentWrite, ApiBatchShiftWrite,
@@ -28,6 +29,31 @@ use crate::{
 };
 
 pub enum RemoteCommand {
+    LoadIntakeFlows {
+        request_id: u64,
+        base_url: String,
+        token: String,
+    },
+    LoadIntakeBoard {
+        request_id: u64,
+        base_url: String,
+        token: String,
+        flow_id: String,
+        search: String,
+    },
+    LoadIntakeCase {
+        request_id: u64,
+        base_url: String,
+        token: String,
+        case_id: String,
+    },
+    TransitionIntakeCase {
+        request_id: u64,
+        base_url: String,
+        token: String,
+        case_id: String,
+        payload: Box<ApiTransitionWrite>,
+    },
     ListContacts {
         request_id: u64,
         base_url: String,
@@ -285,6 +311,25 @@ pub type RosterFiltersResult =
     Result<(Vec<ApiDivision>, Vec<ApiService>, Vec<ApiCostCentre>), String>;
 
 pub enum RemoteEvent {
+    IntakeFlowsLoaded {
+        request_id: u64,
+        result: Result<ApiIntakeFlowList, String>,
+    },
+    IntakeBoardLoaded {
+        request_id: u64,
+        flow_id: String,
+        result: Result<ApiIntakeBoard, String>,
+    },
+    IntakeCaseLoaded {
+        request_id: u64,
+        case_id: String,
+        result: Result<ApiIntakeCaseDetail, String>,
+    },
+    IntakeCaseTransitioned {
+        request_id: u64,
+        case_id: String,
+        result: Result<ApiIntakeCaseDetail, String>,
+    },
     ContactsListed {
         request_id: u64,
         filter: ContactFilter,
@@ -477,6 +522,63 @@ impl RemoteHandle {
             .expect("failed to spawn remote worker thread");
 
         Self { commands, events }
+    }
+
+    pub fn load_intake_flows(&self, request_id: u64, base_url: String, token: String) {
+        let _ = self.commands.send(RemoteCommand::LoadIntakeFlows {
+            request_id,
+            base_url,
+            token,
+        });
+    }
+
+    pub fn load_intake_board(
+        &self,
+        request_id: u64,
+        base_url: String,
+        token: String,
+        flow_id: String,
+        search: String,
+    ) {
+        let _ = self.commands.send(RemoteCommand::LoadIntakeBoard {
+            request_id,
+            base_url,
+            token,
+            flow_id,
+            search,
+        });
+    }
+
+    pub fn load_intake_case(
+        &self,
+        request_id: u64,
+        base_url: String,
+        token: String,
+        case_id: String,
+    ) {
+        let _ = self.commands.send(RemoteCommand::LoadIntakeCase {
+            request_id,
+            base_url,
+            token,
+            case_id,
+        });
+    }
+
+    pub fn transition_intake_case(
+        &self,
+        request_id: u64,
+        base_url: String,
+        token: String,
+        case_id: String,
+        payload: ApiTransitionWrite,
+    ) {
+        let _ = self.commands.send(RemoteCommand::TransitionIntakeCase {
+            request_id,
+            base_url,
+            token,
+            case_id,
+            payload: Box::new(payload),
+        });
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1060,6 +1162,63 @@ impl RemoteHandle {
 fn run(ctx: egui::Context, commands: Receiver<RemoteCommand>, events: Sender<RemoteEvent>) {
     while let Ok(command) = commands.recv() {
         match command {
+            RemoteCommand::LoadIntakeFlows {
+                request_id,
+                base_url,
+                token,
+            } => {
+                let result = ApiClient::new(&base_url)
+                    .and_then(|client| client.list_intake_flows(&token))
+                    .map_err(|err| err.to_string());
+                let _ = events.send(RemoteEvent::IntakeFlowsLoaded { request_id, result });
+            }
+            RemoteCommand::LoadIntakeBoard {
+                request_id,
+                base_url,
+                token,
+                flow_id,
+                search,
+            } => {
+                let result = ApiClient::new(&base_url)
+                    .and_then(|client| client.get_intake_board(&token, &flow_id, &search))
+                    .map_err(|err| err.to_string());
+                let _ = events.send(RemoteEvent::IntakeBoardLoaded {
+                    request_id,
+                    flow_id,
+                    result,
+                });
+            }
+            RemoteCommand::LoadIntakeCase {
+                request_id,
+                base_url,
+                token,
+                case_id,
+            } => {
+                let result = ApiClient::new(&base_url)
+                    .and_then(|client| client.get_intake_case(&token, &case_id))
+                    .map_err(|err| err.to_string());
+                let _ = events.send(RemoteEvent::IntakeCaseLoaded {
+                    request_id,
+                    case_id,
+                    result,
+                });
+            }
+            RemoteCommand::TransitionIntakeCase {
+                request_id,
+                base_url,
+                token,
+                case_id,
+                payload,
+            } => {
+                let result = ApiClient::new(&base_url)
+                    .and_then(|client| client.transition_intake_case(&token, &case_id, &payload))
+                    .map_err(|err| err.to_string());
+                let _ = events.send(RemoteEvent::IntakeCaseTransitioned {
+                    request_id,
+                    case_id,
+                    result,
+                });
+            }
             RemoteCommand::ListContacts {
                 request_id,
                 base_url,

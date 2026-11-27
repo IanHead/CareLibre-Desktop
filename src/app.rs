@@ -117,6 +117,7 @@ pub struct CareLibreApp {
     organisation_delete_requests: BTreeMap<u64, (String, Option<String>)>,
     organisation_query_started: Option<Instant>,
     intake: IntakeState,
+    intake_board: pages::intake::board::IntakeBoardState,
     contact_windows: BTreeMap<String, ContactWindowState>,
     organisation_editors: BTreeMap<String, OrganisationEditorState>,
     columns: Vec<ColumnState>,
@@ -257,6 +258,7 @@ impl CareLibreApp {
             organisation_delete_requests: BTreeMap::new(),
             organisation_query_started: None,
             intake: IntakeState::new(),
+            intake_board: pages::intake::board::IntakeBoardState::default(),
             contact_windows: BTreeMap::new(),
             organisation_editors: BTreeMap::new(),
             columns: Vec::new(),
@@ -654,6 +656,23 @@ impl CareLibreApp {
         self.contacts.loaded()
     }
 
+    /// Whether the intake board has loaded, failed, or has no flows to show.
+    pub fn intake_board_ready(&self) -> bool {
+        self.intake_board.board.is_some()
+            || self.intake_board.flows_error.is_some()
+            || self.intake_board.board_error.is_some()
+            || (self.intake_board.flows_requested && !self.intake_board.flows_loading)
+    }
+
+    /// Number of cards currently rendered across all intake columns.
+    pub fn intake_cards_loaded(&self) -> usize {
+        self.intake_board
+            .board
+            .as_ref()
+            .map(|board| board.columns.iter().map(|column| column.cards.len()).sum())
+            .unwrap_or(0)
+    }
+
     /// Contacts loaded for the global list; also proves server counts are ready.
     pub fn server_contacts_loaded(&self) -> usize {
         self.contacts.loaded()
@@ -687,7 +706,7 @@ impl CareLibreApp {
         if self.intake.view == IntakeView::Wizard {
             self.ensure_party_catalog();
         }
-        self.ensure_intake_list();
+        self.ensure_intake_board_loaded();
         self.refresh_session_if_needed();
 
         if self.config.client_side_decorations {
@@ -780,18 +799,26 @@ impl CareLibreApp {
             Page::Settings => pages::settings::show(ui, &mut self.settings, &self.server),
             Page::Intake => {
                 let signed_in = self.access_token().is_some();
-                let store_ready = self.store_ready;
-                let catalog = self.lookup_parties();
-                let roles = self.role_options.clone();
-                if let Some(action) = pages::intake::show(
-                    ui,
-                    &mut self.intake,
-                    store_ready,
-                    signed_in,
-                    &catalog,
-                    &roles,
-                ) {
-                    *intake_action = Some(action);
+                if self.intake.view == IntakeView::Wizard
+                    || self.intake.view == IntakeView::Completed
+                {
+                    let store_ready = self.store_ready;
+                    let catalog = self.lookup_parties();
+                    let roles = self.role_options.clone();
+                    if let Some(action) = pages::intake::show(
+                        ui,
+                        &mut self.intake,
+                        store_ready,
+                        signed_in,
+                        &catalog,
+                        &roles,
+                    ) {
+                        *intake_action = Some(action);
+                    }
+                } else if let Some(action) =
+                    pages::intake::board::show(ui, &mut self.intake_board, signed_in)
+                {
+                    *intake_action = Some(IntakeAction::Board(action));
                 }
                 None
             }
@@ -1236,32 +1263,121 @@ impl CareLibreApp {
         self.note_relationship_network_changed();
     }
 
-    fn ensure_intake_list(&mut self) {
+    fn ensure_intake_board_loaded(&mut self) {
         if self.page != Page::Intake
-            || !self.store_ready
             || self.intake.view != IntakeView::Picker
-            || self.intake.list_requested
-            || self.intake.list_loading
+            || self.access_token().is_none()
+            || self.remote.is_none()
         {
             return;
         }
 
-        self.request_intake_list();
+        if self.intake_board.flows.is_empty()
+            && !self.intake_board.flows_loading
+            && !self.intake_board.flows_requested
+        {
+            self.request_intake_flows();
+            return;
+        }
+
+        if !self.intake_board.flows.is_empty()
+            && self
+                .intake_board
+                .selected_flow
+                .as_deref()
+                .is_none_or(|id| !self.intake_board.flows.iter().any(|flow| flow.id == id))
+        {
+            let flow = self
+                .intake_board
+                .flows
+                .iter()
+                .find(|flow| flow.is_active)
+                .or_else(|| self.intake_board.flows.first());
+            self.intake_board.selected_flow = flow.map(|flow| flow.id.clone());
+        }
+
+        if self.intake_board.board.is_none()
+            && !self.intake_board.board_loading
+            && !self.intake_board.board_requested
+            && self.intake_board.selected_flow.is_some()
+        {
+            self.request_intake_board();
+        }
     }
 
-    fn request_intake_list(&mut self) {
-        let request_id = self.intake.next_request();
-        self.intake.list_request = Some(request_id);
-        self.intake.list_loading = true;
-        self.intake.list_requested = true;
+    fn request_intake_flows(&mut self) {
+        let Some(token) = self.access_token() else {
+            return;
+        };
+        let Some(remote) = &self.remote else {
+            return;
+        };
+        let request_id = self.intake_board.next_request();
+        self.intake_board.flows_loading = true;
+        self.intake_board.flows_requested = true;
+        self.intake_board.flows_error = None;
+        remote.load_intake_flows(request_id, self.server.base_url.clone(), token);
+    }
 
-        if let Some(store) = &self.store {
-            store.list_intakes(request_id);
-        } else {
-            self.intake.list_loading = false;
-            self.intake.list_requested = false;
-            self.intake.error = Some("The local cache is not running.".to_owned());
-        }
+    fn request_intake_board(&mut self) {
+        let Some(token) = self.access_token() else {
+            return;
+        };
+        let Some(remote) = &self.remote else {
+            return;
+        };
+        let Some(flow_id) = self.intake_board.selected_flow.clone() else {
+            return;
+        };
+        let request_id = self.intake_board.next_request();
+        self.intake_board.board_loading = true;
+        self.intake_board.board_requested = true;
+        self.intake_board.board_error = None;
+        remote.load_intake_board(
+            request_id,
+            self.server.base_url.clone(),
+            token,
+            flow_id,
+            self.intake_board.search.clone(),
+        );
+    }
+
+    fn request_intake_case(&mut self, case_id: String) {
+        let Some(token) = self.access_token() else {
+            return;
+        };
+        let Some(remote) = &self.remote else {
+            return;
+        };
+        let request_id = self.intake_board.next_request();
+        self.intake_board.case_id = Some(case_id.clone());
+        self.intake_board.case_loading = true;
+        self.intake_board.case_requested = true;
+        self.intake_board.case_error = None;
+        self.intake_board.transition_error = None;
+        remote.load_intake_case(request_id, self.server.base_url.clone(), token, case_id);
+    }
+
+    fn request_intake_transition(&mut self, case_id: String, stage_id: String, version: i32) {
+        let Some(token) = self.access_token() else {
+            return;
+        };
+        let Some(remote) = &self.remote else {
+            return;
+        };
+        let request_id = self.intake_board.next_request();
+        self.intake_board.transitioning = true;
+        self.intake_board.transition_error = None;
+        remote.transition_intake_case(
+            request_id,
+            self.server.base_url.clone(),
+            token,
+            case_id,
+            crate::intake_board::ApiTransitionWrite {
+                to_stage_id: stage_id,
+                version,
+            },
+        );
     }
 
     fn tick_intake_autosave(&mut self) {
@@ -1292,6 +1408,7 @@ impl CareLibreApp {
 
     fn handle_intake_action(&mut self, ctx: &egui::Context, action: IntakeAction) {
         match action {
+            IntakeAction::Board(action) => self.handle_intake_board_action(action),
             IntakeAction::Start(kind) => {
                 self.intake.start(kind);
                 self.save_intake_now();
@@ -1368,6 +1485,56 @@ impl CareLibreApp {
                 self.open_page(Page::Contacts);
                 self.show_contacts(filter, Some(name));
                 let _ = ctx;
+            }
+        }
+    }
+
+    fn handle_intake_board_action(&mut self, action: pages::intake::board::IntakeBoardAction) {
+        use pages::intake::board::IntakeBoardAction;
+        match action {
+            IntakeBoardAction::ReloadFlows => {
+                self.intake_board.reset();
+                self.request_intake_flows();
+            }
+            IntakeBoardAction::SelectFlow(flow_id) => {
+                if flow_id.is_empty() {
+                    return;
+                }
+                self.intake_board.reset_board();
+                self.intake_board.selected_flow = Some(flow_id);
+                self.request_intake_board();
+            }
+            IntakeBoardAction::Search => {
+                self.intake_board.reset_board();
+                self.request_intake_board();
+            }
+            IntakeBoardAction::ReloadBoard => {
+                let selected = self.intake_board.selected_flow.clone();
+                self.intake_board.reset_board();
+                self.intake_board.selected_flow = selected;
+                self.request_intake_board();
+            }
+            IntakeBoardAction::OpenCase(case_id) => {
+                self.request_intake_case(case_id);
+            }
+            IntakeBoardAction::CloseCase => {
+                self.intake_board.case = None;
+                self.intake_board.case_id = None;
+                self.intake_board.case_loading = false;
+                self.intake_board.case_requested = false;
+                self.intake_board.case_error = None;
+                self.intake_board.transitioning = false;
+                self.intake_board.transition_error = None;
+            }
+            IntakeBoardAction::Transition {
+                case_id,
+                stage_id,
+                version,
+            } => {
+                self.request_intake_transition(case_id, stage_id, version);
+            }
+            IntakeBoardAction::OpenContact(contact_id) => {
+                self.open_contact(&contact_id);
             }
         }
     }
@@ -3893,6 +4060,89 @@ impl CareLibreApp {
 
         for event in events {
             match event {
+                RemoteEvent::IntakeFlowsLoaded { result, .. } => {
+                    self.intake_board.flows_loading = false;
+                    self.intake_board.flows_requested = false;
+                    match result {
+                        Ok(list) => {
+                            self.intake_board.flows = list.items;
+                            self.intake_board.flows_error = None;
+                            if self.intake_board.selected_flow.as_deref().is_none_or(|id| {
+                                !self.intake_board.flows.iter().any(|flow| flow.id == id)
+                            }) {
+                                let flow = self
+                                    .intake_board
+                                    .flows
+                                    .iter()
+                                    .find(|flow| flow.is_active)
+                                    .or_else(|| self.intake_board.flows.first());
+                                self.intake_board.selected_flow = flow.map(|flow| flow.id.clone());
+                            }
+                        }
+                        Err(error) => {
+                            self.intake_board.flows_error = Some(error);
+                        }
+                    }
+                }
+                RemoteEvent::IntakeBoardLoaded {
+                    flow_id, result, ..
+                } => {
+                    self.intake_board.board_loading = false;
+                    self.intake_board.board_requested = false;
+                    if self.intake_board.selected_flow.as_deref() != Some(flow_id.as_str()) {
+                        continue;
+                    }
+                    match result {
+                        Ok(board) => {
+                            self.intake_board.board = Some(board);
+                            self.intake_board.board_error = None;
+                        }
+                        Err(error) => {
+                            self.intake_board.board_error = Some(error);
+                        }
+                    }
+                }
+                RemoteEvent::IntakeCaseLoaded {
+                    case_id, result, ..
+                } => {
+                    self.intake_board.case_loading = false;
+                    self.intake_board.case_requested = false;
+                    if self.intake_board.case_id.as_deref() != Some(case_id.as_str()) {
+                        continue;
+                    }
+                    match result {
+                        Ok(case) => {
+                            self.intake_board.case = Some(case);
+                            self.intake_board.case_error = None;
+                        }
+                        Err(error) => {
+                            self.intake_board.case_error = Some(error);
+                        }
+                    }
+                }
+                RemoteEvent::IntakeCaseTransitioned {
+                    case_id, result, ..
+                } => {
+                    self.intake_board.transitioning = false;
+                    if self.intake_board.case_id.as_deref() != Some(case_id.as_str()) {
+                        continue;
+                    }
+                    match result {
+                        Ok(case) => {
+                            self.intake_board.case = Some(case);
+                            self.intake_board.case_error = None;
+                            self.intake_board.transition_error = None;
+                            self.intake_board.board = None;
+                            self.intake_board.board_loading = false;
+                            self.intake_board.board_requested = false;
+                            self.intake_board.board_error = None;
+                            self.request_intake_board();
+                        }
+                        Err(error) => {
+                            self.intake_board.transition_error = Some(error);
+                        }
+                    }
+                }
                 RemoteEvent::ContactsListed {
                     request_id,
                     filter,
@@ -5249,6 +5499,7 @@ impl CareLibreApp {
                     self.server.refresh_in_flight = false;
                     self.forget_saved_login();
                     self.organisations.reset();
+                    self.intake_board.reset();
                     self.settings.on_signed_out();
                     self.settings.notice = None;
                     self.notify(ctx, "Signed out.");
@@ -5285,6 +5536,7 @@ impl CareLibreApp {
             self.server.auth_in_flight = false;
             self.close_all_contact_windows();
             self.organisations.reset();
+            self.intake_board.reset();
             self.refresh_contact_lists();
             self.cache_counts = ContactCounts::default();
             self.settings.on_signed_out();

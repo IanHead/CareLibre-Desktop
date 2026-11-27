@@ -152,7 +152,7 @@ fn main() {
                 if Instant::now() >= deadline {
                     panic!("timed out signing in");
                 }
-                harness.run();
+                harness.step();
                 std::thread::sleep(Duration::from_millis(25));
             }
         }
@@ -162,14 +162,14 @@ fn main() {
             if Instant::now() >= deadline {
                 panic!("timed out waiting for the local cache");
             }
-            harness.run();
+            harness.step();
             std::thread::sleep(Duration::from_millis(25));
         }
 
         if login.is_some() {
             let deadline = Instant::now() + Duration::from_secs(10);
             while harness.state().server_contacts_loaded() == 0 && Instant::now() < deadline {
-                harness.run();
+                harness.step();
                 std::thread::sleep(Duration::from_millis(25));
             }
         }
@@ -213,6 +213,14 @@ fn main() {
                     .expect("an organisation card")
                     .click();
                 harness.run();
+            }
+        }
+
+        if page == Page::Intake {
+            let deadline = Instant::now() + Duration::from_secs(15);
+            while !harness.state().intake_board_ready() && Instant::now() < deadline {
+                harness.step();
+                std::thread::sleep(Duration::from_millis(25));
             }
         }
 
