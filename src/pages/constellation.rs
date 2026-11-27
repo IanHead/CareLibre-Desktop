@@ -4,7 +4,7 @@
 //! so the constellation is built client-side: a breadth-first walk from the
 //! open contact, capped at the number of steps the user has chosen.
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::BTreeMap;
 
 use eframe::egui::{
     self, Align2, Color32, CornerRadius, FontId, Pos2, Rect, RichText, Sense, Stroke, StrokeKind,
@@ -13,21 +13,16 @@ use eframe::egui::{
 
 use crate::config::{CONSTELLATION_MAX_STEPS, CONSTELLATION_MIN_STEPS, RelationshipViewPreference};
 use crate::contact::{ApiGraphNode, ApiRelationship, PartyKind, relationship_role_label};
+use crate::graph::{GraphFilters, RelationshipGraph, node_key};
 use crate::theme;
+
+pub use crate::graph::RelationshipNetwork;
 
 /// Total nodes drawn. Beyond this the graph becomes unreadable, so we stop and
 /// point the user at the relationship list instead.
 pub const MAX_NODES: usize = 60;
 const CANVAS_HEIGHT: f32 = 300.0;
 const NARROW_CANVAS_HEIGHT: f32 = 230.0;
-
-/// A snapshot of the relationship edges used to build constellations.
-#[derive(Debug)]
-pub struct RelationshipNetwork {
-    pub edges: Vec<ApiRelationship>,
-    /// Bumped whenever the graph changes so views rebuild exactly once.
-    pub revision: u64,
-}
 
 /// Everything the constellation needs from the application shell.
 pub struct ConstellationSource<'a> {
@@ -625,112 +620,35 @@ pub fn build_view(
     size: Vec2,
 ) -> ConstellationView {
     let focus_key = node_key(PartyKind::Contact, focus_id);
-    let active: Vec<&ApiRelationship> = edges.iter().filter(|edge| !edge.is_ended()).collect();
+    let mut graph =
+        RelationshipGraph::build(catalog, edges, &GraphFilters::default(), Some(&focus_key));
+    graph.ensure_label(
+        PartyKind::Contact,
+        focus_id,
+        if focus_label.trim().is_empty() {
+            "This contact"
+        } else {
+            focus_label
+        },
+    );
+    let walk = graph.walk(&focus_key, steps, MAX_NODES);
 
-    let mut labels: BTreeMap<String, (PartyKind, String, String)> = BTreeMap::new();
-    for node in catalog {
-        labels.insert(
-            node_key(node.kind, &node.id),
-            (node.kind, node.id.clone(), node.label.clone()),
-        );
-    }
-    for edge in &active {
-        labels
-            .entry(node_key(edge.from_kind, &edge.from_id))
-            .or_insert_with(|| (edge.from_kind, edge.from_id.clone(), edge.from_name.clone()));
-        labels
-            .entry(node_key(edge.to_kind, &edge.to_id))
-            .or_insert_with(|| (edge.to_kind, edge.to_id.clone(), edge.to_name.clone()));
-    }
-
-    labels.entry(focus_key.clone()).or_insert_with(|| {
-        (
-            PartyKind::Contact,
-            focus_id.to_owned(),
-            if focus_label.trim().is_empty() {
-                "This contact".to_owned()
-            } else {
-                focus_label.to_owned()
-            },
-        )
-    });
-
-    let mut adjacency: BTreeMap<String, Vec<usize>> = BTreeMap::new();
-    for (index, edge) in active.iter().enumerate() {
-        adjacency
-            .entry(node_key(edge.from_kind, &edge.from_id))
-            .or_default()
-            .push(index);
-        adjacency
-            .entry(node_key(edge.to_kind, &edge.to_id))
-            .or_default()
-            .push(index);
-    }
-
-    let mut hops: BTreeMap<String, usize> = BTreeMap::new();
-    let mut roles: BTreeMap<String, String> = BTreeMap::new();
-    let mut order: Vec<String> = vec![focus_key.clone()];
-    let mut queue: VecDeque<String> = VecDeque::from([focus_key.clone()]);
-    hops.insert(focus_key.clone(), 0);
-    let mut truncated = false;
-
-    while let Some(current) = queue.pop_front() {
-        let hop = hops[&current];
-        if hop >= steps as usize {
-            continue;
-        }
-
-        let mut neighbours: Vec<(String, String)> = Vec::new();
-        if let Some(indices) = adjacency.get(&current) {
-            for &index in indices {
-                let edge = active[index];
-                let from = node_key(edge.from_kind, &edge.from_id);
-                let to = node_key(edge.to_kind, &edge.to_id);
-                let (other, role) = if from == current {
-                    (to, edge.to_role.clone())
-                } else {
-                    (from, edge.from_role.clone())
-                };
-                if !hops.contains_key(&other)
-                    && !neighbours.iter().any(|(existing, _)| existing == &other)
-                {
-                    neighbours.push((other, role));
-                }
-            }
-        }
-        neighbours.sort();
-
-        for (neighbour, role) in neighbours {
-            if hops.len() >= MAX_NODES {
-                truncated = true;
-                break;
-            }
-            hops.insert(neighbour.clone(), hop + 1);
-            roles.insert(neighbour.clone(), role);
-            order.push(neighbour.clone());
-            queue.push_back(neighbour);
-        }
-        if truncated {
-            break;
-        }
-    }
-
-    let mut nodes = Vec::with_capacity(order.len());
+    let mut nodes: Vec<ViewNode> = Vec::with_capacity(walk.hops.len());
     let mut index_by_key: BTreeMap<String, usize> = BTreeMap::new();
 
     let mut push_node = |key: &str, radius: f32, pos: Pos2| {
-        if let Some((kind, id, label)) = labels.get(key) {
+        if let Some(node) = graph.label(key) {
             index_by_key.insert(key.to_owned(), nodes.len());
             nodes.push(ViewNode {
-                kind: *kind,
-                id: id.clone(),
+                kind: node.kind,
+                id: node.id.clone(),
                 label: if key == focus_key.as_str() && !focus_label.trim().is_empty() {
                     focus_label.to_owned()
                 } else {
-                    label.clone()
+                    node.label.clone()
                 },
-                hop: hops.get(key).copied().unwrap_or(0),
-                role: roles.get(key).cloned().unwrap_or_default(),
+                hop: walk.hops.get(key).copied().unwrap_or(0),
+                role: walk.roles.get(key).cloned().unwrap_or_default(),
                 pos,
                 radius,
             });
@@ -741,15 +659,14 @@ pub fn build_view(
     push_node(&focus_key, 17.0, centre);
 
     for hop in 1..=steps as usize {
-        let mut keys: Vec<&String> = hops
+        let mut keys: Vec<&String> = walk
+            .hops
             .iter()
             .filter_map(|(key, depth)| (*depth == hop).then_some(key))
             .collect();
         keys.sort_by(|left, right| {
-            let left_label = labels.get(*left).map_or("", |(_, _, label)| label.as_str());
-            let right_label = labels
-                .get(*right)
-                .map_or("", |(_, _, label)| label.as_str());
+            let left_label = graph.label(left).map_or("", |node| node.label.as_str());
+            let right_label = graph.label(right).map_or("", |node| node.label.as_str());
             left_label
                 .to_lowercase()
                 .cmp(&right_label.to_lowercase())
@@ -786,7 +703,7 @@ pub fn build_view(
     drop(push_node);
 
     let mut view_edges = Vec::new();
-    for edge in &active {
+    for edge in graph.edges() {
         let from = node_key(edge.from_kind, &edge.from_id);
         let to = node_key(edge.to_kind, &edge.to_id);
         if let (Some(&from), Some(&to)) = (index_by_key.get(&from), index_by_key.get(&to)) {
@@ -809,7 +726,7 @@ pub fn build_view(
         },
         nodes,
         edges: view_edges,
-        truncated,
+        truncated: walk.truncated,
     }
 }
 
@@ -818,10 +735,6 @@ fn ring_radius(size: Vec2, steps: u8, hop: u8) -> f32 {
     let inner = (max_radius * 0.35).min(46.0);
     let fraction = hop as f32 / steps.max(1) as f32;
     inner + (max_radius - inner) * fraction
-}
-
-fn node_key(kind: PartyKind, id: &str) -> String {
-    format!("{}:{id}", kind.as_str())
 }
 
 fn initials(label: &str) -> String {
