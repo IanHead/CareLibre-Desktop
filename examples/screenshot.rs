@@ -69,6 +69,7 @@ fn main() {
     let org_hover = args.iter().any(|arg| arg == "--org-hover");
     let funding = args.iter().any(|arg| arg == "--funding");
     let qualities = args.iter().any(|arg| arg == "--qualities");
+    let intake_case = args.iter().any(|arg| arg == "--intake-case");
     // With --relationships: open the first relationship's history or actions menu.
     let history = args.iter().any(|arg| arg == "--history");
     let actions = args.iter().any(|arg| arg == "--actions");
@@ -221,6 +222,13 @@ fn main() {
             while !harness.state().intake_board_ready() && Instant::now() < deadline {
                 harness.step();
                 std::thread::sleep(Duration::from_millis(25));
+            }
+            if intake_case && harness.state_mut().open_first_intake_case() {
+                let deadline = Instant::now() + Duration::from_secs(15);
+                while !harness.state().intake_case_column_ready() && Instant::now() < deadline {
+                    harness.step();
+                    std::thread::sleep(Duration::from_millis(25));
+                }
             }
         }
 

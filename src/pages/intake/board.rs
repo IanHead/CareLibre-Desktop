@@ -1,5 +1,7 @@
 //! Server-backed intake kanban board and case detail.
 
+use std::collections::BTreeSet;
+
 use eframe::egui::{self, Align, Layout, RichText, ScrollArea, Stroke, Ui};
 use serde_json::Value;
 
@@ -14,19 +16,17 @@ pub struct IntakeBoardState {
     pub flows_loading: bool,
     pub flows_requested: bool,
     pub flows_error: Option<String>,
-    pub selected_flow: Option<String>,
+    pub flows_request_id: Option<u64>,
+    /// Empty means every active flow is included.
+    pub selected_flows: BTreeSet<String>,
+    pub subject_kind: Option<String>,
+    pub assignee_filter: String,
     pub board: Option<ApiIntakeBoard>,
     pub board_loading: bool,
     pub board_requested: bool,
     pub board_error: Option<String>,
+    pub board_request_id: Option<u64>,
     pub search: String,
-    pub case: Option<ApiIntakeCaseDetail>,
-    pub case_id: Option<String>,
-    pub case_loading: bool,
-    pub case_requested: bool,
-    pub case_error: Option<String>,
-    pub transitioning: bool,
-    pub transition_error: Option<String>,
     pub request_seq: u64,
 }
 
@@ -45,29 +45,73 @@ impl IntakeBoardState {
         self.board_loading = false;
         self.board_requested = false;
         self.board_error = None;
-        self.case = None;
-        self.case_id = None;
-        self.case_loading = false;
-        self.case_requested = false;
-        self.case_error = None;
-        self.transitioning = false;
-        self.transition_error = None;
+        self.board_request_id = None;
     }
 
-    pub fn selected_flow(&self) -> Option<&ApiIntakeFlow> {
-        self.selected_flow
-            .as_deref()
-            .and_then(|id| self.flows.iter().find(|flow| flow.id == id))
+    pub fn flow_filter_label(&self) -> String {
+        if self.selected_flows.is_empty() {
+            "All intake paths".to_owned()
+        } else {
+            format!("{} path(s)", self.selected_flows.len())
+        }
+    }
+
+    pub fn flow_filter_ids(&self) -> Vec<String> {
+        self.selected_flows.iter().cloned().collect()
+    }
+}
+
+pub struct IntakeCaseColumnState {
+    pub case_id: String,
+    pub case: Option<ApiIntakeCaseDetail>,
+    pub loading: bool,
+    pub requested: bool,
+    pub request_id: Option<u64>,
+    pub error: Option<String>,
+    pub transitioning: bool,
+    pub transition_request_id: Option<u64>,
+    pub transition_error: Option<String>,
+}
+
+impl IntakeCaseColumnState {
+    pub fn new(case_id: String) -> Self {
+        Self {
+            case_id,
+            case: None,
+            loading: false,
+            requested: false,
+            request_id: None,
+            error: None,
+            transitioning: false,
+            transition_request_id: None,
+            transition_error: None,
+        }
+    }
+
+    pub fn title(&self) -> String {
+        self.case
+            .as_ref()
+            .map(|case| case.case.display_name.clone())
+            .unwrap_or_else(|| "Intake case".to_owned())
+    }
+
+    pub fn subtitle(&self) -> String {
+        self.case
+            .as_ref()
+            .map(|case| format!("{} · {}", case.case.stage.name, case.case.flow.name))
+            .unwrap_or_else(|| "INTAKE CASE".to_owned())
     }
 }
 
 pub enum IntakeBoardAction {
     ReloadFlows,
-    SelectFlow(String),
-    Search,
     ReloadBoard,
+    Search,
     OpenCase(String),
-    CloseCase,
+}
+
+pub enum IntakeCaseAction {
+    Reload,
     Transition {
         case_id: String,
         stage_id: String,
@@ -122,7 +166,7 @@ pub fn show(
         return action;
     }
     if let Some(error) = &state.flows_error {
-        error_card(ui, "Could not load intake flows", error, "Retry");
+        error_card(ui, "Could not load intake flows", error);
         if ui.button("Retry").clicked() {
             action = Some(IntakeBoardAction::ReloadFlows);
         }
@@ -146,7 +190,7 @@ pub fn show(
         return action;
     }
     if let Some(error) = &state.board_error {
-        error_card(ui, "Could not load the board", error, "Retry");
+        error_card(ui, "Could not load the board", error);
         if ui.button("Retry").clicked() {
             action = Some(IntakeBoardAction::ReloadBoard);
         }
@@ -167,38 +211,7 @@ pub fn show(
                 );
             });
         } else {
-            board_columns(ui, state, &board, &mut action);
-        }
-    }
-
-    if state.case_loading && state.case.is_none() {
-        ui.ctx().request_repaint();
-        loading(ui, "Loading case…");
-    }
-    if let Some(error) = &state.case_error {
-        error_card(ui, "Could not load the case", error, "Dismiss");
-        if ui.button("Dismiss").clicked() {
-            action = Some(IntakeBoardAction::CloseCase);
-        }
-    }
-    if let Some(case) = state.case.clone() {
-        let mut open = true;
-        let mut window_action = None;
-        egui::Window::new(format!(
-            "{} · {}",
-            case.case.display_name, case.case.stage.name
-        ))
-        .open(&mut open)
-        .default_width(440.0)
-        .max_height(600.0)
-        .resizable(true)
-        .show(ui.ctx(), |ui| {
-            case_detail(ui, state, &case, &mut window_action);
-        });
-        if !open {
-            action = Some(IntakeBoardAction::CloseCase);
-        } else if window_action.is_some() {
-            action = window_action;
+            board_columns(ui, &board, &mut action);
         }
     }
 
@@ -212,33 +225,86 @@ fn header(ui: &mut Ui, title: &str, subtitle: &str) {
 
 fn toolbar(ui: &mut Ui, state: &mut IntakeBoardState, action: &mut Option<IntakeBoardAction>) {
     ui.horizontal_wrapped(|ui| {
-        let selected = state
-            .selected_flow()
-            .map(|flow| flow.name.clone())
-            .unwrap_or_else(|| "Select a flow".to_owned());
-        let previous = state.selected_flow.clone();
-        egui::ComboBox::from_label("Flow")
-            .selected_text(selected)
-            .width(260.0)
-            .show_ui(ui, |ui| {
-                for flow in &state.flows {
-                    let label = match flow.variant.as_deref() {
-                        Some(variant) if !variant.is_empty() => {
-                            format!("{} · {variant}", flow.name)
-                        }
-                        _ => flow.name.clone(),
-                    };
-                    ui.selectable_value(&mut state.selected_flow, Some(flow.id.clone()), label);
+        let label = state.flow_filter_label();
+        let mut flow_changed = false;
+        ui.menu_button(label, |ui| {
+            ui.set_min_width(260.0);
+            if ui.button("All intake paths").clicked() {
+                state.selected_flows.clear();
+                flow_changed = true;
+                ui.close();
+            }
+            ui.separator();
+            for flow in &state.flows {
+                let mut selected = state.selected_flows.contains(&flow.id);
+                let label = match flow.variant.as_deref() {
+                    Some(variant) if !variant.is_empty() => {
+                        format!("{} · {variant}", flow.name)
+                    }
+                    _ => flow.name.clone(),
+                };
+                if ui.checkbox(&mut selected, label).changed() {
+                    if selected {
+                        state.selected_flows.insert(flow.id.clone());
+                    } else {
+                        state.selected_flows.remove(&flow.id);
+                    }
+                    flow_changed = true;
                 }
-            });
-        if previous != state.selected_flow {
-            *action = Some(IntakeBoardAction::SelectFlow(
-                state.selected_flow.clone().unwrap_or_default(),
-            ));
+            }
+        });
+        if flow_changed {
+            *action = Some(IntakeBoardAction::ReloadBoard);
+        }
+
+        let previous_type = state.subject_kind.clone();
+        ui.menu_button(subject_kind_label(state.subject_kind.as_deref()), |ui| {
+            ui.set_min_width(180.0);
+            if ui
+                .selectable_label(state.subject_kind.is_none(), "All types")
+                .clicked()
+            {
+                state.subject_kind = None;
+                ui.close();
+            }
+            for (value, label) in [
+                ("client", "Clients"),
+                ("worker", "Workers"),
+                ("other_contact", "Other contacts"),
+                ("organisation", "Organisations"),
+            ] {
+                let selected = state.subject_kind.as_deref() == Some(value);
+                if ui.selectable_label(selected, label).clicked() {
+                    state.subject_kind = Some(value.to_owned());
+                    ui.close();
+                }
+            }
+        });
+        if previous_type != state.subject_kind {
+            *action = Some(IntakeBoardAction::ReloadBoard);
+        }
+
+        let previous_assignee = state.assignee_filter.clone();
+        ui.menu_button(assignee_label(&state.assignee_filter), |ui| {
+            ui.set_min_width(160.0);
+            for (value, label) in [
+                ("all", "Everyone"),
+                ("me", "My cases"),
+                ("unassigned", "Unassigned"),
+            ] {
+                let selected = state.assignee_filter == value;
+                if ui.selectable_label(selected, label).clicked() {
+                    state.assignee_filter = value.to_owned();
+                    ui.close();
+                }
+            }
+        });
+        if previous_assignee != state.assignee_filter {
+            *action = Some(IntakeBoardAction::ReloadBoard);
         }
 
         let response = ui.add_sized(
-            [260.0, 32.0],
+            [240.0, 32.0],
             egui::TextEdit::singleline(&mut state.search)
                 .hint_text("Search cases, people, email or phone"),
         );
@@ -254,20 +320,15 @@ fn toolbar(ui: &mut Ui, state: &mut IntakeBoardState, action: &mut Option<Intake
     });
 }
 
-fn board_columns(
-    ui: &mut Ui,
-    state: &IntakeBoardState,
-    board: &ApiIntakeBoard,
-    action: &mut Option<IntakeBoardAction>,
-) {
-    let selected_case = state.case.as_ref().map(|case| case.case.id.as_str());
+fn board_columns(ui: &mut Ui, board: &ApiIntakeBoard, action: &mut Option<IntakeBoardAction>) {
+    let multi_flow = board.flows.len() > 1;
     ScrollArea::horizontal()
         .auto_shrink([false, false])
         .show(ui, |ui| {
             ui.horizontal_top(|ui| {
                 for column in &board.columns {
                     ui.vertical(|ui| {
-                        ui.set_width(270.0);
+                        ui.set_width(280.0);
                         theme::card().show(ui, |ui| {
                             ui.horizontal(|ui| {
                                 ui.label(
@@ -285,7 +346,7 @@ fn board_columns(
                                 );
                             }
                             for card in &column.cards {
-                                if card_button(ui, card, selected_case == Some(card.id.as_str())) {
+                                if card_button(ui, card, multi_flow) {
                                     *action = Some(IntakeBoardAction::OpenCase(card.id.clone()));
                                 }
                             }
@@ -297,8 +358,11 @@ fn board_columns(
         });
 }
 
-fn card_button(ui: &mut Ui, card: &ApiIntakeCard, selected: bool) -> bool {
+fn card_button(ui: &mut Ui, card: &ApiIntakeCard, show_flow: bool) -> bool {
     let mut meta = Vec::new();
+    if show_flow {
+        meta.push(card.flow.name.clone());
+    }
     if let Some(lifecycle) = &card.lifecycle_status {
         meta.push(lifecycle.clone());
     }
@@ -327,31 +391,53 @@ fn card_button(ui: &mut Ui, card: &ApiIntakeCard, selected: bool) -> bool {
         card.checklist.done,
         card.checklist.total
     );
-    let fill = if selected {
-        theme::accent_soft(42)
-    } else {
-        theme::surface_raised()
-    };
-    let stroke = if selected {
-        Stroke::new(1.0, theme::accent())
-    } else {
-        Stroke::new(1.0, theme::border())
-    };
     ui.add_sized(
-        [ui.available_width(), 76.0],
+        [ui.available_width(), 82.0],
         egui::Button::new(RichText::new(text).size(12.0))
             .wrap()
-            .fill(fill)
-            .stroke(stroke),
+            .fill(theme::surface_raised())
+            .stroke(Stroke::new(1.0, theme::border())),
     )
     .clicked()
 }
 
-fn case_detail(
+pub fn show_case_column(
     ui: &mut Ui,
-    state: &IntakeBoardState,
+    state: &mut IntakeCaseColumnState,
+) -> Option<IntakeCaseAction> {
+    let mut action = None;
+    if state.loading && state.case.is_none() {
+        ui.horizontal(|ui| {
+            ui.spinner();
+            ui.label(
+                RichText::new("Loading intake case…")
+                    .color(theme::muted())
+                    .size(12.0),
+            );
+        });
+        return None;
+    }
+    if let Some(error) = &state.error {
+        theme::card().show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.label(RichText::new("Could not load the case").font(theme::strong_font(14.0)));
+            ui.label(RichText::new(error).color(theme::danger()).size(12.0));
+        });
+        if ui.button("Retry").clicked() {
+            return Some(IntakeCaseAction::Reload);
+        }
+        return None;
+    }
+    let case = state.case.clone()?;
+    case_body(ui, state, &case, &mut action);
+    action
+}
+
+fn case_body(
+    ui: &mut Ui,
+    state: &IntakeCaseColumnState,
     case: &ApiIntakeCaseDetail,
-    action: &mut Option<IntakeBoardAction>,
+    action: &mut Option<IntakeCaseAction>,
 ) {
     ScrollArea::vertical().show(ui, |ui| {
         ui.horizontal_wrapped(|ui| {
@@ -372,10 +458,15 @@ fn case_detail(
                         .size(12.0),
                 );
                 if ui.small_button("Open contact").clicked() {
-                    *action = Some(IntakeBoardAction::OpenContact(contact.id.clone()));
+                    *action = Some(IntakeCaseAction::OpenContact(contact.id.clone()));
                 }
             });
         }
+        ui.label(
+            RichText::new(format!("Intake path: {}", case.case.flow.name))
+                .color(theme::muted())
+                .size(12.0),
+        );
         if let Some(assignee) = &case.case.assignee {
             ui.label(
                 RichText::new(format!("Assigned to {}", assignee.full_name))
@@ -481,7 +572,7 @@ fn case_detail(
                         .on_hover_text(format!("Move to {}", stage.name))
                         .clicked()
                     {
-                        *action = Some(IntakeBoardAction::Transition {
+                        *action = Some(IntakeCaseAction::Transition {
                             case_id: case.case.id.clone(),
                             stage_id: stage.id.clone(),
                             version: case.case.version,
@@ -500,14 +591,25 @@ fn case_detail(
         if let Some(error) = &state.transition_error {
             ui.colored_label(theme::danger(), error);
         }
-
-        ui.add_space(12.0);
-        ui.horizontal_wrapped(|ui| {
-            if ui.button("Close").clicked() {
-                *action = Some(IntakeBoardAction::CloseCase);
-            }
-        });
     });
+}
+
+fn subject_kind_label(value: Option<&str>) -> &'static str {
+    match value {
+        Some("client") => "Clients",
+        Some("worker") => "Workers",
+        Some("other_contact") => "Other contacts",
+        Some("organisation") => "Organisations",
+        _ => "All types",
+    }
+}
+
+fn assignee_label(value: &str) -> &'static str {
+    match value {
+        "me" => "My cases",
+        "unassigned" => "Unassigned",
+        _ => "Everyone",
+    }
 }
 
 fn loading(ui: &mut Ui, message: &str) {
@@ -517,7 +619,7 @@ fn loading(ui: &mut Ui, message: &str) {
     });
 }
 
-fn error_card(ui: &mut Ui, title: &str, error: &str, _retry: &str) {
+fn error_card(ui: &mut Ui, title: &str, error: &str) {
     theme::card().show(ui, |ui| {
         ui.set_width(ui.available_width());
         ui.label(RichText::new(title).font(theme::strong_font(14.0)));

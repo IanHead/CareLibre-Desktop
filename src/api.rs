@@ -292,12 +292,22 @@ impl ApiClient {
     pub fn get_intake_board(
         &self,
         access_token: &str,
-        flow_id: &str,
+        flow_ids: &[String],
+        subject_kind: Option<&str>,
+        assignee: &str,
         search: &str,
     ) -> ApiResult<ApiIntakeBoard> {
         let mut query = url::form_urlencoded::Serializer::new(String::new());
-        query.append_pair("flow_id", flow_id);
         query.append_pair("limit_per_stage", "100");
+        if !flow_ids.is_empty() {
+            query.append_pair("flow_id", &flow_ids.join(","));
+        }
+        if let Some(subject_kind) = subject_kind.filter(|value| !value.is_empty()) {
+            query.append_pair("subject_kind", subject_kind);
+        }
+        if assignee != "all" {
+            query.append_pair("assignee_user_id", assignee);
+        }
         if !search.trim().is_empty() {
             query.append_pair("search", search.trim());
         }

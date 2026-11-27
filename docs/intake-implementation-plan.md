@@ -213,11 +213,12 @@ Action keys:
 
 ### 3.8 Board and case detail
 
-**Solution:** The board is single-flow in v1.
+**Solution:** The board can show one flow or merge every active flow.
 
-- Columns come from the selected flow.
-- Cards show name, lifecycle, division, assignee, checklist progress, waitlist state and due date.
-- Filters cover division/subdivision, assignee, lifecycle, search and closed cases.
+- Columns merge by stage key across the selected intake paths.
+- Cards retain their flow and stage metadata, so transitions stay flow-specific.
+- Filters cover intake path, subject type, division/subdivision, assignee, lifecycle,
+  search and closed cases.
 - Columns use keyset paging.
 - Case detail is a docked column and supports pop-out.
 - Drag a card to transition. Validation blocks are returned as missing fields or incomplete checklist items.

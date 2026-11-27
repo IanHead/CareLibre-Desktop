@@ -38,7 +38,9 @@ pub enum RemoteCommand {
         request_id: u64,
         base_url: String,
         token: String,
-        flow_id: String,
+        flow_ids: Vec<String>,
+        subject_kind: Option<String>,
+        assignee: String,
         search: String,
     },
     LoadIntakeCase {
@@ -317,7 +319,6 @@ pub enum RemoteEvent {
     },
     IntakeBoardLoaded {
         request_id: u64,
-        flow_id: String,
         result: Result<ApiIntakeBoard, String>,
     },
     IntakeCaseLoaded {
@@ -532,19 +533,24 @@ impl RemoteHandle {
         });
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn load_intake_board(
         &self,
         request_id: u64,
         base_url: String,
         token: String,
-        flow_id: String,
+        flow_ids: Vec<String>,
+        subject_kind: Option<String>,
+        assignee: String,
         search: String,
     ) {
         let _ = self.commands.send(RemoteCommand::LoadIntakeBoard {
             request_id,
             base_url,
             token,
-            flow_id,
+            flow_ids,
+            subject_kind,
+            assignee,
             search,
         });
     }
@@ -1176,17 +1182,23 @@ fn run(ctx: egui::Context, commands: Receiver<RemoteCommand>, events: Sender<Rem
                 request_id,
                 base_url,
                 token,
-                flow_id,
+                flow_ids,
+                subject_kind,
+                assignee,
                 search,
             } => {
                 let result = ApiClient::new(&base_url)
-                    .and_then(|client| client.get_intake_board(&token, &flow_id, &search))
+                    .and_then(|client| {
+                        client.get_intake_board(
+                            &token,
+                            &flow_ids,
+                            subject_kind.as_deref(),
+                            &assignee,
+                            &search,
+                        )
+                    })
                     .map_err(|err| err.to_string());
-                let _ = events.send(RemoteEvent::IntakeBoardLoaded {
-                    request_id,
-                    flow_id,
-                    result,
-                });
+                let _ = events.send(RemoteEvent::IntakeBoardLoaded { request_id, result });
             }
             RemoteCommand::LoadIntakeCase {
                 request_id,

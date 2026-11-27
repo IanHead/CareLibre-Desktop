@@ -58,13 +58,16 @@ pub struct ApiChecklistTemplateItem {
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct ApiIntakeBoard {
-    pub flow: ApiIntakeFlow,
+    #[serde(default)]
+    pub flows: Vec<ApiIntakeFlow>,
     pub columns: Vec<ApiIntakeColumn>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct ApiIntakeColumn {
     pub stage: ApiStageRef,
+    #[serde(default)]
+    pub stage_ids: Vec<String>,
     pub count: i64,
     #[serde(default)]
     pub cards: Vec<ApiIntakeCard>,
