@@ -4663,6 +4663,22 @@ impl CareLibreApp {
         true
     }
 
+    /// Select a party in the explorer without moving the focus. Used by
+    /// headless screenshot runs to preview the route back to the focus.
+    pub fn preview_explorer_selection(&mut self, query: &str) -> bool {
+        let query = query.trim().to_lowercase();
+        let Some(party) = self
+            .lookup_parties()
+            .into_iter()
+            .find(|party| party.label.to_lowercase().contains(&query))
+        else {
+            return false;
+        };
+        self.relationship_explorer
+            .select_party(party.kind, &party.id);
+        true
+    }
+
     /// Set the explorer's levels without writing the saved preference. Used by
     /// headless screenshot builds so previews are deterministic.
     pub fn preview_explorer_levels(&mut self, levels: u8) {

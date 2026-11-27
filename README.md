@@ -213,6 +213,9 @@ from the sidebar, or use **Explore network** on a contact or organisation record
 - Use **−** / **+** to change how many levels are shown around the focus party.
 - Click a party to select it; the side panel lists its direct relationships with roles,
   status and dates, and can open a contact or make that party the new focus.
+- Hover or select any party to paint its direct links green and trace the shortest
+  route back to the focus in violet. Only the parties on that route are highlighted;
+  everything else dims so the path is easy to follow.
 - **Skip hubs** is on by default. Highly connected parties such as Blue Dreams Care are
   drawn with their link count but not expanded, so a client's second level is not simply
   every other client of the same provider. Select a hub and choose **Expand** to walk
@@ -338,6 +341,9 @@ cargo run --example screenshot -- docs/relationship-explorer-picker.png relation
   --login=you@example.com:your-password
 cargo run --example screenshot -- docs/relationship-explorer.png relationships --live \
   --explore='Ashley Rossi' --levels=2 --login=you@example.com:your-password
+cargo run --example screenshot -- docs/relationship-explorer-path.png relationships --live \
+  --explore='Ashley Rossi' --levels=2 --select='Ali Saad' \
+  --login=you@example.com:your-password
 cargo run --example screenshot -- docs/organisations.png organisations --live \
   --login=you@example.com:your-password
 cargo run --example screenshot -- docs/funding.png clients --live --contact --funding \

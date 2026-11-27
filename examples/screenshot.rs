@@ -76,6 +76,7 @@ fn main() {
     let new_intake = args.iter().any(|arg| arg == "--new-intake");
     let intake_path = args.iter().any(|arg| arg == "--intake-path");
     let explore = args.iter().find_map(|arg| arg.strip_prefix("--explore="));
+    let select = args.iter().find_map(|arg| arg.strip_prefix("--select="));
     let explore_levels = args
         .iter()
         .find_map(|arg| arg.strip_prefix("--levels="))
@@ -220,6 +221,9 @@ fn main() {
             }
             if let Some(levels) = explore_levels {
                 harness.state_mut().preview_explorer_levels(levels);
+            }
+            if let Some(query) = select {
+                harness.state_mut().preview_explorer_selection(query);
             }
             // Let node and camera transitions finish before the capture.
             for _ in 0..40 {

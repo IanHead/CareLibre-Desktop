@@ -322,6 +322,134 @@ impl RelationshipGraph {
     }
 }
 
+/// Breadth-first distance in edges from `start` over a small view graph.
+///
+/// The returned vector is indexed like the view's node list; unreachable nodes
+/// are `usize::MAX`. Used to colour a hovered or selected party's neighbourhood.
+pub fn neighbourhood_depths(
+    node_count: usize,
+    edges: impl IntoIterator<Item = (usize, usize)>,
+    start: usize,
+) -> Vec<usize> {
+    let mut adjacency = vec![Vec::new(); node_count];
+    for (from, to) in edges {
+        if from >= node_count || to >= node_count {
+            continue;
+        }
+        adjacency[from].push(to);
+        if from != to {
+            adjacency[to].push(from);
+        }
+    }
+
+    let mut depths = vec![usize::MAX; node_count];
+    if start >= node_count {
+        return depths;
+    }
+    depths[start] = 0;
+    let mut queue = VecDeque::from([start]);
+    while let Some(current) = queue.pop_front() {
+        let next_depth = depths[current] + 1;
+        for &next in &adjacency[current] {
+            if depths[next] == usize::MAX {
+                depths[next] = next_depth;
+                queue.push_back(next);
+            }
+        }
+    }
+    depths
+}
+
+/// The shortest path(s) from a hovered party back to the graph's focus.
+///
+/// Every edge that lies on an equally short route is kept, so two family
+/// members leading to the same focus are both shown. Depths are measured from
+/// the hovered party: its direct links are depth 1, the next step is depth 2,
+/// and the focus sits at the path length.
+#[derive(Clone, Debug)]
+pub struct FocusTrace {
+    start: usize,
+    depths: Vec<usize>,
+    to_focus: Vec<usize>,
+    path_length: usize,
+    on_path: Vec<bool>,
+}
+
+impl FocusTrace {
+    pub fn build(
+        node_count: usize,
+        edges: impl IntoIterator<Item = (usize, usize)> + Clone,
+        start: usize,
+        focus: usize,
+    ) -> Self {
+        let depths = neighbourhood_depths(node_count, edges.clone(), start);
+        let to_focus = neighbourhood_depths(node_count, edges, focus);
+        let path_length = depths.get(focus).copied().unwrap_or(usize::MAX);
+        let on_path = (0..node_count)
+            .map(|index| {
+                depths[index] != usize::MAX
+                    && to_focus[index] != usize::MAX
+                    && depths[index] + to_focus[index] == path_length
+            })
+            .collect();
+        Self {
+            start,
+            depths,
+            to_focus,
+            path_length,
+            on_path,
+        }
+    }
+
+    pub fn path_length(&self) -> usize {
+        self.path_length
+    }
+
+    pub fn is_on_path(&self, index: usize) -> bool {
+        self.on_path.get(index).copied().unwrap_or(false)
+    }
+
+    /// A direct link of the hovered party, whether or not it leads back to the
+    /// focus.
+    pub fn is_direct(&self, index: usize) -> bool {
+        self.depths.get(index).copied() == Some(1)
+    }
+
+    pub fn edge_on_path(&self, from: usize, to: usize) -> bool {
+        if self.path_length == 0 || self.path_length == usize::MAX {
+            return false;
+        }
+        let Some(&from_depth) = self.depths.get(from) else {
+            return false;
+        };
+        let Some(&to_depth) = self.depths.get(to) else {
+            return false;
+        };
+        if from_depth == usize::MAX || to_depth == usize::MAX {
+            return false;
+        }
+        let from_to_focus = self.distance_to_focus(from);
+        let to_to_focus = self.distance_to_focus(to);
+        if from_to_focus == usize::MAX || to_to_focus == usize::MAX {
+            return false;
+        }
+        // Walk the edge in whichever direction moves away from the hovered
+        // party, then check the remaining distance to the focus.
+        from_depth + 1 + to_to_focus == self.path_length
+            || to_depth + 1 + from_to_focus == self.path_length
+    }
+
+    pub fn touches_start(&self, from: usize, to: usize) -> bool {
+        from == self.start || to == self.start
+    }
+
+    fn distance_to_focus(&self, index: usize) -> usize {
+        // The on-path calculation stores the backwards distance in this vector
+        // through `on_path`; keep a compact accessor for clarity.
+        self.to_focus.get(index).copied().unwrap_or(usize::MAX)
+    }
+}
+
 /// The parties reached by a walk, with the hop distance and the role that
 /// pointed at each one.
 #[derive(Clone, Debug, Default)]
@@ -567,6 +695,67 @@ mod tests {
         assert!(walk.hops.contains_key(&key("hub")));
         assert!(!walk.hops.contains_key(&key("n0")));
         assert_eq!(graph.degree(&key("hub")), 41);
+    }
+
+    #[test]
+    fn neighbourhood_depths_follow_a_chain() {
+        let depths = neighbourhood_depths(4, [(0, 1), (1, 2)], 0);
+        assert_eq!(depths[0], 0);
+        assert_eq!(depths[1], 1);
+        assert_eq!(depths[2], 2);
+        assert_eq!(depths[3], usize::MAX);
+    }
+
+    #[test]
+    fn a_focus_trace_marks_only_the_route_back() {
+        let edges = [(0, 1), (1, 2), (2, 3), (1, 4)];
+        let trace = FocusTrace::build(5, edges, 3, 0);
+        assert_eq!(trace.path_length(), 3);
+        assert!(trace.is_on_path(3));
+        assert!(trace.is_on_path(2));
+        assert!(trace.is_on_path(1));
+        assert!(trace.is_on_path(0));
+        assert!(!trace.is_on_path(4));
+
+        assert!(trace.edge_on_path(3, 2));
+        assert!(trace.edge_on_path(2, 1));
+        assert!(trace.edge_on_path(1, 0));
+        assert!(!trace.edge_on_path(1, 4));
+
+        assert!(trace.is_direct(2), "the first step is a direct link");
+        assert!(!trace.is_direct(1));
+        assert!(
+            !trace.is_direct(4),
+            "a branch beyond the first hop is not direct"
+        );
+        assert!(trace.touches_start(3, 2));
+        assert!(!trace.touches_start(2, 1));
+    }
+
+    #[test]
+    fn a_focus_trace_keeps_equally_short_routes() {
+        // 3 -> 2 -> 0 and 3 -> 1 -> 0 are both two steps.
+        let edges = [(3, 2), (2, 0), (3, 1), (1, 0), (2, 4)];
+        let trace = FocusTrace::build(5, edges, 3, 0);
+        assert_eq!(trace.path_length(), 2);
+        assert!(trace.edge_on_path(3, 2));
+        assert!(trace.edge_on_path(3, 1));
+        assert!(trace.edge_on_path(2, 0));
+        assert!(trace.edge_on_path(1, 0));
+        assert!(!trace.edge_on_path(2, 4));
+        assert!(!trace.is_on_path(4));
+        assert!(!trace.is_direct(4));
+    }
+
+    #[test]
+    fn a_focus_trace_from_the_focus_has_no_route() {
+        let edges = [(0, 1), (1, 2)];
+        let trace = FocusTrace::build(3, edges, 0, 0);
+        assert_eq!(trace.path_length(), 0);
+        assert!(trace.is_on_path(0));
+        assert!(!trace.edge_on_path(0, 1));
+        assert!(trace.touches_start(0, 1));
+        assert!(trace.is_direct(1));
     }
 
     #[test]

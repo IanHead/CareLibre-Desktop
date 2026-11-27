@@ -19,8 +19,8 @@ use crate::config::{
 };
 use crate::contact::{ApiGraphNode, ApiRelationship, PartyKind, relationship_role_label};
 use crate::graph::{
-    GraphFilters, HUB_BADGE_MIN, HUB_DEGREE, RelationshipGraph, RelationshipNetwork, WalkPolicy,
-    node_key, transition_factor,
+    FocusTrace, GraphFilters, HUB_BADGE_MIN, HUB_DEGREE, RelationshipGraph, RelationshipNetwork,
+    WalkPolicy, node_key, transition_factor,
 };
 use crate::theme;
 
@@ -180,6 +180,12 @@ impl ExplorerState {
 
     pub fn current_focus(&self) -> Option<&Focus> {
         self.focus.as_ref()
+    }
+
+    /// Select a party without moving the focus. Used by previews and tests.
+    pub fn select_party(&mut self, kind: PartyKind, id: &str) {
+        self.selection = Some(node_key(kind, id));
+        self.picking = false;
     }
 
     pub fn levels(&self) -> u8 {
@@ -1163,8 +1169,17 @@ fn canvas(
 
     let centre = rect.center() + state.pan;
     let selected = state.selection.clone();
-    let hovered_key = state.hovered.clone();
-    let active_key = selected.as_deref().or(hovered_key.as_deref());
+    let focus_index = layout.nodes.iter().position(|node| node.hop == 0);
+    let highlight_index =
+        hovered.or_else(|| selected.as_deref().and_then(|key| layout.node_index(key)));
+    let trace = highlight_index.zip(focus_index).map(|(start, focus)| {
+        FocusTrace::build(
+            layout.nodes.len(),
+            layout.edges.iter().map(|edge| (edge.from, edge.to)),
+            start,
+            focus,
+        )
+    });
 
     let mut ring_hop = 0;
     for ring in &layout.rings {
@@ -1206,15 +1221,26 @@ fn canvas(
         if alpha < 0.02 {
             continue;
         }
-        let highlighted = active_key.is_some_and(|key| key == from_key || key == to_key);
-        let colour = if highlighted {
-            with_alpha(theme::accent(), alpha)
+        let on_path = trace
+            .as_ref()
+            .is_some_and(|trace| trace.edge_on_path(edge.from, edge.to));
+        let direct = trace
+            .as_ref()
+            .is_some_and(|trace| trace.touches_start(edge.from, edge.to));
+        let (colour, width) = if on_path {
+            (with_alpha(theme::relationship_path(), alpha), 2.6)
+        } else if direct {
+            (with_alpha(theme::accent(), alpha), 2.0)
         } else {
-            Color32::from_rgba_unmultiplied(
-                theme::muted().r(),
-                theme::muted().g(),
-                theme::muted().b(),
-                (85.0 * alpha) as u8,
+            let base = if trace.is_some() { 30.0 } else { 85.0 };
+            (
+                Color32::from_rgba_unmultiplied(
+                    theme::muted().r(),
+                    theme::muted().g(),
+                    theme::muted().b(),
+                    (base * alpha) as u8,
+                ),
+                (1.0 * state.zoom).clamp(0.6, 1.6),
             )
         };
         painter.line_segment(
@@ -1222,14 +1248,7 @@ fn canvas(
                 centre + from.pos.to_vec2() * state.zoom,
                 centre + to.pos.to_vec2() * state.zoom,
             ],
-            Stroke::new(
-                if highlighted {
-                    2.0
-                } else {
-                    (1.0 * state.zoom).clamp(0.6, 1.6)
-                },
-                colour,
-            ),
+            Stroke::new(width, colour),
         );
     }
 
@@ -1242,7 +1261,8 @@ fn canvas(
         let Some(index) = layout.node_index(key) else {
             if node.alpha > 0.02 {
                 draw_node(
-                    &painter, rect, centre, state.zoom, node, false, false, false, None,
+                    &painter, rect, centre, state.zoom, node, false, false, false, false, false,
+                    None,
                 );
             }
             continue;
@@ -1251,6 +1271,9 @@ fn canvas(
         let is_selected = selected.as_deref() == Some(key.as_str());
         let is_hovered = hovered == Some(index);
         let emphasis = is_focus || is_selected || is_hovered;
+        let on_path = trace.as_ref().is_some_and(|trace| trace.is_on_path(index));
+        let direct = trace.as_ref().is_some_and(|trace| trace.is_direct(index));
+        let dimmed = trace.is_some() && !on_path && !direct;
         draw_node(
             &painter,
             rect,
@@ -1260,6 +1283,8 @@ fn canvas(
             is_focus,
             is_selected,
             emphasis,
+            on_path,
+            dimmed,
             layout
                 .hubs
                 .get(key)
@@ -1268,7 +1293,11 @@ fn canvas(
         );
 
         if node.alpha > 0.55
-            && (emphasis || labels_everywhere || (node.hop == 1 && layout.nodes.len() <= 18))
+            && !dimmed
+            && (emphasis
+                || on_path
+                || labels_everywhere
+                || (node.hop == 1 && layout.nodes.len() <= 18))
         {
             draw_label(
                 &painter,
@@ -1296,6 +1325,21 @@ fn canvas(
         FontId::proportional(9.5),
         theme::faint(),
     );
+
+    if let Some(trace) = &trace
+        && trace.path_length() >= 1
+        && highlight_index != focus_index
+    {
+        let anchor = rect.left_top() + vec2(12.0, 11.0);
+        painter.circle_filled(anchor + vec2(4.0, 5.0), 4.0, theme::relationship_path());
+        painter.text(
+            anchor + vec2(13.0, 0.0),
+            Align2::LEFT_TOP,
+            "Path to focus",
+            FontId::proportional(9.5),
+            theme::faint(),
+        );
+    }
 
     if hovered.is_some() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
@@ -1409,13 +1453,15 @@ fn draw_node(
     is_focus: bool,
     is_selected: bool,
     emphasis: bool,
+    on_path: bool,
+    dimmed: bool,
     hub_links: Option<usize>,
 ) {
     let position = centre + node.pos.to_vec2() * zoom;
     if !rect.expand(30.0).contains(position) {
         return;
     }
-    let alpha = node.alpha.clamp(0.0, 1.0);
+    let alpha = node.alpha.clamp(0.0, 1.0) * if dimmed { 0.4 } else { 1.0 };
     if alpha < 0.02 {
         return;
     }
@@ -1473,6 +1519,24 @@ fn draw_node(
             FontId::proportional((radius * 0.72).clamp(5.0, 10.5)),
             with_alpha(colour, alpha),
         );
+    }
+
+    if on_path {
+        let colour = with_alpha(theme::relationship_path(), alpha);
+        match node.kind {
+            PartyKind::Contact => {
+                painter.circle_stroke(position, radius + 3.5, Stroke::new(2.0, colour));
+            }
+            PartyKind::Organisation => {
+                let ring = Rect::from_center_size(position, Vec2::splat(radius * 1.85 + 7.0));
+                painter.rect_stroke(
+                    ring,
+                    CornerRadius::same(5),
+                    Stroke::new(2.0, colour),
+                    StrokeKind::Inside,
+                );
+            }
+        }
     }
 
     if let Some(links) = hub_links

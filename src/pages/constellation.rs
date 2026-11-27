@@ -14,7 +14,7 @@ use eframe::egui::{
 use crate::config::{CONSTELLATION_MAX_STEPS, CONSTELLATION_MIN_STEPS, RelationshipViewPreference};
 use crate::contact::{ApiGraphNode, ApiRelationship, PartyKind, relationship_role_label};
 use crate::graph::{
-    GraphFilters, HUB_BADGE_MIN, HUB_DEGREE, RelationshipGraph, WalkPolicy, node_key,
+    FocusTrace, GraphFilters, HUB_BADGE_MIN, HUB_DEGREE, RelationshipGraph, WalkPolicy, node_key,
     transition_factor,
 };
 use crate::theme;
@@ -513,6 +513,22 @@ fn draw_canvas(
             .position(|node| &node_key(node.kind, &node.id) == key)
     });
     let hovered_node = hovered.map(|index| &view.nodes[index]);
+    let focus_index = view.nodes.iter().position(|node| node.hop == 0);
+    let highlight_index = hovered.or_else(|| {
+        selection.as_deref().and_then(|key| {
+            view.nodes
+                .iter()
+                .position(|node| node_key(node.kind, &node.id) == key)
+        })
+    });
+    let trace = highlight_index.zip(focus_index).map(|(start, focus)| {
+        FocusTrace::build(
+            view.nodes.len(),
+            view.edges.iter().map(|edge| (edge.from, edge.to)),
+            start,
+            focus,
+        )
+    });
 
     for edge in &view.edges {
         let from_node = &view.nodes[edge.from];
@@ -527,20 +543,31 @@ fn draw_canvas(
         if alpha < 0.02 {
             continue;
         }
-        let highlighted = hovered.is_some_and(|index| index == edge.from || index == edge.to);
-        let colour = if highlighted {
-            with_alpha(theme::accent(), alpha)
+        let on_path = trace
+            .as_ref()
+            .is_some_and(|trace| trace.edge_on_path(edge.from, edge.to));
+        let direct = trace
+            .as_ref()
+            .is_some_and(|trace| trace.touches_start(edge.from, edge.to));
+        let (colour, width) = if on_path {
+            (with_alpha(theme::relationship_path(), alpha), 2.6)
+        } else if direct {
+            (with_alpha(theme::accent(), alpha), 2.2)
         } else {
-            Color32::from_rgba_unmultiplied(
-                theme::muted().r(),
-                theme::muted().g(),
-                theme::muted().b(),
-                (80.0 * alpha) as u8,
+            let base = if trace.is_some() { 26.0 } else { 80.0 };
+            (
+                Color32::from_rgba_unmultiplied(
+                    theme::muted().r(),
+                    theme::muted().g(),
+                    theme::muted().b(),
+                    (base * alpha) as u8,
+                ),
+                1.0,
             )
         };
         painter.line_segment(
             [rect.min + from.pos.to_vec2(), rect.min + to.pos.to_vec2()],
-            Stroke::new(if highlighted { 2.2 } else { 1.0 }, colour),
+            Stroke::new(width, colour),
         );
     }
 
@@ -550,7 +577,16 @@ fn draw_canvas(
     let mut displays: Vec<(&String, &AnimatedNode)> = animation.displayed.iter().collect();
     displays.sort_by_key(|(_, node)| node.alpha < 0.5);
     for (key, node) in displays {
-        let alpha = node.alpha.clamp(0.0, 1.0);
+        let view_index = view
+            .nodes
+            .iter()
+            .position(|view_node| &node_key(view_node.kind, &view_node.id) == key);
+        let on_path = view_index
+            .is_some_and(|index| trace.as_ref().is_some_and(|trace| trace.is_on_path(index)));
+        let direct = view_index
+            .is_some_and(|index| trace.as_ref().is_some_and(|trace| trace.is_direct(index)));
+        let dimmed = trace.is_some() && !on_path && !direct;
+        let alpha = node.alpha.clamp(0.0, 1.0) * if dimmed { 0.4 } else { 1.0 };
         if alpha < 0.02 {
             continue;
         }
@@ -612,6 +648,25 @@ fn draw_canvas(
             with_alpha(colour, alpha),
         );
 
+        if on_path {
+            let colour = with_alpha(theme::relationship_path(), alpha);
+            match node.kind {
+                PartyKind::Contact => {
+                    painter.circle_stroke(centre, node.radius + 3.5, Stroke::new(2.0, colour));
+                }
+                PartyKind::Organisation => {
+                    let ring =
+                        Rect::from_center_size(centre, Vec2::splat(node.radius * 1.85 + 7.0));
+                    painter.rect_stroke(
+                        ring,
+                        CornerRadius::same(5),
+                        Stroke::new(2.0, colour),
+                        StrokeKind::Inside,
+                    );
+                }
+            }
+        }
+
         if is_target
             && alpha > 0.55
             && let Some(links) = view.hubs.get(key)
@@ -641,9 +696,11 @@ fn draw_canvas(
         }
 
         if is_target
+            && !dimmed
             && alpha > 0.55
             && (is_focus
                 || is_hovered
+                || on_path
                 || (node.hop == 1 && label_first_hop)
                 || (labels_everywhere && node.hop > 1))
         {
@@ -741,6 +798,21 @@ fn draw_canvas(
                 );
             }
         });
+    }
+
+    if let Some(trace) = &trace
+        && trace.path_length() >= 1
+        && highlight_index != focus_index
+    {
+        let anchor = rect.left_top() + vec2(10.0, 8.0);
+        painter.circle_filled(anchor + vec2(4.0, 5.0), 4.0, theme::relationship_path());
+        painter.text(
+            anchor + vec2(13.0, 0.0),
+            Align2::LEFT_TOP,
+            "Path to focus",
+            FontId::proportional(9.0),
+            theme::faint(),
+        );
     }
 
     response.widget_info(|| {
