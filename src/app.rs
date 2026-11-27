@@ -1390,7 +1390,12 @@ impl CareLibreApp {
         }
     }
 
-    fn handle_organisation_editor_action(&mut self, key: &str, action: OrganisationEditorAction) {
+    fn handle_organisation_editor_action(
+        &mut self,
+        ctx: &egui::Context,
+        key: &str,
+        action: OrganisationEditorAction,
+    ) {
         match action {
             OrganisationEditorAction::Save => self.save_organisation(key),
             OrganisationEditorAction::Cancel => self.close_organisation_editor(key),
@@ -1398,6 +1403,60 @@ impl CareLibreApp {
             OrganisationEditorAction::Explore { id, label } => {
                 self.open_relationship_explorer(PartyKind::Organisation, &id, &label);
             }
+            OrganisationEditorAction::SetConstellationPreference(preference) => {
+                let preference = preference.normalised();
+                // The setting belongs to the signed-in user, so every open
+                // record follows it rather than drifting apart.
+                for window in self.contact_windows.values_mut() {
+                    window.constellation = preference;
+                }
+                for editor in self.organisation_editors.values_mut() {
+                    editor.constellation = preference;
+                }
+                if let Err(error) = self.save_relationship_view(preference) {
+                    self.notify(
+                        ctx,
+                        format!("The constellation setting could not be saved: {error}"),
+                    );
+                }
+            }
+            OrganisationEditorAction::OpenContact(id) => self.open_contact(&id),
+            OrganisationEditorAction::FocusOrganisation(id) => {
+                self.focus_organisation_record(ctx, &id);
+            }
+            OrganisationEditorAction::ReloadConstellation => self.reload_relationship_graph(),
+        }
+    }
+
+    /// Bring an organisation into an editor column. The list has to know about
+    /// the party because the editor's form is built from the listed record.
+    fn focus_organisation_record(&mut self, ctx: &egui::Context, id: &str) {
+        let known = self
+            .organisation_editors
+            .values()
+            .any(|editor| editor.record_id.as_deref() == Some(id))
+            || self
+                .organisations
+                .items
+                .iter()
+                .any(|organisation| organisation.id == id);
+        if known {
+            self.open_organisation_editor(Some(id.to_owned()));
+        } else {
+            self.notify(
+                ctx,
+                "That organisation is not in the current list. Clear the search or show archived organisations to open it.",
+            );
+        }
+    }
+
+    /// Drop the cached graph and fetch it again, keeping the viewer in place.
+    fn reload_relationship_graph(&mut self) {
+        if self.party_catalog_request.is_none() {
+            self.relationship_graph_loaded = false;
+            self.relationship_graph_error = None;
+            self.note_relationship_network_changed();
+            self.ensure_party_catalog();
         }
     }
 
@@ -2155,7 +2214,7 @@ impl CareLibreApp {
             return;
         }
 
-        let editor = match &id {
+        let mut editor = match &id {
             Some(id) => {
                 let Some(organisation) = self
                     .organisations
@@ -2169,6 +2228,7 @@ impl CareLibreApp {
             }
             None => OrganisationEditorState::new(),
         };
+        editor.constellation = self.constellation_preference();
 
         if self.visible_column_count() >= self.max_total_columns {
             if let Some(ctx) = self.app_ctx.clone() {
@@ -3206,8 +3266,9 @@ impl CareLibreApp {
                                     .show(ui, |ui| {
                                         ui.set_min_height((height - 40.0).max(120.0));
                                         if let Some(editor) = self.organisation_editors.get_mut(key)
-                                            && let Some(action) =
-                                                pages::organisations::show_editor(ui, editor)
+                                            && let Some(action) = pages::organisations::show_editor(
+                                                ui, editor, &source,
+                                            )
                                         {
                                             organisation_editor_actions.push((key.clone(), action));
                                         }
@@ -3339,7 +3400,8 @@ impl CareLibreApp {
             self.handle_editor_action(&ctx, &id, action);
         }
         for (key, action) in organisation_editor_actions {
-            self.handle_organisation_editor_action(&key, action);
+            let ctx = ui.ctx().clone();
+            self.handle_organisation_editor_action(&ctx, &key, action);
         }
 
         let finished: Vec<ColumnKind> = self
@@ -4106,6 +4168,9 @@ impl CareLibreApp {
             ContactEditorAction::OpenContact(contact_id) => {
                 self.open_contact(&contact_id);
             }
+            ContactEditorAction::OpenOrganisation(organisation_id) => {
+                self.focus_organisation_record(ctx, &organisation_id);
+            }
             ContactEditorAction::CreateRelationship {
                 from_role,
                 to_kind,
@@ -4134,21 +4199,17 @@ impl CareLibreApp {
                 for window in self.contact_windows.values_mut() {
                     window.constellation = preference;
                 }
-                if let Err(error) = self.save_constellation_preference(id) {
+                for editor in self.organisation_editors.values_mut() {
+                    editor.constellation = preference;
+                }
+                if let Err(error) = self.save_relationship_view(preference) {
                     self.notify(
                         ctx,
                         format!("The constellation setting could not be saved: {error}"),
                     );
                 }
             }
-            ContactEditorAction::ReloadConstellation => {
-                if self.party_catalog_request.is_none() {
-                    self.relationship_graph_loaded = false;
-                    self.relationship_graph_error = None;
-                    self.note_relationship_network_changed();
-                    self.ensure_party_catalog();
-                }
-            }
+            ContactEditorAction::ReloadConstellation => self.reload_relationship_graph(),
             ContactEditorAction::CreateContact {
                 from_role,
                 to_role,
@@ -4453,19 +4514,22 @@ impl CareLibreApp {
         for window in self.contact_windows.values_mut() {
             window.constellation = preference;
         }
+        for editor in self.organisation_editors.values_mut() {
+            editor.constellation = preference;
+        }
         let explorer = self.explorer_preference();
         self.relationship_explorer.apply_preference(explorer);
     }
 
-    fn save_constellation_preference(&mut self, id: &str) -> Result<(), String> {
+    fn save_relationship_view(
+        &mut self,
+        preference: RelationshipViewPreference,
+    ) -> Result<(), String> {
         let Some(key) = self.constellation_key() else {
             return Ok(());
         };
-        let Some(window) = self.contact_windows.get(id) else {
-            return Ok(());
-        };
         self.config
-            .set_relationship_view(key, window.constellation.normalised());
+            .set_relationship_view(key, preference.normalised());
         self.config.save()
     }
 
@@ -4622,14 +4686,15 @@ impl CareLibreApp {
     /// record without writing the user's saved preference. Used by headless
     /// screenshot builds so previews are deterministic.
     pub fn preview_constellation(&mut self, collapsed: bool, steps: u8) {
-        let preference = RelationshipViewPreference {
-            collapsed,
-            steps,
-            skip_hubs: true,
-        }
-        .normalised();
+        let mut preference = self.constellation_preference();
+        preference.collapsed = collapsed;
+        preference.steps = steps;
+        let preference = preference.normalised();
         for window in self.contact_windows.values_mut() {
             window.constellation = preference;
+        }
+        for editor in self.organisation_editors.values_mut() {
+            editor.constellation = preference;
         }
     }
 
@@ -7730,6 +7795,11 @@ mod tests {
         );
         app.open_page(Page::Organisations);
         app.open_organisation_editor(Some("org-1".to_owned()));
+        // Start collapsed regardless of what this account last saved: the click
+        // below is what has to expand the graph.
+        if let Some(editor) = app.organisation_editors.get_mut("org-1") {
+            editor.constellation.collapsed = true;
+        }
 
         let mut harness = Harness::builder()
             .with_size(egui::vec2(1200.0, 800.0))
@@ -7843,6 +7913,74 @@ mod tests {
                 .constellation
                 .collapsed
         );
+    }
+
+    #[test]
+    fn an_organisation_record_shows_the_relationship_constellation() {
+        use egui_kittest::{Harness, kittest::Queryable};
+
+        let mut app = CareLibreApp::new();
+        app.use_session(test_auth());
+
+        let mut organisation_node = graph_node("org-1", "Northside Care");
+        organisation_node.kind = PartyKind::Organisation;
+        let mut organisation_edge = graph_edge("edge-1", "org-1", "alice");
+        organisation_edge.from_kind = PartyKind::Organisation;
+        organisation_edge.from_name = "Northside Care".to_owned();
+        app.party_catalog = vec![organisation_node, graph_node("alice", "Alice Example")];
+        app.relationship_edges = vec![organisation_edge];
+        app.relationship_graph_loaded = true;
+        app.note_relationship_network_changed();
+
+        app.organisations.apply_list(
+            vec![ApiOrganisation {
+                id: "org-1".to_owned(),
+                name: "Northside Care".to_owned(),
+                kind: Some("provider".to_owned()),
+                abn: None,
+                email: None,
+                phone: None,
+                website: None,
+                notes: None,
+                is_active: true,
+                relationship_count: 1,
+                updated_at: String::new(),
+            }],
+            1,
+        );
+        app.open_organisation_editor(Some("org-1".to_owned()));
+        // Start collapsed regardless of what this account last saved: the click
+        // below is what has to expand the graph.
+        if let Some(editor) = app.organisation_editors.get_mut("org-1") {
+            editor.constellation.collapsed = true;
+        }
+
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(900.0, 850.0))
+            .with_max_steps(30)
+            .with_context_setup(|ctx| theme::apply(ctx, theme::ThemeMode::Dark))
+            .build_ui_state(|ui, app: &mut CareLibreApp| app.show(ui), app);
+
+        harness.run();
+        let toggle = harness.get_by_label_contains("Relationship constellation");
+        toggle.scroll_to_me();
+        harness.run();
+        harness
+            .get_by_label_contains("Relationship constellation")
+            .click();
+        harness.run();
+
+        assert!(
+            !harness
+                .state()
+                .organisation_editors
+                .get("org-1")
+                .expect("the organisation stays open")
+                .constellation
+                .collapsed
+        );
+        // The canvas reports how many parties it drew around the organisation.
+        harness.get_by_label_contains("records within");
     }
 
     #[test]

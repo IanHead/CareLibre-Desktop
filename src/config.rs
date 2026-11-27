@@ -13,15 +13,24 @@ pub const CONSTELLATION_MIN_STEPS: u8 = 1;
 pub const CONSTELLATION_MAX_STEPS: u8 = 4;
 /// New records start one step deep, showing only direct connections.
 pub const CONSTELLATION_DEFAULT_STEPS: u8 = 1;
+/// Smallest canvas the resize handle can drag to, about one ring high.
+pub const CONSTELLATION_MIN_HEIGHT: f32 = 160.0;
+/// Canvas height before the user drags the resize handle.
+pub const CONSTELLATION_DEFAULT_HEIGHT: f32 = 300.0;
+/// Largest canvas the resize handle can drag to. The record around it still
+/// scrolls, so this can be generous without trapping the page.
+pub const CONSTELLATION_MAX_HEIGHT: f32 = 720.0;
 
 /// How one user last left the relationship constellation.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct RelationshipViewPreference {
     pub collapsed: bool,
     pub steps: u8,
     /// Show highly connected parties without expanding their neighbours.
     pub skip_hubs: bool,
+    /// Canvas height in points, shared by contact and organisation records.
+    pub height: f32,
 }
 
 impl Default for RelationshipViewPreference {
@@ -30,6 +39,7 @@ impl Default for RelationshipViewPreference {
             collapsed: true,
             steps: CONSTELLATION_DEFAULT_STEPS,
             skip_hubs: true,
+            height: CONSTELLATION_DEFAULT_HEIGHT,
         }
     }
 }
@@ -41,6 +51,12 @@ impl RelationshipViewPreference {
         self.steps = self
             .steps
             .clamp(CONSTELLATION_MIN_STEPS, CONSTELLATION_MAX_STEPS);
+        self.height = if self.height.is_finite() {
+            self.height
+                .clamp(CONSTELLATION_MIN_HEIGHT, CONSTELLATION_MAX_HEIGHT)
+        } else {
+            CONSTELLATION_DEFAULT_HEIGHT
+        };
         self
     }
 }
@@ -204,7 +220,8 @@ pub fn config_path() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::{
-        CONSTELLATION_DEFAULT_STEPS, CONSTELLATION_MAX_STEPS, CONSTELLATION_MIN_STEPS, Config,
+        CONSTELLATION_DEFAULT_HEIGHT, CONSTELLATION_DEFAULT_STEPS, CONSTELLATION_MAX_HEIGHT,
+        CONSTELLATION_MAX_STEPS, CONSTELLATION_MIN_HEIGHT, CONSTELLATION_MIN_STEPS, Config,
         EXPLORER_DEFAULT_LEVELS, EXPLORER_MAX_LEVELS, EXPLORER_MIN_LEVELS, ExplorerPreference,
         RelationshipViewPreference, relationship_view_key,
     };
@@ -278,6 +295,7 @@ mod tests {
         assert_eq!(preference.steps, CONSTELLATION_DEFAULT_STEPS);
         assert_eq!(preference.steps, 1);
         assert!(preference.skip_hubs);
+        assert_eq!(preference.height, CONSTELLATION_DEFAULT_HEIGHT);
     }
 
     #[test]
@@ -303,11 +321,13 @@ mod tests {
                 collapsed: false,
                 steps: 4,
                 skip_hubs: true,
+                height: 420.0,
             },
         );
 
         assert_eq!(config.relationship_view(&alice).steps, 4);
         assert!(!config.relationship_view(&alice).collapsed);
+        assert_eq!(config.relationship_view(&alice).height, 420.0);
         assert_eq!(
             config.relationship_view(&bob),
             RelationshipViewPreference::default()
@@ -320,14 +340,40 @@ mod tests {
             collapsed: true,
             steps: 99,
             skip_hubs: true,
+            height: CONSTELLATION_DEFAULT_HEIGHT,
         };
         assert_eq!(preference.normalised().steps, CONSTELLATION_MAX_STEPS);
         let preference = RelationshipViewPreference {
             collapsed: false,
             steps: 0,
             skip_hubs: true,
+            height: CONSTELLATION_DEFAULT_HEIGHT,
         };
         assert_eq!(preference.normalised().steps, CONSTELLATION_MIN_STEPS);
+    }
+
+    #[test]
+    fn constellation_height_is_clamped_and_finite() {
+        let tall = RelationshipViewPreference {
+            height: 99_999.0,
+            ..RelationshipViewPreference::default()
+        }
+        .normalised();
+        assert_eq!(tall.height, CONSTELLATION_MAX_HEIGHT);
+
+        let short = RelationshipViewPreference {
+            height: 1.0,
+            ..RelationshipViewPreference::default()
+        }
+        .normalised();
+        assert_eq!(short.height, CONSTELLATION_MIN_HEIGHT);
+
+        let broken = RelationshipViewPreference {
+            height: f32::NAN,
+            ..RelationshipViewPreference::default()
+        }
+        .normalised();
+        assert_eq!(broken.height, CONSTELLATION_DEFAULT_HEIGHT);
     }
 
     #[test]
@@ -340,6 +386,7 @@ mod tests {
                 collapsed: false,
                 steps: 3,
                 skip_hubs: true,
+                height: 512.0,
             },
         );
 
@@ -347,6 +394,19 @@ mod tests {
         let reloaded: Config = serde_json::from_str(&json).unwrap();
         assert_eq!(reloaded.relationship_view(&key).steps, 3);
         assert!(!reloaded.relationship_view(&key).collapsed);
+        assert_eq!(reloaded.relationship_view(&key).height, 512.0);
+    }
+
+    #[test]
+    fn old_constellation_preferences_keep_the_default_height() {
+        let config: Config = serde_json::from_str(
+            r#"{"server_url":"http://127.0.0.1:8484","relationship_views":{"k":{"collapsed":false,"steps":2}}}"#,
+        )
+        .unwrap();
+        let preference = config.relationship_view("k");
+        assert!(!preference.collapsed);
+        assert_eq!(preference.steps, 2);
+        assert_eq!(preference.height, CONSTELLATION_DEFAULT_HEIGHT);
     }
 
     #[test]

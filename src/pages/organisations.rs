@@ -7,10 +7,13 @@ use eframe::egui::{
     StrokeKind, Ui,
 };
 
+use crate::config::RelationshipViewPreference;
+use crate::contact::PartyKind;
 use crate::organisation::{
     ApiOrganisation, ApiOrganisationWrite, ORGANISATION_KINDS, OrganisationStatusFilter,
     kind_label, optional,
 };
+use crate::pages::constellation::{self, ConstellationSource};
 use crate::theme;
 
 const SEARCH_DEBOUNCE: Duration = Duration::from_millis(150);
@@ -24,7 +27,7 @@ pub enum OrganisationsAction {
     Edit(String),
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum OrganisationEditorAction {
     Save,
     Cancel,
@@ -34,6 +37,14 @@ pub enum OrganisationEditorAction {
         id: String,
         label: String,
     },
+    /// Collapse, expand or resize the constellation.
+    SetConstellationPreference(RelationshipViewPreference),
+    /// Open a contact double-clicked in the constellation.
+    OpenContact(String),
+    /// Focus another organisation double-clicked in the constellation.
+    FocusOrganisation(String),
+    /// Retry fetching the whole relationship graph.
+    ReloadConstellation,
 }
 
 /// The state behind one organisation column. Creating uses a `new` editor;
@@ -46,6 +57,13 @@ pub struct OrganisationEditorState {
     pub error: Option<String>,
     pub confirm_delete: bool,
     pub delete_pending: bool,
+    /// The per-user constellation preference and its cached layout.
+    pub constellation: RelationshipViewPreference,
+    pub constellation_view: Option<constellation::ConstellationView>,
+    /// Interpolated node positions while the constellation changes shape.
+    pub constellation_animation: constellation::ConstellationAnimation,
+    /// The party selected inside the constellation, opened on double-click.
+    pub constellation_selection: Option<String>,
 }
 
 impl OrganisationEditorState {
@@ -57,6 +75,10 @@ impl OrganisationEditorState {
             error: None,
             confirm_delete: false,
             delete_pending: false,
+            constellation: RelationshipViewPreference::default(),
+            constellation_view: None,
+            constellation_animation: constellation::ConstellationAnimation::default(),
+            constellation_selection: None,
         }
     }
 
@@ -64,10 +86,7 @@ impl OrganisationEditorState {
         Self {
             record_id: Some(organisation.id.clone()),
             form: OrganisationForm::from_api(organisation),
-            pending: false,
-            error: None,
-            confirm_delete: false,
-            delete_pending: false,
+            ..Self::new()
         }
     }
 
@@ -501,6 +520,7 @@ fn search_row(
 pub fn show_editor(
     ui: &mut Ui,
     state: &mut OrganisationEditorState,
+    source: &ConstellationSource<'_>,
 ) -> Option<OrganisationEditorAction> {
     let mut action = None;
     let footer_height = if state.confirm_delete { 120.0 } else { 72.0 };
@@ -585,6 +605,13 @@ pub fn show_editor(
                 .color(theme::faint())
                 .size(10.0),
             );
+
+            if state.record_id.is_some() {
+                ui.add_space(12.0);
+                if let Some(next) = relationships_card(ui, state, source) {
+                    action = Some(next);
+                }
+            }
 
             if let Some(error) = &state.error {
                 ui.add_space(6.0);
@@ -683,6 +710,59 @@ pub fn show_editor(
         });
     }
 
+    action
+}
+
+/// The relationship constellation for an organisation record. Contacts and
+/// organisations can both be opened from it, so the graph is not a dead end.
+fn relationships_card(
+    ui: &mut Ui,
+    state: &mut OrganisationEditorState,
+    source: &ConstellationSource<'_>,
+) -> Option<OrganisationEditorAction> {
+    let mut action = None;
+    theme::card().show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.label(RichText::new("Relationships").font(theme::strong_font(15.0)));
+        ui.label(
+            RichText::new(
+                "Two-sided links stored by the server. Double-click a contact to open their record, or an organisation to open its record.",
+            )
+            .color(theme::muted())
+            .size(10.5),
+        );
+        ui.add_space(6.0);
+
+        let Some(focus_id) = state.record_id.clone() else {
+            return;
+        };
+        let focus_label = state.form.name.clone();
+        let constellation = constellation::section(
+            ui,
+            source,
+            PartyKind::Organisation,
+            &focus_id,
+            &focus_label,
+            &mut state.constellation,
+            &mut state.constellation_view,
+            &mut state.constellation_animation,
+            &mut state.constellation_selection,
+        );
+        if constellation.preference_changed {
+            action = Some(OrganisationEditorAction::SetConstellationPreference(
+                state.constellation,
+            ));
+        }
+        if let Some(target) = constellation.open_party {
+            action = Some(match target.kind {
+                PartyKind::Contact => OrganisationEditorAction::OpenContact(target.id),
+                PartyKind::Organisation => OrganisationEditorAction::FocusOrganisation(target.id),
+            });
+        }
+        if constellation.reload {
+            action = Some(OrganisationEditorAction::ReloadConstellation);
+        }
+    });
     action
 }
 
@@ -976,5 +1056,129 @@ mod tests {
         assert!(!editor.confirm_delete);
         editor.confirm_delete = true;
         assert!(editor.confirm_delete);
+    }
+
+    #[test]
+    fn an_organisation_record_renders_and_resizes_its_constellation() {
+        use crate::contact::{ApiGraphNode, ApiRelationship};
+        use crate::pages::constellation::RelationshipNetwork;
+        use egui_kittest::{Harness, kittest::Queryable};
+
+        struct TestState {
+            editor: OrganisationEditorState,
+            catalog: Vec<ApiGraphNode>,
+            network: RelationshipNetwork,
+            action: Option<OrganisationEditorAction>,
+        }
+
+        fn node(kind: PartyKind, id: &str, label: &str) -> ApiGraphNode {
+            ApiGraphNode {
+                kind,
+                id: id.to_owned(),
+                label: label.to_owned(),
+                degree: 0,
+                depth: None,
+            }
+        }
+
+        fn edge(id: &str, from: (&str, &str), to: (&str, &str)) -> ApiRelationship {
+            ApiRelationship {
+                id: id.to_owned(),
+                from_kind: PartyKind::Organisation,
+                from_id: from.0.to_owned(),
+                from_name: from.1.to_owned(),
+                from_role: "provider".to_owned(),
+                to_kind: PartyKind::Contact,
+                to_id: to.0.to_owned(),
+                to_name: to.1.to_owned(),
+                to_role: "care_recipient".to_owned(),
+                start_date: None,
+                end_date: None,
+                end_reason: None,
+                status: "current".to_owned(),
+                previous_id: None,
+                notes: None,
+                updated_at: String::new(),
+            }
+        }
+
+        let record = organisation("Northside Care", true);
+        let focus_id = record.id.clone();
+        let mut editor = OrganisationEditorState::edit(&record);
+        editor.constellation.collapsed = true;
+
+        let state = TestState {
+            editor,
+            catalog: vec![
+                node(PartyKind::Organisation, &focus_id, "Northside Care"),
+                node(PartyKind::Contact, "alice", "Alice Nguyen"),
+                node(PartyKind::Contact, "bob", "Bob Lee"),
+            ],
+            network: RelationshipNetwork {
+                edges: vec![
+                    edge(
+                        "1",
+                        (&focus_id, "Northside Care"),
+                        ("alice", "Alice Nguyen"),
+                    ),
+                    edge("2", (&focus_id, "Northside Care"), ("bob", "Bob Lee")),
+                ],
+                revision: 1,
+            },
+            action: None,
+        };
+
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(620.0, 900.0))
+            .with_max_steps(30)
+            .with_context_setup(|ctx| {
+                crate::theme::apply(ctx, crate::theme::ThemeMode::Dark);
+            })
+            .build_ui_state(
+                move |ui, state: &mut TestState| {
+                    let source = ConstellationSource {
+                        nodes: &state.catalog,
+                        network: &state.network,
+                        loading: false,
+                        error: None,
+                    };
+                    if let Some(action) = show_editor(ui, &mut state.editor, &source) {
+                        state.action = Some(action);
+                    }
+                },
+                state,
+            );
+
+        harness.run();
+        assert!(harness.state().editor.constellation.collapsed);
+
+        harness
+            .get_by_label_contains("Relationship constellation")
+            .click();
+        harness.run();
+        assert!(!harness.state().editor.constellation.collapsed);
+        assert!(harness.state().editor.constellation_view.is_some());
+        assert!(matches!(
+            harness.state().action,
+            Some(OrganisationEditorAction::SetConstellationPreference(_))
+        ));
+        // The canvas reports how many parties it drew.
+        harness.get_by_label_contains("records within");
+
+        let before = harness.state().editor.constellation.height;
+        harness
+            .get_by_role_and_label(egui::Role::Splitter, "Resize relationship constellation")
+            .scroll_to_me();
+        harness.run();
+        harness
+            .get_by_role_and_label(egui::Role::Splitter, "Resize relationship constellation")
+            .click();
+        harness.run();
+        harness.key_press(egui::Key::ArrowUp);
+        harness.run();
+        assert!(
+            harness.state().editor.constellation.height > before,
+            "the handle should resize the graph from the keyboard"
+        );
     }
 }
