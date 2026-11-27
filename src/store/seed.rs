@@ -1,5 +1,6 @@
 //! Deterministic synthetic data for performance testing.
 
+use std::collections::HashSet;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use rusqlite::{Connection, params};
@@ -14,16 +15,76 @@ pub struct SeedReport {
 }
 
 const FIRST_NAMES: &[&str] = &[
-    "Margaret", "Noah", "Priya", "Sam", "Olivia", "Liam", "Ava", "Ethan", "Mia", "Lucas", "Ruby",
-    "Jack", "Chloe", "Leo", "Grace", "Henry", "Zoe", "Oscar", "Ivy", "Mason", "Amelia", "Logan",
-    "Harper", "Elijah", "Willow", "James", "Sienna", "William", "Matilda", "Thomas",
+    "Margaret",
+    "Noah",
+    "Priya",
+    "Sam",
+    "Olivia",
+    "Liam",
+    "Ava",
+    "Ethan",
+    "Mia",
+    "Lucas",
+    "Ruby",
+    "Jack",
+    "Chloe",
+    "Leo",
+    "Grace",
+    "Henry",
+    "Zoe",
+    "Oscar",
+    "Ivy",
+    "Mason",
+    "Amelia",
+    "Logan",
+    "Harper",
+    "Elijah",
+    "Willow",
+    "James",
+    "Sienna",
+    "William",
+    "Matilda",
+    "Thomas",
+    "Charlotte",
+    "Oliver",
+    "Isla",
+    "Ella",
+    "Lily",
+    "Sophie",
+    "Emily",
+    "Hannah",
+    "Jasmine",
+    "Holly",
+    "Evie",
+    "Scarlett",
+    "Isabella",
+    "Gabriella",
+    "Elena",
+    "Francesca",
+    "Anna",
+    "Marco",
+    "Luca",
+    "Matteo",
+    "Alessandro",
+    "Georgia",
+    "Penelope",
+    "Alexandra",
+    "Katerina",
+    "Minh",
+    "Linh",
+    "Wei",
+    "Anjali",
+    "Rahul",
 ];
 
 const LAST_NAMES: &[&str] = &[
     "Chen", "Williams", "Nair", "Taylor", "Brown", "Wilson", "Nguyen", "Martin", "Anderson",
     "Thompson", "White", "Walker", "Harris", "Ryan", "Kelly", "Singh", "Patel", "Lee", "Wong",
     "Davis", "Miller", "Moore", "Clark", "Lewis", "Young", "Hall", "Allen", "King", "Wright",
-    "Scott",
+    "Scott", "Johnson", "Smith", "Jones", "Robinson", "Campbell", "Cooper", "Murphy", "Ward",
+    "Morris", "Baker", "Stewart", "Watson", "Adams", "Bell", "Collins", "Parker", "Russell",
+    "Phillips", "Morgan", "Carter", "Graham", "Cook", "Shaw", "Murray", "Kennedy", "Simpson",
+    "Ellis", "Marshall", "Gray", "Stevens",
 ];
 
 const DIVISIONS: &[&str] = &[
@@ -64,6 +125,40 @@ impl Rng {
     }
 }
 
+const MIDDLE_INITIALS: usize = 26;
+
+/// Attempts before falling back to a numeric suffix. Reaching the limit needs
+/// a contact list far larger than the 50,000-row performance fixture.
+const MAX_NAME_ATTEMPTS: usize = 64;
+
+/// A full name that no other demo contact has used.
+///
+/// The first name and surname are drawn at random, while the middle initial is
+/// tied to the contact's position and shifted on a clash. The numeric suffix is
+/// a last resort for lists that exhaust every first, surname and initial.
+fn unique_name(
+    rng: &mut Rng,
+    used: &mut HashSet<String>,
+    index: usize,
+) -> (String, &'static str, &'static str) {
+    for attempt in 0..MAX_NAME_ATTEMPTS {
+        let first = *rng.pick(FIRST_NAMES);
+        let last = *rng.pick(LAST_NAMES);
+        let middle = (b'A' + ((index + attempt) % MIDDLE_INITIALS) as u8) as char;
+        let name = format!("{first} {middle}. {last}");
+        if used.insert(name.clone()) {
+            return (name, first, last);
+        }
+    }
+
+    let first = *rng.pick(FIRST_NAMES);
+    let last = *rng.pick(LAST_NAMES);
+    let middle = (b'A' + (index % MIDDLE_INITIALS) as u8) as char;
+    let name = format!("{first} {middle}. {last} {}", index + 1);
+    used.insert(name.clone());
+    (name, first, last)
+}
+
 pub fn seed_demo(
     conn: &mut Connection,
     org_id: &str,
@@ -87,6 +182,7 @@ pub fn seed_demo(
                 (id, org_id, name, kind, email, phone, division, status, updated_at, version)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 1)",
         )?;
+        let mut used_names = HashSet::with_capacity(contacts);
 
         for index in 0..contacts {
             let kind = match rng.next() % 100 {
@@ -94,10 +190,7 @@ pub fn seed_demo(
                 65..=89 => ContactKind::Worker,
                 _ => ContactKind::Dual,
             };
-            let first = *rng.pick(FIRST_NAMES);
-            let last = *rng.pick(LAST_NAMES);
-            let middle = (b'A' + (index % 26) as u8) as char;
-            let name = format!("{first} {middle}. {last}");
+            let (name, first, last) = unique_name(&mut rng, &mut used_names, index);
             let email = format!(
                 "{}.{}{:05}@example.com",
                 first.to_lowercase(),
@@ -174,4 +267,25 @@ pub fn seed_demo(
         shifts,
         duration_ms: started.elapsed().as_secs_f32() * 1000.0,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn generated_names_are_unique_at_fixture_scale() {
+        let mut rng = Rng::new();
+        let mut used = HashSet::new();
+        let names: Vec<String> = (0..50_000)
+            .map(|index| unique_name(&mut rng, &mut used, index).0)
+            .collect();
+        let distinct: HashSet<&String> = names.iter().collect();
+
+        assert_eq!(
+            distinct.len(),
+            names.len(),
+            "demo contact names should not repeat"
+        );
+    }
 }

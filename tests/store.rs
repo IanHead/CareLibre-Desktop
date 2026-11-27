@@ -23,6 +23,27 @@ fn counts_contacts_by_role() {
 }
 
 #[test]
+fn demo_seed_contact_names_are_unique() {
+    let conn = seeded();
+    let mut statement = conn
+        .prepare("SELECT name FROM contacts WHERE org_id = ?1")
+        .expect("prepare name query");
+    let names = statement
+        .query_map([DEMO_ORG_ID], |row| row.get::<_, String>(0))
+        .expect("query names");
+
+    let mut seen = std::collections::HashSet::new();
+    for name in names {
+        let name = name.expect("contact name");
+        assert!(
+            seen.insert(name.clone()),
+            "demo contact name repeated: {name}"
+        );
+    }
+    assert_eq!(seen.len(), 250);
+}
+
+#[test]
 fn pages_contacts_without_duplicates() {
     let conn = seeded();
 
