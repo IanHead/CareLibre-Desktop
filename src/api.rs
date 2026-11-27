@@ -398,6 +398,25 @@ impl ApiClient {
         decode(status, &body)
     }
 
+    pub fn delete_intake_case(&self, access_token: &str, id: &str) -> ApiResult<()> {
+        let mut response = self
+            .agent
+            .delete(self.endpoint(&format!("/api/v1/intake/cases/{id}")))
+            .header("authorization", format!("Bearer {access_token}"))
+            .call()
+            .map_err(map_transport_error)?;
+        let status = response.status().as_u16();
+        let body = response
+            .body_mut()
+            .read_to_string()
+            .map_err(|err| ApiError::Network(err.to_string()))?;
+        if status == 204 || status == 200 {
+            Ok(())
+        } else {
+            decode::<serde_json::Value>(status, &body).map(|_| ())
+        }
+    }
+
     pub fn cancel_intake_case(
         &self,
         access_token: &str,

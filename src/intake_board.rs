@@ -19,6 +19,8 @@ pub struct ApiIntakeFlow {
     pub variant: Option<String>,
     #[serde(default)]
     pub description: Option<String>,
+    #[serde(default = "default_stage_movement")]
+    pub stage_movement: String,
     #[serde(default)]
     pub is_active: bool,
     #[serde(default)]
@@ -184,6 +186,8 @@ pub struct ApiIntakeCase {
     pub onboarded_at: Option<String>,
     pub closed_at: Option<String>,
     pub cancellation_reason: Option<String>,
+    #[serde(default)]
+    pub is_draft: bool,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -284,6 +288,8 @@ pub struct ApiIntakeCaseCreate {
     pub data: Value,
     pub allow_duplicate_contact: bool,
     pub duplicate_reason: Option<String>,
+    #[serde(default)]
+    pub draft: bool,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -315,4 +321,8 @@ pub struct ApiChecklistToggleResponse {
 pub struct ApiIntakeCancelWrite {
     pub version: i32,
     pub reason: String,
+}
+
+fn default_stage_movement() -> String {
+    "any".to_owned()
 }

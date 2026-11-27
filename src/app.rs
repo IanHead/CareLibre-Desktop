@@ -121,6 +121,9 @@ pub struct CareLibreApp {
     intake: IntakeState,
     intake_board: pages::intake::board::IntakeBoardState,
     intake_case_columns: BTreeMap<String, pages::intake::board::IntakeCaseColumnState>,
+    discard_intake_case: Option<String>,
+    discard_intake_request: Option<u64>,
+    discard_intake_error: Option<String>,
     contact_windows: BTreeMap<String, ContactWindowState>,
     organisation_editors: BTreeMap<String, OrganisationEditorState>,
     columns: Vec<ColumnState>,
@@ -263,6 +266,9 @@ impl CareLibreApp {
             intake: IntakeState::new(),
             intake_board: pages::intake::board::IntakeBoardState::default(),
             intake_case_columns: BTreeMap::new(),
+            discard_intake_case: None,
+            discard_intake_request: None,
+            discard_intake_error: None,
             contact_windows: BTreeMap::new(),
             organisation_editors: BTreeMap::new(),
             columns: Vec::new(),
@@ -800,6 +806,7 @@ impl CareLibreApp {
         self.render_contact_windows(ui.ctx());
         self.render_intake_window(ui.ctx());
         self.render_page_viewports(ui.ctx());
+        self.render_discard_intake_modal(ui.ctx());
 
         if self.config.client_side_decorations {
             chrome::resize_handles(ui.ctx());
@@ -1437,10 +1444,106 @@ impl CareLibreApp {
     }
 
     fn close_intake_case(&mut self, case_id: &str) {
+        if self
+            .intake_case_columns
+            .get(case_id)
+            .and_then(|state| state.case.as_ref())
+            .is_some_and(|case| case.case.is_draft)
+        {
+            self.discard_intake_case = Some(case_id.to_owned());
+            self.discard_intake_error = None;
+            return;
+        }
         if let Some(index) = self.columns.iter().position(
             |column| matches!(&column.kind, ColumnKind::IntakeCase(open) if open == case_id),
         ) {
             self.begin_column_close(index, self.frame_time);
+        }
+    }
+
+    fn force_close_intake_case(&mut self, case_id: &str) {
+        if let Some(index) = self.columns.iter().position(
+            |column| matches!(&column.kind, ColumnKind::IntakeCase(open) if open == case_id),
+        ) {
+            self.begin_column_close(index, self.frame_time);
+        }
+    }
+
+    fn request_delete_intake_case(&mut self, case_id: String) {
+        let Some(token) = self.access_token() else {
+            return;
+        };
+        let Some(remote) = &self.remote else {
+            return;
+        };
+        let request_id = self.intake_board.next_request();
+        self.discard_intake_request = Some(request_id);
+        self.discard_intake_error = None;
+        remote.delete_intake_case(request_id, self.server.base_url.clone(), token, case_id);
+    }
+
+    fn render_discard_intake_modal(&mut self, ctx: &egui::Context) {
+        let Some(case_id) = self.discard_intake_case.clone() else {
+            return;
+        };
+        if !self.intake_case_columns.contains_key(&case_id) {
+            self.discard_intake_case = None;
+            self.discard_intake_error = None;
+            return;
+        }
+        let mut delete = false;
+        let mut keep_editing = false;
+        let saving = self.discard_intake_request.is_some();
+        let response = egui::Modal::new(egui::Id::unique("discard-intake-modal"))
+            .backdrop_color(Color32::from_black_alpha(170))
+            .frame(theme::card())
+            .show(ctx, |ui| {
+                ui.set_width(460.0);
+                ui.label(
+                    RichText::new("Discard this intake?")
+                        .font(theme::strong_font(18.0)),
+                );
+                ui.add_space(4.0);
+                ui.label(
+                    RichText::new(
+                        "This intake has not been saved. If you close it, the record will be deleted.",
+                    )
+                    .color(theme::muted())
+                    .size(12.0),
+                );
+                if let Some(error) = &self.discard_intake_error {
+                    ui.add_space(6.0);
+                    ui.colored_label(theme::danger(), error);
+                }
+                ui.add_space(12.0);
+                ui.horizontal(|ui| {
+                    ui.add_enabled_ui(!saving, |ui| {
+                        if ui
+                            .add(egui::Button::new(
+                                RichText::new("Delete intake").color(theme::danger()),
+                            ))
+                            .clicked()
+                        {
+                            delete = true;
+                        }
+                    });
+                    if ui.add_enabled(!saving, egui::Button::new("Keep editing")).clicked() {
+                        keep_editing = true;
+                    }
+                    if saving {
+                        ui.spinner();
+                    }
+                });
+            });
+        if response.should_close() {
+            keep_editing = true;
+        }
+        if keep_editing {
+            self.discard_intake_case = None;
+            self.discard_intake_error = None;
+        }
+        if delete {
+            self.request_delete_intake_case(case_id);
         }
     }
 
@@ -1518,45 +1621,6 @@ impl CareLibreApp {
             self.intake_board.new_error = Some("Choose an intake path.".to_owned());
             return;
         };
-        let contact = if self.intake_board.new_mode == "existing" {
-            None
-        } else {
-            let given = self.intake_board.new_given_name.trim().to_owned();
-            let family = self.intake_board.new_family_name.trim().to_owned();
-            if given.is_empty() && family.is_empty() {
-                self.intake_board.new_error =
-                    Some("Enter at least a given or family name.".to_owned());
-                return;
-            }
-            Some(crate::intake_board::ApiIntakeContactWrite {
-                given_name: (!given.is_empty()).then_some(given),
-                family_name: (!family.is_empty()).then_some(family),
-                preferred_name: None,
-                pronouns: None,
-                date_of_birth: {
-                    let value = self.intake_board.new_date_of_birth.trim();
-                    (!value.is_empty()).then(|| value.to_owned())
-                },
-                gender: None,
-                languages: Vec::new(),
-                cultural_identity: None,
-                email: (!self.intake_board.new_email.trim().is_empty())
-                    .then(|| self.intake_board.new_email.trim().to_owned()),
-                phone: (!self.intake_board.new_phone.trim().is_empty())
-                    .then(|| self.intake_board.new_phone.trim().to_owned()),
-                notes: None,
-                details: json!({}),
-            })
-        };
-        let contact_id = if self.intake_board.new_mode == "existing" {
-            let Some(contact_id) = self.intake_board.new_contact_id.clone() else {
-                self.intake_board.new_error = Some("Select an existing contact.".to_owned());
-                return;
-            };
-            Some(contact_id)
-        } else {
-            None
-        };
         let request_id = self.intake_board.next_request();
         self.intake_board.new_saving = true;
         self.intake_board.new_request_id = Some(request_id);
@@ -1567,13 +1631,14 @@ impl CareLibreApp {
             token,
             crate::intake_board::ApiIntakeCaseCreate {
                 flow_id,
-                contact_id,
-                contact,
+                contact_id: None,
+                contact: None,
                 display_name: None,
                 source: Some("enquiry".to_owned()),
                 data: json!({}),
                 allow_duplicate_contact: false,
                 duplicate_reason: None,
+                draft: true,
             },
         );
     }
@@ -4606,6 +4671,29 @@ impl CareLibreApp {
                         }
                         Err(error) => {
                             state.cancel_error = Some(error);
+                        }
+                    }
+                }
+                RemoteEvent::IntakeCaseDeleted {
+                    request_id,
+                    case_id,
+                    result,
+                } => {
+                    if self.discard_intake_request != Some(request_id) {
+                        continue;
+                    }
+                    self.discard_intake_request = None;
+                    match result {
+                        Ok(()) => {
+                            self.discard_intake_case = None;
+                            self.discard_intake_error = None;
+                            self.force_close_intake_case(&case_id);
+                            self.intake_board.reset_board();
+                            self.request_intake_board();
+                            self.notify(ctx, "Draft intake deleted.");
+                        }
+                        Err(error) => {
+                            self.discard_intake_error = Some(error);
                         }
                     }
                 }

@@ -9,6 +9,7 @@ pub mod chrome;
 pub mod config;
 pub mod contact;
 pub mod credentials;
+pub mod forms;
 pub mod intake;
 pub mod intake_board;
 pub mod organisation;

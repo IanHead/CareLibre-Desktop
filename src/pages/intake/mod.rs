@@ -1098,14 +1098,14 @@ fn new_relationship_form(
                     );
                 });
                 ui.columns(2, |cols| {
-                    text_field(&mut cols[0], "Email", &mut new_rel.contact.email);
-                    text_field(&mut cols[1], "Phone", &mut new_rel.contact.phone);
+                    crate::forms::email_field(&mut cols[0], "Email", &mut new_rel.contact.email);
+                    crate::forms::phone_field(&mut cols[1], "Phone", &mut new_rel.contact.phone);
                 });
             } else {
                 text_field(ui, "Given name", &mut new_rel.contact.given_name);
                 text_field(ui, "Family name", &mut new_rel.contact.family_name);
-                text_field(ui, "Email", &mut new_rel.contact.email);
-                text_field(ui, "Phone", &mut new_rel.contact.phone);
+                crate::forms::email_field(ui, "Email", &mut new_rel.contact.email);
+                crate::forms::phone_field(ui, "Phone", &mut new_rel.contact.phone);
             }
 
             if let Some(problem) = new_contact_error(&new_rel.contact) {
@@ -1244,24 +1244,54 @@ fn render_field(
                 false
             }
         }
-        _ => {
+        FieldKind::Date => {
             let mut text = value.clone();
-            let mut edit = egui::TextEdit::singleline(&mut text)
-                .hint_text(field.placeholder)
-                .desired_width(ui.available_width())
-                .margin(Margin::symmetric(10, 8));
-            if field.kind == FieldKind::Email {
-                edit = edit.hint_text(if field.placeholder.is_empty() {
-                    "name@example.com"
-                } else {
-                    field.placeholder
-                });
-            }
-            let response = ui.add(edit);
-            if response.changed() {
+            let id = format!("intake-{}-{}", draft.id, field.key);
+            let changed = crate::forms::date_input(ui, &id, &mut text);
+            if changed {
                 draft.set(field.key, text);
             }
-            response.changed()
+            changed
+        }
+        FieldKind::Number => {
+            let mut text = value.clone();
+            let changed = crate::forms::number_input(ui, &mut text, false);
+            if changed {
+                draft.set(field.key, text);
+            }
+            changed
+        }
+        FieldKind::Postcode => {
+            let mut text = value.clone();
+            let changed = crate::forms::digits_input(ui, &mut text);
+            if changed {
+                draft.set(field.key, text);
+            }
+            changed
+        }
+        FieldKind::Phone => {
+            let mut text = value.clone();
+            let changed = crate::forms::phone_input(ui, &mut text);
+            if changed {
+                draft.set(field.key, text);
+            }
+            changed
+        }
+        FieldKind::Email => {
+            let mut text = value.clone();
+            let changed = crate::forms::email_input(ui, &mut text);
+            if changed {
+                draft.set(field.key, text);
+            }
+            changed
+        }
+        _ => {
+            let mut text = value.clone();
+            let changed = crate::forms::text_input(ui, &mut text, field.placeholder);
+            if changed {
+                draft.set(field.key, text);
+            }
+            changed
         }
     };
 

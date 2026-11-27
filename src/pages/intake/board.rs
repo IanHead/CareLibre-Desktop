@@ -522,20 +522,30 @@ fn new_intake_dialog(
     state: &mut IntakeBoardState,
     action: &mut Option<IntakeBoardAction>,
 ) {
-    let mut open = state.new_open;
-    egui::Window::new("New intake")
-        .open(&mut open)
-        .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-        .default_width(620.0)
-        .resizable(false)
-        .collapsible(false)
+    let response = egui::Modal::new(egui::Id::unique("new-intake-modal"))
+        .backdrop_color(egui::Color32::from_black_alpha(170))
+        .frame(theme::card())
         .show(ctx, |ui| {
-            ui.add_space(4.0);
+            ui.set_width(600.0);
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("New intake").font(theme::strong_font(19.0)));
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if ui
+                        .add(egui::Button::new(RichText::new("Close").size(11.0)).frame(false))
+                        .clicked()
+                    {
+                        *action = Some(IntakeBoardAction::CloseNewIntake);
+                    }
+                });
+            });
             ui.label(
-                RichText::new("Intake path")
-                    .color(theme::muted())
-                    .size(11.0),
+                RichText::new(
+                    "Choose the intake path. Contact details are added once the record is open.",
+                )
+                .color(theme::muted())
+                .size(12.0),
             );
+            ui.add_space(10.0);
             let selected_id = state.new_flow_id.clone();
             ScrollArea::vertical()
                 .id_salt("new-intake-paths")
@@ -552,106 +562,6 @@ fn new_intake_dialog(
                         ui.add_space(4.0);
                     }
                 });
-            ui.add_space(8.0);
-
-            ui.horizontal(|ui| {
-                ui.radio_value(&mut state.new_mode, "new".to_owned(), "New contact");
-                ui.radio_value(
-                    &mut state.new_mode,
-                    "existing".to_owned(),
-                    "Existing contact",
-                );
-            });
-            ui.add_space(6.0);
-
-            if state.new_mode == "existing" {
-                ui.horizontal(|ui| {
-                    let response = ui.add_sized(
-                        [280.0, 30.0],
-                        egui::TextEdit::singleline(&mut state.new_search)
-                            .hint_text("Name, email or phone"),
-                    );
-                    response.accessible_name("Search contacts");
-                    if ui.button("Search").clicked() {
-                        state.new_contact_id = None;
-                        *action = Some(IntakeBoardAction::SearchNewContacts);
-                    }
-                });
-                if state.contacts_request_id.is_some() {
-                    ui.horizontal(|ui| {
-                        ui.spinner();
-                        ui.label(RichText::new("Searching…").color(theme::muted()).size(11.0));
-                    });
-                }
-                for candidate in &state.new_candidates {
-                    let selected = state.new_contact_id.as_deref() == Some(candidate.id.as_str());
-                    let detail = format!(
-                        "{}{}{}",
-                        candidate
-                            .email
-                            .as_deref()
-                            .map(|email| format!(" · {email}"))
-                            .unwrap_or_default(),
-                        candidate
-                            .phone
-                            .as_deref()
-                            .map(|phone| format!(" · {phone}"))
-                            .unwrap_or_default(),
-                        if candidate.open_case.is_some() {
-                            " · open case"
-                        } else {
-                            ""
-                        }
-                    );
-                    if ui
-                        .selectable_label(
-                            selected,
-                            format!(
-                                "{} ({}{})",
-                                candidate.display_name, candidate.match_kind, detail
-                            ),
-                        )
-                        .clicked()
-                    {
-                        state.new_contact_id = Some(candidate.id.clone());
-                    }
-                }
-            } else {
-                ui.horizontal(|ui| {
-                    let given = ui.add_sized(
-                        [150.0, 30.0],
-                        egui::TextEdit::singleline(&mut state.new_given_name)
-                            .hint_text("Given name"),
-                    );
-                    given.accessible_name("Given name");
-                    let family = ui.add_sized(
-                        [150.0, 30.0],
-                        egui::TextEdit::singleline(&mut state.new_family_name)
-                            .hint_text("Family name"),
-                    );
-                    family.accessible_name("Family name");
-                });
-                ui.horizontal(|ui| {
-                    let email = ui.add_sized(
-                        [210.0, 30.0],
-                        egui::TextEdit::singleline(&mut state.new_email).hint_text("Email"),
-                    );
-                    email.accessible_name("Email");
-                    let phone = ui.add_sized(
-                        [150.0, 30.0],
-                        egui::TextEdit::singleline(&mut state.new_phone).hint_text("Phone"),
-                    );
-                    phone.accessible_name("Phone");
-                });
-                ui.horizontal(|ui| {
-                    let dob = ui.add_sized(
-                        [150.0, 30.0],
-                        egui::TextEdit::singleline(&mut state.new_date_of_birth)
-                            .hint_text("Date of birth (YYYY-MM-DD)"),
-                    );
-                    dob.accessible_name("Date of birth");
-                });
-            }
 
             if let Some(error) = &state.new_error {
                 ui.add_space(6.0);
@@ -672,7 +582,7 @@ fn new_intake_dialog(
                 }
             });
         });
-    if !open {
+    if response.should_close() {
         *action = Some(IntakeBoardAction::CloseNewIntake);
     }
 }
@@ -1075,34 +985,90 @@ fn case_body(
 
         ui.add_space(12.0);
         ui.label(RichText::new("Move to stage").font(theme::strong_font(14.0)));
-        if case.allowed_transitions.is_empty() {
+        if case.stage.is_terminal {
             ui.label(
                 RichText::new("This case is in a terminal stage.")
                     .color(theme::muted())
                     .size(12.0),
             );
+        } else {
+            let mut stages: Vec<_> = case
+                .flow
+                .stages
+                .iter()
+                .filter(|stage| stage.kind != "cancelled")
+                .collect();
+            stages.sort_by_key(|stage| stage.sort_order);
+            let current_index = stages
+                .iter()
+                .position(|stage| stage.id == case.case.stage_id);
+            if case.flow.stage_movement == "sequential" {
+                ui.add_enabled_ui(!state.transitioning && !state.dirty, |ui| {
+                    ui.horizontal_wrapped(|ui| {
+                        let Some(index) = current_index else {
+                            return;
+                        };
+                        if index > 0 {
+                            let previous = stages[index - 1];
+                            if ui
+                                .button(format!("← Move back to {}", previous.name))
+                                .on_hover_text(format!("Move back to {}", previous.name))
+                                .clicked()
+                            {
+                                *action = Some(IntakeCaseAction::Transition {
+                                    case_id: case.case.id.clone(),
+                                    stage_id: previous.id.clone(),
+                                    version: case.case.version,
+                                });
+                            }
+                        }
+                        if let Some(next) = stages.get(index + 1)
+                            && ui
+                                .button(format!("Move forward to {} →", next.name))
+                                .on_hover_text(format!("Move forward to {}", next.name))
+                                .clicked()
+                        {
+                            *action = Some(IntakeCaseAction::Transition {
+                                case_id: case.case.id.clone(),
+                                stage_id: next.id.clone(),
+                                version: case.case.version,
+                            });
+                        }
+                    });
+                });
+                ui.label(
+                    RichText::new("This path only moves to the previous or next stage.")
+                        .color(theme::muted())
+                        .size(11.0),
+                );
+            } else {
+                ui.add_enabled_ui(!state.transitioning && !state.dirty, |ui| {
+                    ui.horizontal_wrapped(|ui| {
+                        for stage in &stages {
+                            if stage.id == case.case.stage_id {
+                                ui.add(
+                                    egui::Button::new(
+                                        RichText::new(&stage.name).font(theme::strong_font(12.0)),
+                                    )
+                                    .selected(true),
+                                )
+                                .on_hover_text("Current stage");
+                            } else if ui
+                                .button(&stage.name)
+                                .on_hover_text(format!("Move to {}", stage.name))
+                                .clicked()
+                            {
+                                *action = Some(IntakeCaseAction::Transition {
+                                    case_id: case.case.id.clone(),
+                                    stage_id: stage.id.clone(),
+                                    version: case.case.version,
+                                });
+                            }
+                        }
+                    });
+                });
+            }
         }
-        ui.add_enabled_ui(!state.transitioning && !state.dirty, |ui| {
-            ui.horizontal_wrapped(|ui| {
-                for stage in case
-                    .allowed_transitions
-                    .iter()
-                    .filter(|stage| stage.kind != "cancelled")
-                {
-                    if ui
-                        .button(format!("→ {}", stage.name))
-                        .on_hover_text(format!("Move to {}", stage.name))
-                        .clicked()
-                    {
-                        *action = Some(IntakeCaseAction::Transition {
-                            case_id: case.case.id.clone(),
-                            stage_id: stage.id.clone(),
-                            version: case.case.version,
-                        });
-                    }
-                }
-            });
-        });
         if state.dirty {
             ui.label(
                 RichText::new("Save fields before moving the case.")
@@ -1169,6 +1135,63 @@ fn field_editor(
     required: bool,
 ) {
     let label = format!("{}{}", field.label, if required { " *" } else { "" });
+    match field.data_type.as_str() {
+        "date" => {
+            let value = state.drafts.entry(field.key.clone()).or_default();
+            let before = value.clone();
+            crate::forms::date_field(ui, &field.key, &label, value);
+            if *value != before {
+                state.dirty = true;
+            }
+            return;
+        }
+        "integer" => {
+            let value = state.drafts.entry(field.key.clone()).or_default();
+            let before = value.clone();
+            crate::forms::integer_field(ui, &label, value);
+            if *value != before {
+                state.dirty = true;
+            }
+            return;
+        }
+        "decimal" => {
+            let value = state.drafts.entry(field.key.clone()).or_default();
+            let before = value.clone();
+            crate::forms::decimal_field(ui, &label, value);
+            if *value != before {
+                state.dirty = true;
+            }
+            return;
+        }
+        "email" => {
+            let value = state.drafts.entry(field.key.clone()).or_default();
+            let before = value.clone();
+            crate::forms::email_field(ui, &label, value);
+            if *value != before {
+                state.dirty = true;
+            }
+            return;
+        }
+        "phone" => {
+            let value = state.drafts.entry(field.key.clone()).or_default();
+            let before = value.clone();
+            crate::forms::phone_field(ui, &label, value);
+            if *value != before {
+                state.dirty = true;
+            }
+            return;
+        }
+        "url" => {
+            let value = state.drafts.entry(field.key.clone()).or_default();
+            let before = value.clone();
+            crate::forms::url_field(ui, &label, value);
+            if *value != before {
+                state.dirty = true;
+            }
+            return;
+        }
+        _ => {}
+    }
     ui.add_space(4.0);
     let label_response = ui.label(RichText::new(label).color(theme::muted()).size(11.0));
     match field.data_type.as_str() {
@@ -1205,6 +1228,17 @@ fn field_editor(
             let response = ui.add_sized(
                 [ui.available_width(), 64.0],
                 egui::TextEdit::multiline(value),
+            );
+            let response = response.labelled_by(label_response.id);
+            if response.changed() {
+                state.dirty = true;
+            }
+        }
+        "multiselect" => {
+            let value = state.drafts.entry(field.key.clone()).or_default();
+            let response = ui.add_sized(
+                [ui.available_width(), 30.0],
+                egui::TextEdit::singleline(value).hint_text("Separate values with commas"),
             );
             let response = response.labelled_by(label_response.id);
             if response.changed() {

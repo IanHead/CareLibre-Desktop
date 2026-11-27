@@ -78,6 +78,12 @@ pub enum RemoteCommand {
         case_id: String,
         payload: Box<ApiIntakeCancelWrite>,
     },
+    DeleteIntakeCase {
+        request_id: u64,
+        base_url: String,
+        token: String,
+        case_id: String,
+    },
     LoadIntakeBoard {
         request_id: u64,
         base_url: String,
@@ -388,6 +394,11 @@ pub enum RemoteEvent {
         case_id: String,
         result: Result<ApiIntakeCaseDetail, String>,
     },
+    IntakeCaseDeleted {
+        request_id: u64,
+        case_id: String,
+        result: Result<(), String>,
+    },
     IntakeBoardLoaded {
         request_id: u64,
         result: Result<ApiIntakeBoard, String>,
@@ -692,6 +703,21 @@ impl RemoteHandle {
             token,
             case_id,
             payload: Box::new(payload),
+        });
+    }
+
+    pub fn delete_intake_case(
+        &self,
+        request_id: u64,
+        base_url: String,
+        token: String,
+        case_id: String,
+    ) {
+        let _ = self.commands.send(RemoteCommand::DeleteIntakeCase {
+            request_id,
+            base_url,
+            token,
+            case_id,
         });
     }
 
@@ -1418,6 +1444,21 @@ fn run(ctx: egui::Context, commands: Receiver<RemoteCommand>, events: Sender<Rem
                     .and_then(|client| client.cancel_intake_case(&token, &case_id, &payload))
                     .map_err(|err| err.to_string());
                 let _ = events.send(RemoteEvent::IntakeCaseCancelled {
+                    request_id,
+                    case_id,
+                    result,
+                });
+            }
+            RemoteCommand::DeleteIntakeCase {
+                request_id,
+                base_url,
+                token,
+                case_id,
+            } => {
+                let result = ApiClient::new(&base_url)
+                    .and_then(|client| client.delete_intake_case(&token, &case_id))
+                    .map_err(|err| err.to_string());
+                let _ = events.send(RemoteEvent::IntakeCaseDeleted {
                     request_id,
                     case_id,
                     result,
