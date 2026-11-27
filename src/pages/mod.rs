@@ -1,6 +1,8 @@
+pub mod constellation;
 pub mod contact_editor;
 pub mod contacts;
 pub mod intake;
+pub mod organisations;
 pub mod placeholder;
 pub mod rostering;
 pub mod settings;
@@ -37,6 +39,7 @@ pub enum Action {
 pub enum Page {
     Intake,
     Contacts,
+    Organisations,
     Rostering,
     Services,
     Documents,
@@ -50,6 +53,7 @@ impl Page {
         match self {
             Self::Intake => "Intake",
             Self::Contacts => "Contacts",
+            Self::Organisations => "Organisations",
             Self::Rostering => "Rostering",
             Self::Services => "Services & rates",
             Self::Documents => "Documents",
@@ -63,6 +67,7 @@ impl Page {
         match self {
             Self::Intake => "📝",
             Self::Contacts => "👥",
+            Self::Organisations => "🏢",
             Self::Rostering => "📅",
             Self::Services => "🏷",
             Self::Documents => "📄",
@@ -76,6 +81,7 @@ impl Page {
         match self {
             Self::Intake => "Guided onboarding for clients, workers and other contacts.",
             Self::Contacts => "Everyone the organisation works with, filtered by relationship.",
+            Self::Organisations => "External providers, brokers, health services and agencies.",
             Self::Rostering => "Shifts, client and worker assignments, and sessions.",
             Self::Services => "Funded services, rate cards and effective-dated rate versions.",
             Self::Documents => "Merge templates for quotes, service agreements and reports.",
@@ -98,6 +104,12 @@ impl Page {
                 "Filter by relationship: clients, workers or other contacts",
                 "Support contacts, coordinators, family and health professionals",
                 "Instant search across names, email and phone",
+            ],
+            Self::Organisations => &[
+                "External providers, brokers, agencies and health services",
+                "ABN, contact details, notes and active status",
+                "Search and filter active or archived records",
+                "Relationship counts for every counterparty",
             ],
             Self::Rostering => &[
                 "Shifts with client and worker assignments or sessions",

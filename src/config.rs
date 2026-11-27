@@ -1,11 +1,52 @@
 //! Persisted desktop preferences.
 
-use std::{fs, path::PathBuf};
+use std::{collections::BTreeMap, fs, path::PathBuf};
 
 use serde::{Deserialize, Serialize};
 
 use crate::api::{DEFAULT_BASE_URL, normalize_base_url};
 use crate::theme::ThemeMode;
+
+/// Lower bound for the relationship constellation's step control.
+pub const CONSTELLATION_MIN_STEPS: u8 = 1;
+/// Upper bound keeps dense tenant graphs readable.
+pub const CONSTELLATION_MAX_STEPS: u8 = 4;
+/// New records start at two steps, matching the roadmap.
+pub const CONSTELLATION_DEFAULT_STEPS: u8 = 2;
+
+/// How one user last left the relationship constellation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RelationshipViewPreference {
+    pub collapsed: bool,
+    pub steps: u8,
+}
+
+impl Default for RelationshipViewPreference {
+    fn default() -> Self {
+        Self {
+            collapsed: true,
+            steps: CONSTELLATION_DEFAULT_STEPS,
+        }
+    }
+}
+
+impl RelationshipViewPreference {
+    /// Keep preferences loaded from older configs or forwarded by a server
+    /// inside the supported range.
+    pub fn normalised(mut self) -> Self {
+        self.steps = self
+            .steps
+            .clamp(CONSTELLATION_MIN_STEPS, CONSTELLATION_MAX_STEPS);
+        self
+    }
+}
+
+/// Preferences are scoped to the signed-in account, not just the machine, so
+/// two people sharing a desktop do not inherit each other's view settings.
+pub fn relationship_view_key(server_url: &str, organisation_id: &str, user_id: &str) -> String {
+    format!("{server_url}|{organisation_id}|{user_id}")
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -19,6 +60,8 @@ pub struct Config {
     pub remember_login: bool,
     #[serde(default)]
     pub remembered_email: Option<String>,
+    #[serde(default)]
+    pub relationship_views: BTreeMap<String, RelationshipViewPreference>,
 }
 
 impl Default for Config {
@@ -33,11 +76,26 @@ impl Default for Config {
             client_side_decorations: true,
             remember_login: false,
             remembered_email: None,
+            relationship_views: BTreeMap::new(),
         }
     }
 }
 
 impl Config {
+    /// The constellation preference for an account, defaulting to collapsed
+    /// with two steps on first use.
+    pub fn relationship_view(&self, key: &str) -> RelationshipViewPreference {
+        self.relationship_views
+            .get(key)
+            .copied()
+            .unwrap_or_default()
+            .normalised()
+    }
+
+    pub fn set_relationship_view(&mut self, key: String, preference: RelationshipViewPreference) {
+        self.relationship_views.insert(key, preference.normalised());
+    }
+
     /// Load the config, falling back to defaults if it is missing or invalid.
     pub fn load() -> Self {
         let mut config = config_path()
@@ -74,7 +132,10 @@ pub fn config_path() -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::Config;
+    use super::{
+        CONSTELLATION_DEFAULT_STEPS, CONSTELLATION_MAX_STEPS, CONSTELLATION_MIN_STEPS, Config,
+        RelationshipViewPreference, relationship_view_key,
+    };
     use crate::theme::ThemeMode;
 
     #[test]
@@ -116,5 +177,77 @@ mod tests {
         )
         .unwrap();
         assert!(!config.client_side_decorations);
+    }
+
+    #[test]
+    fn constellation_defaults_to_collapsed_with_two_steps() {
+        let preference = RelationshipViewPreference::default();
+        assert!(preference.collapsed);
+        assert_eq!(preference.steps, CONSTELLATION_DEFAULT_STEPS);
+    }
+
+    #[test]
+    fn old_configs_have_no_constellation_preferences() {
+        let config: Config =
+            serde_json::from_str(r#"{"server_url":"http://127.0.0.1:8484"}"#).unwrap();
+        assert!(config.relationship_views.is_empty());
+        assert_eq!(
+            config.relationship_view("server|org|user"),
+            RelationshipViewPreference::default()
+        );
+    }
+
+    #[test]
+    fn constellation_preferences_are_scoped_per_account() {
+        let mut config = Config::default();
+        let alice = relationship_view_key("http://server", "org-a", "user-a");
+        let bob = relationship_view_key("http://server", "org-a", "user-b");
+
+        config.set_relationship_view(
+            alice.clone(),
+            RelationshipViewPreference {
+                collapsed: false,
+                steps: 4,
+            },
+        );
+
+        assert_eq!(config.relationship_view(&alice).steps, 4);
+        assert!(!config.relationship_view(&alice).collapsed);
+        assert_eq!(
+            config.relationship_view(&bob),
+            RelationshipViewPreference::default()
+        );
+    }
+
+    #[test]
+    fn out_of_range_steps_are_clamped() {
+        let preference = RelationshipViewPreference {
+            collapsed: true,
+            steps: 99,
+        };
+        assert_eq!(preference.normalised().steps, CONSTELLATION_MAX_STEPS);
+        let preference = RelationshipViewPreference {
+            collapsed: false,
+            steps: 0,
+        };
+        assert_eq!(preference.normalised().steps, CONSTELLATION_MIN_STEPS);
+    }
+
+    #[test]
+    fn constellation_preferences_round_trip() {
+        let mut config = Config::default();
+        let key = relationship_view_key("http://server", "org", "user");
+        config.set_relationship_view(
+            key.clone(),
+            RelationshipViewPreference {
+                collapsed: false,
+                steps: 3,
+            },
+        );
+
+        let json = serde_json::to_string(&config).unwrap();
+        let reloaded: Config = serde_json::from_str(&json).unwrap();
+        assert_eq!(reloaded.relationship_view(&key).steps, 3);
+        assert!(!reloaded.relationship_view(&key).collapsed);
     }
 }

@@ -14,7 +14,7 @@ use serde_json::Value;
 
 use crate::{
     api, chrome,
-    config::Config,
+    config::{Config, RelationshipViewPreference, relationship_view_key},
     contact::{
         ApiAgreementLineWrite, ApiAgreementWrite, ApiClientRequirementWrite, ApiContactDetail,
         ApiContactWrite, ApiFundingPackageWrite, ApiGraphNode, ApiRelationship,
@@ -23,11 +23,17 @@ use crate::{
     },
     credentials,
     intake::{IntakeKind, IntakeRelationship},
+    organisation::ApiOrganisation,
     pages::{
         self, Action, Page,
+        constellation::{ConstellationSource, RelationshipNetwork},
         contact_editor::{ContactEditorAction, ContactWindowState, NewRelationshipContact},
         contacts::{ContactsAction, ContactsState, LOAD_MORE_SIZE, PAGE_SIZE},
         intake::{IntakeAction, IntakeState, IntakeView},
+        organisations::{
+            OrganisationEditorAction, OrganisationEditorState, OrganisationsAction,
+            OrganisationsState,
+        },
         rostering::{RosteringAction, RosteringState},
         settings::SettingsForm,
     },
@@ -56,6 +62,8 @@ const NOTICE_ENTER_DURATION: f32 = 0.24;
 enum ColumnKind {
     Page(Page),
     Contact(String),
+    /// A `new` or organisation-id key for an open editor column.
+    Organisation(String),
 }
 
 #[derive(Clone, Debug)]
@@ -86,6 +94,7 @@ impl ColumnKind {
         match self {
             Self::Page(page) => format!("__page_{}__", page.label()),
             Self::Contact(id) => id.clone(),
+            Self::Organisation(key) => format!("__organisation_{key}__"),
         }
     }
 }
@@ -99,8 +108,17 @@ pub struct CareLibreApp {
     server: ServerState,
     runtime: Option<ServerRuntime>,
     contacts: ContactsState,
+    organisations: OrganisationsState,
+    organisation_request_seq: u64,
+    organisation_list_request: Option<u64>,
+    /// Save request id -> (editor key, existing organisation id).
+    organisation_save_requests: BTreeMap<u64, (String, Option<String>)>,
+    /// Delete request id -> (organisation id, editor key when deleted from a column).
+    organisation_delete_requests: BTreeMap<u64, (String, Option<String>)>,
+    organisation_query_started: Option<Instant>,
     intake: IntakeState,
     contact_windows: BTreeMap<String, ContactWindowState>,
+    organisation_editors: BTreeMap<String, OrganisationEditorState>,
     columns: Vec<ColumnState>,
     columns_initialised: bool,
     column_rects: Vec<(usize, egui::Rect)>,
@@ -144,6 +162,10 @@ pub struct CareLibreApp {
     party_catalog_request: Option<u64>,
     relationship_edges: Vec<ApiRelationship>,
     relationship_graph_loaded: bool,
+    relationship_graph_error: Option<String>,
+    /// Bumped whenever the graph changes; constellation layouts rebuild once.
+    relationship_graph_revision: u64,
+    relationship_network: Option<Arc<RelationshipNetwork>>,
     rostering: RosteringState,
     rostering_request_seq: u64,
     rostering_requests: BTreeMap<u64, RosterRequest>,
@@ -227,8 +249,16 @@ impl CareLibreApp {
             server,
             runtime: None,
             contacts: ContactsState::new(ContactFilter::All),
+            organisations: OrganisationsState::new(),
+            // Organisation request ids live in their own range.
+            organisation_request_seq: 1 << 44,
+            organisation_list_request: None,
+            organisation_save_requests: BTreeMap::new(),
+            organisation_delete_requests: BTreeMap::new(),
+            organisation_query_started: None,
             intake: IntakeState::new(),
             contact_windows: BTreeMap::new(),
+            organisation_editors: BTreeMap::new(),
             columns: Vec::new(),
             columns_initialised: false,
             column_rects: Vec::new(),
@@ -265,6 +295,9 @@ impl CareLibreApp {
             party_catalog_request: None,
             relationship_edges: Vec::new(),
             relationship_graph_loaded: false,
+            relationship_graph_error: None,
+            relationship_graph_revision: 0,
+            relationship_network: None,
             rostering: RosteringState::default(),
             // Rostering request ids live in their own range.
             rostering_request_seq: 1 << 40,
@@ -398,7 +431,7 @@ impl CareLibreApp {
     pub fn set_page(&mut self, page: Page) {
         self.columns.retain(|column| match &column.kind {
             ColumnKind::Page(open) => *open == page,
-            ColumnKind::Contact(_) => true,
+            ColumnKind::Contact(_) | ColumnKind::Organisation(_) => true,
         });
         self.open_page(page);
         self.reset_column_weights();
@@ -482,12 +515,16 @@ impl CareLibreApp {
         for id in ids {
             self.close_contact_window(&id);
         }
+        let organisations: Vec<String> = self.organisation_editors.keys().cloned().collect();
+        for key in organisations {
+            self.close_organisation_editor(&key);
+        }
         let pages: Vec<Page> = self
             .columns
             .iter()
             .filter_map(|column| match &column.kind {
                 ColumnKind::Page(page) => Some(*page),
-                ColumnKind::Contact(_) => None,
+                ColumnKind::Contact(_) | ColumnKind::Organisation(_) => None,
             })
             .collect();
         for page in pages {
@@ -546,7 +583,7 @@ impl CareLibreApp {
             .filter(|column| {
                 !column.closing
                     && match &column.kind {
-                        ColumnKind::Page(_) => true,
+                        ColumnKind::Page(_) | ColumnKind::Organisation(_) => true,
                         ColumnKind::Contact(id) => self
                             .contact_windows
                             .get(id)
@@ -644,6 +681,8 @@ impl CareLibreApp {
         self.tick_contact_search();
         self.tick_intake_autosave();
         self.ensure_contacts_loaded();
+        self.ensure_organisations_loaded();
+        self.tick_organisation_search();
         self.ensure_relationship_types();
         if self.intake.view == IntakeView::Wizard {
             self.ensure_party_catalog();
@@ -671,6 +710,7 @@ impl CareLibreApp {
         self.sidebar(ui);
 
         let mut contacts_action: Option<ContactsAction> = None;
+        let mut organisations_action: Option<OrganisationsAction> = None;
         let mut intake_action: Option<IntakeAction> = None;
         let mut rostering_action: Option<RosteringAction> = None;
         let action = egui::CentralPanel::default()
@@ -679,6 +719,7 @@ impl CareLibreApp {
                 self.render_column_strip(
                     ui,
                     &mut contacts_action,
+                    &mut organisations_action,
                     &mut intake_action,
                     &mut rostering_action,
                 )
@@ -687,6 +728,9 @@ impl CareLibreApp {
 
         if let Some(contacts_action) = contacts_action {
             self.handle_contacts_action(contacts_action);
+        }
+        if let Some(organisations_action) = organisations_action {
+            self.handle_organisations_action(organisations_action);
         }
         if let Some(intake_action) = intake_action {
             self.handle_intake_action(ui.ctx(), intake_action);
@@ -728,6 +772,7 @@ impl CareLibreApp {
         ui: &mut Ui,
         page: Page,
         contacts_action: &mut Option<ContactsAction>,
+        organisations_action: &mut Option<OrganisationsAction>,
         intake_action: &mut Option<IntakeAction>,
         rostering_action: &mut Option<RosteringAction>,
     ) -> Option<Action> {
@@ -763,6 +808,15 @@ impl CareLibreApp {
                     server_error.as_deref(),
                 ) {
                     *contacts_action = Some(action);
+                }
+                None
+            }
+            Page::Organisations => {
+                let signed_in = self.access_token().is_some();
+                if let Some(action) =
+                    pages::organisations::show(ui, &mut self.organisations, signed_in)
+                {
+                    *organisations_action = Some(action);
                 }
                 None
             }
@@ -1007,6 +1061,181 @@ impl CareLibreApp {
         }
     }
 
+    fn next_organisation_request(&mut self) -> u64 {
+        self.organisation_request_seq += 1;
+        self.organisation_request_seq
+    }
+
+    fn ensure_organisations_loaded(&mut self) {
+        if self.page != Page::Organisations || self.access_token().is_none() {
+            return;
+        }
+        if !self.organisations.attempted
+            && !self.organisations.loading
+            && self.organisations.search_due.is_none()
+        {
+            self.send_organisations_query();
+        }
+    }
+
+    fn tick_organisation_search(&mut self) {
+        if let Some(due) = self.organisations.search_due
+            && Instant::now() >= due
+        {
+            self.organisations.search_due = None;
+            self.send_organisations_query();
+        }
+    }
+
+    fn send_organisations_query(&mut self) {
+        let Some(token) = self.access_token() else {
+            self.organisations.loading = false;
+            self.organisations.error =
+                Some("Sign in to load organisations from the server.".to_owned());
+            return;
+        };
+        if self.remote.is_none() {
+            self.organisations.loading = false;
+            self.organisations.error = Some("The server connection is not available.".to_owned());
+            return;
+        }
+
+        let request = self.next_organisation_request();
+        self.organisation_list_request = Some(request);
+        self.organisation_query_started = Some(Instant::now());
+        self.organisations.attempted = true;
+        let search = self.organisations.search.clone();
+        let status = self.organisations.status.param();
+        self.organisations.loading = true;
+        self.organisations.error = None;
+        if let Some(remote) = &self.remote {
+            remote.list_organisations(
+                request,
+                self.server.base_url.clone(),
+                token,
+                search,
+                status,
+                500,
+                0,
+            );
+        }
+    }
+
+    fn handle_organisations_action(&mut self, action: OrganisationsAction) {
+        match action {
+            OrganisationsAction::SearchChanged => {
+                self.organisations.loading = true;
+            }
+            OrganisationsAction::FilterChanged | OrganisationsAction::Reload => {
+                self.organisations.search_due = None;
+                self.send_organisations_query();
+            }
+            OrganisationsAction::New => self.open_organisation_editor(None),
+            OrganisationsAction::Edit(id) => self.open_organisation_editor(Some(id)),
+        }
+    }
+
+    fn handle_organisation_editor_action(&mut self, key: &str, action: OrganisationEditorAction) {
+        match action {
+            OrganisationEditorAction::Save => self.save_organisation(key),
+            OrganisationEditorAction::Cancel => self.close_organisation_editor(key),
+            OrganisationEditorAction::Delete => self.delete_organisation_from_editor(key),
+        }
+    }
+
+    fn save_organisation(&mut self, key: &str) {
+        let Some(editor) = self.organisation_editors.get(key) else {
+            return;
+        };
+        let Ok(payload) = editor.form.write() else {
+            return;
+        };
+        let id = editor.record_id.clone();
+        let Some(token) = self.access_token() else {
+            if let Some(editor) = self.organisation_editors.get_mut(key) {
+                editor.save_failed("Sign in to save organisations.".to_owned());
+            }
+            return;
+        };
+
+        let request = self.next_organisation_request();
+        self.organisation_save_requests
+            .insert(request, (key.to_owned(), id.clone()));
+        if let Some(editor) = self.organisation_editors.get_mut(key) {
+            editor.pending = true;
+            editor.error = None;
+        }
+
+        if let Some(remote) = &self.remote {
+            if let Some(id) = &id {
+                remote.update_organisation(
+                    request,
+                    self.server.base_url.clone(),
+                    token,
+                    id.clone(),
+                    payload,
+                );
+            } else {
+                remote.create_organisation(request, self.server.base_url.clone(), token, payload);
+            }
+        } else {
+            self.organisation_save_requests.remove(&request);
+            if let Some(editor) = self.organisation_editors.get_mut(key) {
+                editor.save_failed("The server connection is not available.".to_owned());
+            }
+        }
+    }
+
+    fn delete_organisation_from_editor(&mut self, key: &str) {
+        let Some(editor) = self.organisation_editors.get(key) else {
+            return;
+        };
+        let Some(id) = editor.record_id.clone() else {
+            return;
+        };
+        let Some(token) = self.access_token() else {
+            if let Some(editor) = self.organisation_editors.get_mut(key) {
+                editor.delete_failed("Sign in to delete organisations.".to_owned());
+            }
+            return;
+        };
+
+        let request = self.next_organisation_request();
+        self.organisation_delete_requests
+            .insert(request, (id.clone(), Some(key.to_owned())));
+        if let Some(editor) = self.organisation_editors.get_mut(key) {
+            editor.delete_pending = true;
+            editor.error = None;
+        }
+        if let Some(remote) = &self.remote {
+            remote.delete_organisation(request, self.server.base_url.clone(), token, id);
+        } else {
+            self.organisation_delete_requests.remove(&request);
+            if let Some(editor) = self.organisation_editors.get_mut(key) {
+                editor.delete_failed("The server connection is not available.".to_owned());
+            }
+        }
+    }
+
+    fn update_organisation_catalog(&mut self, organisation: &crate::organisation::ApiOrganisation) {
+        if let Some(node) = self
+            .party_catalog
+            .iter_mut()
+            .find(|node| node.kind == PartyKind::Organisation && node.id == organisation.id)
+        {
+            node.label = organisation.name.clone();
+        } else {
+            self.party_catalog.push(ApiGraphNode {
+                kind: PartyKind::Organisation,
+                id: organisation.id.clone(),
+                label: organisation.name.clone(),
+                degree: organisation.relationship_count,
+                depth: None,
+            });
+        }
+        self.note_relationship_network_changed();
+    }
+
     fn ensure_intake_list(&mut self) {
         if self.page != Page::Intake
             || !self.store_ready
@@ -1185,6 +1414,81 @@ impl CareLibreApp {
         self.refresh_contact_lists();
     }
 
+    fn open_organisation_editor(&mut self, id: Option<String>) {
+        if let Some((key, _)) = self
+            .organisation_editors
+            .iter()
+            .find(|(_, editor)| editor.record_id == id)
+        {
+            let key = key.clone();
+            if let Some(index) = self.columns.iter().position(
+                |column| matches!(&column.kind, ColumnKind::Organisation(open) if open == &key),
+            ) && self.columns[index].closing
+            {
+                self.cancel_column_close(index);
+            }
+            return;
+        }
+
+        let editor = match &id {
+            Some(id) => {
+                let Some(organisation) = self
+                    .organisations
+                    .items
+                    .iter()
+                    .find(|organisation| &organisation.id == id)
+                else {
+                    return;
+                };
+                OrganisationEditorState::edit(organisation)
+            }
+            None => OrganisationEditorState::new(),
+        };
+
+        if self.visible_column_count() >= self.max_total_columns {
+            if let Some(ctx) = self.app_ctx.clone() {
+                self.notify(
+                    &ctx,
+                    format!(
+                        "Close a column before opening another. Up to {} columns can be open at once in this window.",
+                        self.max_total_columns
+                    ),
+                );
+            }
+            return;
+        }
+
+        let key = id.unwrap_or_else(|| "new".to_owned());
+        self.organisation_editors.insert(key.clone(), editor);
+        self.columns.push(ColumnState {
+            kind: ColumnKind::Organisation(key),
+            width: 520.0,
+            weight: 1.0,
+            display_width: 0.0,
+            anim_from: 0.0,
+            anim_to: 520.0,
+            anim_start: 0.0,
+            position_x: -1.0,
+            pos_from: 0.0,
+            pos_to: 0.0,
+            pos_start: 0.0,
+            closing: false,
+            close_start: 0.0,
+        });
+        self.reset_column_weights();
+    }
+
+    fn close_organisation_editor(&mut self, key: &str) {
+        let now = self.frame_time;
+        if let Some(index) = self.columns.iter().position(
+            |column| matches!(&column.kind, ColumnKind::Organisation(open) if open == key),
+        ) {
+            self.begin_column_close(index, now);
+            return;
+        }
+        self.organisation_editors.remove(key);
+    }
+
     pub fn open_contact(&mut self, id: &str) {
         if let Some(index) = self
             .columns
@@ -1211,7 +1515,8 @@ impl CareLibreApp {
             return;
         }
 
-        let state = ContactWindowState::new(id.to_owned());
+        let mut state = ContactWindowState::new(id.to_owned());
+        state.constellation = self.constellation_preference();
         let request_id = state.request_id.unwrap_or(1);
         if self.visible_column_count() >= self.max_total_columns {
             if let Some(ctx) = self.app_ctx.clone() {
@@ -1287,6 +1592,7 @@ impl CareLibreApp {
             remote.relationship_graph(request, self.server.base_url.clone(), token);
         }
         self.party_catalog_request = Some(request);
+        self.relationship_graph_error = None;
     }
 
     fn load_contact_relationships(&mut self, id: &str) {
@@ -1732,6 +2038,7 @@ impl CareLibreApp {
             let client_side = self.config.client_side_decorations;
             let mut close = false;
             let mut contacts_action: Option<ContactsAction> = None;
+            let mut organisations_action: Option<OrganisationsAction> = None;
             let mut intake_action: Option<IntakeAction> = None;
             let mut rostering_action: Option<RosteringAction> = None;
             let mut page_action: Option<Action> = None;
@@ -1792,6 +2099,7 @@ impl CareLibreApp {
                             ui,
                             page,
                             &mut contacts_action,
+                            &mut organisations_action,
                             &mut intake_action,
                             &mut rostering_action,
                         );
@@ -1809,6 +2117,9 @@ impl CareLibreApp {
             }
             if let Some(action) = contacts_action {
                 self.handle_contacts_action(action);
+            }
+            if let Some(action) = organisations_action {
+                self.handle_organisations_action(action);
             }
             if let Some(action) = intake_action {
                 self.handle_intake_action(ctx, action);
@@ -1839,6 +2150,14 @@ impl CareLibreApp {
             })
             .collect();
         let catalog = self.lookup_parties();
+        let network = self.relationship_network();
+        let graph_error = self.relationship_graph_error.clone();
+        let source = ConstellationSource {
+            nodes: &catalog,
+            network: &network,
+            loading: self.party_catalog_request.is_some(),
+            error: graph_error.as_deref(),
+        };
         let roles = self.role_options.clone();
         let mut actions: Vec<(String, ContactEditorAction)> = Vec::new();
 
@@ -1856,7 +2175,7 @@ impl CareLibreApp {
 
             let client_side = self.config.client_side_decorations;
             let action = ctx.show_viewport_immediate(viewport_id, builder, |ui, _| {
-                pages::contact_editor::show_viewport(ui, window, client_side, &catalog, &roles)
+                pages::contact_editor::show_viewport(ui, window, client_side, &source, &roles)
             });
 
             if window.close_requested {
@@ -1875,7 +2194,7 @@ impl CareLibreApp {
             .retain(|_, window| !window.close_requested);
         let open_ids: BTreeSet<String> = self.contact_windows.keys().cloned().collect();
         self.columns.retain(|column| match &column.kind {
-            ColumnKind::Page(_) => true,
+            ColumnKind::Page(_) | ColumnKind::Organisation(_) => true,
             ColumnKind::Contact(id) => open_ids.contains(id),
         });
     }
@@ -1886,14 +2205,17 @@ impl CareLibreApp {
         &mut self,
         ui: &mut Ui,
         contacts_action: &mut Option<ContactsAction>,
+        organisations_action: &mut Option<OrganisationsAction>,
         intake_action: &mut Option<IntakeAction>,
         rostering_action: &mut Option<RosteringAction>,
     ) -> Option<Action> {
         let mut page_action = None;
         let mut close: Option<String> = None;
+        let mut close_organisation: Option<String> = None;
         let mut close_page: Option<Page> = None;
         let mut resize: Option<(usize, usize, f32)> = None;
         let mut editor_actions: Vec<(String, ContactEditorAction)> = Vec::new();
+        let mut organisation_editor_actions: Vec<(String, OrganisationEditorAction)> = Vec::new();
 
         let visible: Vec<usize> = self
             .columns
@@ -1907,6 +2229,7 @@ impl CareLibreApp {
                         .get(id)
                         .is_some_and(|window| !window.popped_out))
                 .then_some(index),
+                ColumnKind::Organisation(_) => Some(index),
             })
             .collect();
         if visible.is_empty() {
@@ -1925,6 +2248,14 @@ impl CareLibreApp {
         let height = (ui.available_height() - COLUMN_STRIP_BOTTOM_PADDING).max(120.0);
 
         let catalog = self.lookup_parties();
+        let network = self.relationship_network();
+        let graph_error = self.relationship_graph_error.clone();
+        let source = ConstellationSource {
+            nodes: &catalog,
+            network: &network,
+            loading: self.party_catalog_request.is_some(),
+            error: graph_error.as_deref(),
+        };
         let roles = self.role_options.clone();
 
         if ui.ctx().input(|input| input.key_pressed(egui::Key::Escape))
@@ -2024,11 +2355,16 @@ impl CareLibreApp {
                         ui.set_min_height(height);
                         let column_page = match &kind {
                             ColumnKind::Page(open) => *open,
-                            ColumnKind::Contact(_) => self.page,
+                            ColumnKind::Contact(_) | ColumnKind::Organisation(_) => self.page,
                         };
                         let column_popped = self.page_popped_out(column_page);
-                        let (drag, close_clicked, pop_out, toggle_page) =
-                            Self::column_header(ui, &kind, column_popped, &self.contact_windows);
+                        let (drag, close_clicked, pop_out, toggle_page) = Self::column_header(
+                            ui,
+                            &kind,
+                            column_popped,
+                            &self.contact_windows,
+                            &self.organisation_editors,
+                        );
                         if !closing {
                             match &kind {
                                 ColumnKind::Page(open) => {
@@ -2043,6 +2379,11 @@ impl CareLibreApp {
                                     if pop_out {
                                         editor_actions
                                             .push((id.clone(), ContactEditorAction::PopOut));
+                                    }
+                                }
+                                ColumnKind::Organisation(key) => {
+                                    if close_clicked {
+                                        close_organisation = Some(key.clone());
                                     }
                                 }
                             }
@@ -2091,6 +2432,7 @@ impl CareLibreApp {
                                                 ui,
                                                 *open_page,
                                                 contacts_action,
+                                                organisations_action,
                                                 intake_action,
                                                 rostering_action,
                                             ) {
@@ -2114,12 +2456,32 @@ impl CareLibreApp {
                                             if let Some(window) = self.contact_windows.get_mut(id)
                                                 && let Some(action) =
                                                     pages::contact_editor::show_column(
-                                                        ui, window, &catalog, &roles,
+                                                        ui, window, &source, &roles,
                                                     )
                                             {
                                                 editor_actions.push((id.clone(), action));
                                             }
                                         });
+                            }
+                            ColumnKind::Organisation(key) => {
+                                Frame::new()
+                                    .fill(theme::bg())
+                                    .corner_radius(CornerRadius {
+                                        nw: 0,
+                                        ne: 0,
+                                        sw: 9,
+                                        se: 9,
+                                    })
+                                    .inner_margin(Margin::same(12))
+                                    .show(ui, |ui| {
+                                        ui.set_min_height((height - 40.0).max(120.0));
+                                        if let Some(editor) = self.organisation_editors.get_mut(key)
+                                            && let Some(action) =
+                                                pages::organisations::show_editor(ui, editor)
+                                        {
+                                            organisation_editor_actions.push((key.clone(), action));
+                                        }
+                                    });
                             }
                         }
                     });
@@ -2209,9 +2571,15 @@ impl CareLibreApp {
         if let Some(id) = close {
             self.close_contact_window(&id);
         }
+        if let Some(key) = close_organisation {
+            self.close_organisation_editor(&key);
+        }
         for (id, action) in editor_actions {
             let ctx = ui.ctx().clone();
             self.handle_editor_action(&ctx, &id, action);
+        }
+        for (key, action) in organisation_editor_actions {
+            self.handle_organisation_editor_action(&key, action);
         }
 
         let finished: Vec<ColumnKind> = self
@@ -2248,6 +2616,14 @@ impl CareLibreApp {
                     self.remove_contact_window(&id);
                     removed_any |= had_column;
                 }
+                ColumnKind::Organisation(key) => {
+                    let before = self.columns.len();
+                    self.columns.retain(
+                        |column| !matches!(&column.kind, ColumnKind::Organisation(open) if open == &key),
+                    );
+                    self.organisation_editors.remove(&key);
+                    removed_any |= self.columns.len() != before;
+                }
             }
         }
         if removed_any {
@@ -2271,6 +2647,7 @@ impl CareLibreApp {
         kind: &ColumnKind,
         page_popped: bool,
         windows: &BTreeMap<String, ContactWindowState>,
+        organisations: &BTreeMap<String, OrganisationEditorState>,
     ) -> (egui::Response, bool, bool, bool) {
         let mut close_clicked = false;
         let mut pop_out = false;
@@ -2322,6 +2699,7 @@ impl CareLibreApp {
                         }
                         control_rects.push(response.rect);
                     }
+                    ColumnKind::Organisation(_) => {}
                 }
 
                 let controls_left = control_rects
@@ -2355,6 +2733,15 @@ impl CareLibreApp {
                             .unwrap_or_else(|| ("Contact".to_owned(), "CONTACT".to_owned()));
                         ("👤", name, subtitle)
                     }
+                    ColumnKind::Organisation(key) => {
+                        let (name, subtitle) = organisations
+                            .get(key)
+                            .map(|editor| (editor.title(), editor.subtitle()))
+                            .unwrap_or_else(|| {
+                                ("Organisation".to_owned(), "ORGANISATION".to_owned())
+                            });
+                        ("🏢", name, subtitle)
+                    }
                 };
 
                 let mut title_ui = ui.new_child(
@@ -2378,9 +2765,14 @@ impl CareLibreApp {
                         .truncate()
                         .selectable(false),
                 );
-                if let ColumnKind::Contact(id) = kind
-                    && windows.get(id).is_some_and(|window| window.saving)
-                {
+                let saving = match kind {
+                    ColumnKind::Contact(id) => windows.get(id).is_some_and(|window| window.saving),
+                    ColumnKind::Organisation(key) => {
+                        organisations.get(key).is_some_and(|editor| editor.pending)
+                    }
+                    ColumnKind::Page(_) => false,
+                };
+                if saving {
                     title_ui.add(
                         egui::Label::new(
                             RichText::new("Saving…").color(theme::warning()).size(9.5),
@@ -2951,6 +3343,28 @@ impl CareLibreApp {
             ContactEditorAction::LoadRelationshipHistory(edge_id) => {
                 self.load_relationship_history(id, edge_id);
             }
+            ContactEditorAction::SetConstellationPreference(preference) => {
+                let preference = preference.normalised();
+                // The setting belongs to the signed-in user, so every open
+                // record follows it rather than drifting apart.
+                for window in self.contact_windows.values_mut() {
+                    window.constellation = preference;
+                }
+                if let Err(error) = self.save_constellation_preference(id) {
+                    self.notify(
+                        ctx,
+                        format!("The constellation setting could not be saved: {error}"),
+                    );
+                }
+            }
+            ContactEditorAction::ReloadConstellation => {
+                if self.party_catalog_request.is_none() {
+                    self.relationship_graph_loaded = false;
+                    self.relationship_graph_error = None;
+                    self.note_relationship_network_changed();
+                    self.ensure_party_catalog();
+                }
+            }
             ContactEditorAction::CreateContact {
                 from_role,
                 to_role,
@@ -3204,6 +3618,65 @@ impl CareLibreApp {
         let _ = ctx;
     }
 
+    /// The constellation's immutable snapshot of the relationship graph. It is
+    /// rebuilt only when the revision changes, so rendering does not clone the
+    /// full tenant graph every frame.
+    fn relationship_network(&mut self) -> Arc<RelationshipNetwork> {
+        if self
+            .relationship_network
+            .as_ref()
+            .is_none_or(|network| network.revision != self.relationship_graph_revision)
+        {
+            self.relationship_network = Some(Arc::new(RelationshipNetwork {
+                edges: self.relationship_edges.clone(),
+                revision: self.relationship_graph_revision,
+            }));
+        }
+        self.relationship_network
+            .clone()
+            .expect("the relationship network was just built")
+    }
+
+    fn note_relationship_network_changed(&mut self) {
+        self.relationship_graph_revision = self.relationship_graph_revision.wrapping_add(1);
+    }
+
+    fn constellation_key(&self) -> Option<String> {
+        let session = self.server.session.as_ref()?;
+        Some(relationship_view_key(
+            &self.server.base_url,
+            &session.auth.organisation.id,
+            &session.auth.user.id,
+        ))
+    }
+
+    fn constellation_preference(&self) -> RelationshipViewPreference {
+        self.constellation_key()
+            .map(|key| self.config.relationship_view(&key))
+            .unwrap_or_default()
+    }
+
+    /// Load the signed-in account's saved constellation settings into every
+    /// open record once the session is known.
+    fn apply_constellation_preferences(&mut self) {
+        let preference = self.constellation_preference();
+        for window in self.contact_windows.values_mut() {
+            window.constellation = preference;
+        }
+    }
+
+    fn save_constellation_preference(&mut self, id: &str) -> Result<(), String> {
+        let Some(key) = self.constellation_key() else {
+            return Ok(());
+        };
+        let Some(window) = self.contact_windows.get(id) else {
+            return Ok(());
+        };
+        self.config
+            .set_relationship_view(key, window.constellation.normalised());
+        self.config.save()
+    }
+
     /// Insert a newly created contact into the local list snapshots so it can be
     /// selected from a relationship lookup immediately.
     fn lookup_parties(&self) -> Vec<ApiGraphNode> {
@@ -3242,6 +3715,7 @@ impl CareLibreApp {
                 degree: 0,
                 depth: None,
             });
+            self.note_relationship_network_changed();
         }
 
         let state = &self.contacts;
@@ -3321,8 +3795,28 @@ impl CareLibreApp {
         }
     }
 
+    /// Set the constellation's collapsed state and step count on every open
+    /// record without writing the user's saved preference. Used by headless
+    /// screenshot builds so previews are deterministic.
+    pub fn preview_constellation(&mut self, collapsed: bool, steps: u8) {
+        let preference = RelationshipViewPreference { collapsed, steps }.normalised();
+        for window in self.contact_windows.values_mut() {
+            window.constellation = preference;
+        }
+    }
+
     pub fn contact_editor_ready(&self) -> bool {
         self.contact_windows.values().any(|window| !window.loading)
+    }
+
+    /// True once the external organisation list has loaded.
+    pub fn organisations_ready(&self) -> bool {
+        self.organisations.loaded_once && !self.organisations.loading
+    }
+
+    /// Number of external organisations currently listed.
+    pub fn organisation_count(&self) -> usize {
+        self.organisations.items.len()
     }
 
     /// True once the relationship graph (nodes and edges) has loaded.
@@ -3615,6 +4109,19 @@ impl CareLibreApp {
                 }
                 RemoteEvent::RelationshipGraphLoaded { request_id, result } => {
                     self.handle_relationship_graph(ctx, request_id, result);
+                }
+                RemoteEvent::OrganisationsListed { request_id, result } => {
+                    self.handle_organisations_listed(request_id, result);
+                }
+                RemoteEvent::OrganisationSaved { request_id, result } => {
+                    self.handle_organisation_saved(ctx, request_id, result);
+                }
+                RemoteEvent::OrganisationDeleted {
+                    request_id,
+                    id,
+                    result,
+                } => {
+                    self.handle_organisation_deleted(ctx, request_id, id, result);
                 }
                 RemoteEvent::RelationshipCreated { request_id, result } => {
                     self.handle_relationship_created(ctx, request_id, result);
@@ -4057,6 +4564,94 @@ impl CareLibreApp {
         }
     }
 
+    fn handle_organisations_listed(
+        &mut self,
+        request_id: u64,
+        result: Result<crate::organisation::ApiOrganisationList, String>,
+    ) {
+        if self.organisation_list_request != Some(request_id) {
+            return;
+        }
+        self.organisation_list_request = None;
+        if let Some(started) = self.organisation_query_started.take() {
+            self.organisations.last_query_ms = Some(started.elapsed().as_secs_f32() * 1000.0);
+        }
+        match result {
+            Ok(list) => self.organisations.apply_list(list.items, list.total),
+            Err(error) => self.organisations.list_failed(error),
+        }
+    }
+
+    fn handle_organisation_saved(
+        &mut self,
+        ctx: &egui::Context,
+        request_id: u64,
+        result: Result<ApiOrganisation, String>,
+    ) {
+        let Some((key, update_id)) = self.organisation_save_requests.remove(&request_id) else {
+            return;
+        };
+        match result {
+            Ok(organisation) => {
+                let name = organisation.name.clone();
+                self.update_organisation_catalog(&organisation);
+                if let Some(editor) = self.organisation_editors.get_mut(&key) {
+                    editor.apply_saved(organisation.clone());
+                }
+                self.organisations.saved(organisation);
+                self.notify(
+                    ctx,
+                    if update_id.is_some() {
+                        format!("{name} updated.")
+                    } else {
+                        format!("{name} created.")
+                    },
+                );
+            }
+            Err(error) => {
+                if let Some(editor) = self.organisation_editors.get_mut(&key) {
+                    editor.save_failed(error);
+                }
+            }
+        }
+    }
+
+    fn handle_organisation_deleted(
+        &mut self,
+        ctx: &egui::Context,
+        request_id: u64,
+        _id: String,
+        result: Result<(), String>,
+    ) {
+        let Some((id, editor_key)) = self.organisation_delete_requests.remove(&request_id) else {
+            return;
+        };
+        match result {
+            Ok(()) => {
+                let remove = self.organisations.status
+                    == crate::organisation::OrganisationStatusFilter::Active;
+                self.organisations.deleted(&id, remove);
+                let editors: Vec<String> = self
+                    .organisation_editors
+                    .iter()
+                    .filter(|(_, editor)| editor.record_id.as_deref() == Some(id.as_str()))
+                    .map(|(key, _)| key.clone())
+                    .collect();
+                for key in editors {
+                    self.close_organisation_editor(&key);
+                }
+                self.notify(ctx, "Organisation deleted.");
+            }
+            Err(error) => {
+                if let Some(key) = editor_key
+                    && let Some(editor) = self.organisation_editors.get_mut(&key)
+                {
+                    editor.delete_failed(error);
+                }
+            }
+        }
+    }
+
     fn handle_relationship_graph(
         &mut self,
         ctx: &egui::Context,
@@ -4072,8 +4667,11 @@ impl CareLibreApp {
                 self.party_catalog = graph.nodes;
                 self.relationship_edges = graph.edges;
                 self.relationship_graph_loaded = true;
+                self.relationship_graph_error = None;
+                self.note_relationship_network_changed();
             }
             Err(error) => {
+                self.relationship_graph_error = Some(error.clone());
                 self.notify(
                     ctx,
                     format!("Could not load the relationship directory: {error}"),
@@ -4187,6 +4785,7 @@ impl CareLibreApp {
                         .any(|existing| existing.id == edge.id)
                     {
                         self.relationship_edges.push(edge);
+                        self.note_relationship_network_changed();
                     }
                     self.refresh_contact_lists();
                     self.send_contacts_query(false);
@@ -4201,6 +4800,7 @@ impl CareLibreApp {
             match result {
                 Ok(edge) => {
                     self.relationship_edges.push(edge);
+                    self.note_relationship_network_changed();
                     self.refresh_contact_lists();
                     self.send_contacts_query(false);
                 }
@@ -4224,6 +4824,7 @@ impl CareLibreApp {
                     .any(|existing| existing.id == edge.id)
                 {
                     self.relationship_edges.push(edge.clone());
+                    self.note_relationship_network_changed();
                 }
                 let mut targets: Vec<String> = window_id.iter().cloned().collect();
                 for (id, window) in &self.contact_windows {
@@ -4273,8 +4874,10 @@ impl CareLibreApp {
                     self.load_contact_relationships(&contact_id);
                 }
                 self.relationship_edges.retain(|edge| edge.id != id);
+                self.note_relationship_network_changed();
                 self.relationship_graph_loaded = false;
                 self.party_catalog_request = None;
+                self.ensure_party_catalog();
                 self.refresh_contact_lists();
                 self.send_contacts_query(false);
                 self.notify(ctx, "Relationship updated.");
@@ -4448,6 +5051,8 @@ impl CareLibreApp {
                         self.server.refresh_in_flight = false;
                         self.restoring_session = false;
                         self.settings.on_signed_in();
+                        self.apply_constellation_preferences();
+                        self.organisations.reset();
                         if self.config.remember_login {
                             if let Err(error) = self.remember_current_session() {
                                 self.settings.error =
@@ -4487,6 +5092,7 @@ impl CareLibreApp {
                             self.settings.error =
                                 Some(format!("Could not refresh the saved login: {error}"));
                         }
+                        self.apply_constellation_preferences();
                         if was_restoring {
                             self.settings.on_signed_in();
                             self.refresh_contact_lists();
@@ -4498,6 +5104,7 @@ impl CareLibreApp {
                         self.server.session = None;
                         self.forget_saved_login();
                         self.close_all_contact_windows();
+                        self.organisations.reset();
                         self.refresh_contact_lists();
                         self.cache_counts = ContactCounts::default();
                         self.settings.error = Some(if was_restoring {
@@ -4511,6 +5118,7 @@ impl CareLibreApp {
             }
             Event::LoggedOut { result } => {
                 self.refresh_contact_lists();
+                self.organisations.reset();
                 self.close_all_contact_windows();
                 self.cache_counts = ContactCounts::default();
                 if let Err(error) = result {
@@ -4640,6 +5248,7 @@ impl CareLibreApp {
                     }
                     self.server.refresh_in_flight = false;
                     self.forget_saved_login();
+                    self.organisations.reset();
                     self.settings.on_signed_out();
                     self.settings.notice = None;
                     self.notify(ctx, "Signed out.");
@@ -4675,6 +5284,7 @@ impl CareLibreApp {
             self.server.refresh_in_flight = false;
             self.server.auth_in_flight = false;
             self.close_all_contact_windows();
+            self.organisations.reset();
             self.refresh_contact_lists();
             self.cache_counts = ContactCounts::default();
             self.settings.on_signed_out();
@@ -4977,7 +5587,7 @@ impl CareLibreApp {
                 {
                     self.open_intake();
                 }
-                for page in [Page::Contacts, Page::Rostering] {
+                for page in [Page::Contacts, Page::Organisations, Page::Rostering] {
                     if nav_item(&mut menu_ui, page, centeredness).clicked() {
                         self.open_page(page);
                     }
@@ -5505,6 +6115,228 @@ mod tests {
         let expected = (viewport - 7.0) / 2.0;
         assert!((app.columns[0].width - expected).abs() < 0.01);
         assert!((app.columns[1].width - expected).abs() < 0.01);
+    }
+
+    fn graph_node(id: &str, label: &str) -> ApiGraphNode {
+        ApiGraphNode {
+            kind: PartyKind::Contact,
+            id: id.to_owned(),
+            label: label.to_owned(),
+            degree: 1,
+            depth: None,
+        }
+    }
+
+    fn graph_edge(id: &str, from: &str, to: &str) -> ApiRelationship {
+        ApiRelationship {
+            id: id.to_owned(),
+            from_kind: PartyKind::Contact,
+            from_id: from.to_owned(),
+            from_name: from.to_owned(),
+            from_role: "care_recipient".to_owned(),
+            to_kind: PartyKind::Contact,
+            to_id: to.to_owned(),
+            to_name: to.to_owned(),
+            to_role: "emergency_contact".to_owned(),
+            start_date: None,
+            end_date: None,
+            end_reason: None,
+            status: "current".to_owned(),
+            previous_id: None,
+            notes: None,
+            updated_at: String::new(),
+        }
+    }
+
+    #[test]
+    fn organisation_editors_open_as_separate_columns() {
+        let mut app = CareLibreApp::new();
+        app.organisations.apply_list(
+            vec![ApiOrganisation {
+                id: "org-1".to_owned(),
+                name: "Northside Care".to_owned(),
+                kind: Some("provider".to_owned()),
+                abn: None,
+                email: None,
+                phone: None,
+                website: None,
+                notes: None,
+                is_active: true,
+                relationship_count: 0,
+                updated_at: String::new(),
+            }],
+            1,
+        );
+
+        app.open_organisation_editor(None);
+        app.open_organisation_editor(Some("org-1".to_owned()));
+        // Opening the same record again focuses its existing column.
+        app.open_organisation_editor(Some("org-1".to_owned()));
+
+        assert_eq!(app.organisation_editors.len(), 2);
+        let organisation_columns = app
+            .columns
+            .iter()
+            .filter(|column| matches!(column.kind, ColumnKind::Organisation(_)))
+            .count();
+        assert_eq!(organisation_columns, 2);
+    }
+
+    #[test]
+    fn closing_an_organisation_column_removes_it_cleanly() {
+        use egui_kittest::{Harness, kittest::Queryable};
+
+        let mut app = CareLibreApp::new();
+        app.organisations.apply_list(
+            vec![ApiOrganisation {
+                id: "org-1".to_owned(),
+                name: "Northside Care".to_owned(),
+                kind: Some("provider".to_owned()),
+                abn: None,
+                email: None,
+                phone: None,
+                website: None,
+                notes: None,
+                is_active: true,
+                relationship_count: 0,
+                updated_at: String::new(),
+            }],
+            1,
+        );
+        app.open_page(Page::Organisations);
+        app.open_organisation_editor(Some("org-1".to_owned()));
+
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(1200.0, 800.0))
+            .with_max_steps(40)
+            .with_context_setup(|ctx| theme::apply(ctx, theme::ThemeMode::Dark))
+            .build_ui_state(|ui, app: &mut CareLibreApp| app.show(ui), app);
+        harness.run();
+
+        harness
+            .get_all_by_label("Close column")
+            .last()
+            .expect("the organisation column")
+            .click();
+        harness.run_steps(40);
+
+        assert!(harness.state().organisation_editors.is_empty());
+        assert!(
+            !harness
+                .state()
+                .columns
+                .iter()
+                .any(|column| matches!(column.kind, ColumnKind::Organisation(_)))
+        );
+    }
+
+    #[test]
+    fn clicking_anywhere_on_an_organisation_card_opens_the_editor() {
+        use egui_kittest::{Harness, kittest::Queryable};
+
+        let mut app = CareLibreApp::new();
+        app.organisations.apply_list(
+            vec![ApiOrganisation {
+                id: "org-1".to_owned(),
+                name: "Northside Care".to_owned(),
+                kind: Some("provider".to_owned()),
+                abn: None,
+                email: None,
+                phone: None,
+                website: None,
+                notes: Some("Preferred provider".to_owned()),
+                is_active: true,
+                relationship_count: 2,
+                updated_at: String::new(),
+            }],
+            1,
+        );
+        app.open_page(Page::Organisations);
+        app.server.session = Some(crate::server::Session {
+            auth: crate::api::AuthSession {
+                access_token: "test-token".to_owned(),
+                refresh_token: "test-refresh".to_owned(),
+                token_type: "Bearer".to_owned(),
+                expires_in: 900,
+                user: crate::api::UserProfile {
+                    id: "user-1".to_owned(),
+                    email: "owner@example.com".to_owned(),
+                    full_name: "Test Owner".to_owned(),
+                },
+                organisation: crate::api::OrganisationProfile {
+                    id: "org-test".to_owned(),
+                    slug: "test".to_owned(),
+                    name: "Test Organisation".to_owned(),
+                    edition: "community".to_owned(),
+                    role: "owner".to_owned(),
+                },
+            },
+            expires_at: Instant::now() + Duration::from_secs(900),
+        });
+        app.organisations.loaded_once = true;
+        app.organisations.attempted = true;
+
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(1200.0, 800.0))
+            .with_max_steps(40)
+            .with_context_setup(|ctx| theme::apply(ctx, theme::ThemeMode::Dark))
+            .build_ui_state(|ui, app: &mut CareLibreApp| app.show(ui), app);
+        harness.run();
+
+        harness.get_by_label("Northside Care").click();
+        harness.run();
+
+        assert!(harness.state().organisation_editors.contains_key("org-1"));
+    }
+
+    #[test]
+    fn a_contact_record_shows_the_relationship_constellation() {
+        use egui_kittest::{Harness, kittest::Queryable};
+
+        let mut app = CareLibreApp::new();
+        app.party_catalog = vec![
+            graph_node("alice", "Alice Example"),
+            graph_node("bob", "Bob Example"),
+        ];
+        app.relationship_edges = vec![graph_edge("edge-1", "alice", "bob")];
+        app.relationship_graph_loaded = true;
+        app.note_relationship_network_changed();
+
+        let mut window = ContactWindowState::new("alice".to_owned());
+        window.loading = false;
+        window.given_name = "Alice".to_owned();
+        window.family_name = "Example".to_owned();
+        window.role = "client".to_owned();
+        app.contact_windows.insert("alice".to_owned(), window);
+        app.columns
+            .push(test_column(ColumnKind::Contact("alice".to_owned()), 560.0));
+        app.columns_initialised = true;
+        app.active_contact = Some("alice".to_owned());
+
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(900.0, 800.0))
+            .with_max_steps(30)
+            .with_context_setup(|ctx| theme::apply(ctx, theme::ThemeMode::Dark))
+            .build_ui_state(|ui, app: &mut CareLibreApp| app.show(ui), app);
+
+        harness.run();
+        let toggle = harness.get_by_label_contains("Relationship constellation");
+        toggle.scroll_to_me();
+        harness.run();
+        harness
+            .get_by_label_contains("Relationship constellation")
+            .click();
+        harness.run();
+
+        assert!(
+            !harness
+                .state()
+                .contact_windows
+                .get("alice")
+                .expect("the record stays open")
+                .constellation
+                .collapsed
+        );
     }
 
     #[test]

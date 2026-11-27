@@ -10,6 +10,7 @@ pub mod config;
 pub mod contact;
 pub mod credentials;
 pub mod intake;
+pub mod organisation;
 pub mod pages;
 pub mod perf;
 pub mod remote;

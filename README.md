@@ -294,6 +294,10 @@ cargo run --example screenshot -- docs/contacts.png contacts --live \
   --login=you@example.com:your-password
 cargo run --example screenshot -- docs/contact-editor.png contacts --live --contact \
   --relationships --login=you@example.com:your-password
+cargo run --example screenshot -- docs/contact-constellation.png contacts --live --contact \
+  --constellation --login=you@example.com:your-password
+cargo run --example screenshot -- docs/organisations.png organisations --live \
+  --login=you@example.com:your-password
 cargo run --example screenshot -- docs/funding.png clients --live --contact --funding \
   --login=you@example.com:your-password
 cargo run --example screenshot -- docs/worker-qualities.png workers --live --contact \
@@ -335,6 +339,7 @@ Shipped desktop foundations:
 
 - [x] Native egui/wgpu application shell
 - [x] Contacts workspace, client list and virtualised navigation
+- [x] External organisation records with search, create, edit and archive
 - [x] Live server connection, account authentication and organisation onboarding
 - [x] PostgreSQL-backed CareLibre server (via REST API)
 - [x] Server-backed contacts, background API worker and virtualised lists
@@ -342,6 +347,7 @@ Shipped desktop foundations:
 - [x] Docked multi-record editor with drag-reorderable tabs and native pop-out windows
 - [x] Two-sided relationship graph with contact and organisation endpoints
 - [x] Relationship add, transfer, retire, history and removal from a contact record
+- [x] Collapsible relationship constellation with per-user step and visibility preferences
 - [x] Contact editing with server-stored custom-field metadata
 - [x] Animated page, tab, navigation and notification transitions
 - [x] Client-side title bar by default on new installs, with optional native decorations
@@ -353,8 +359,7 @@ Shipped desktop foundations:
 
 Desktop work still outstanding:
 
-- [ ] Bulk relationship actions, relationship-action safeguards and the
-  relationship constellation
+- [ ] Bulk relationship actions and relationship-action safeguards
 - [ ] Finance, document, communications and reporting workspaces
 - [ ] Services, rates and effective-dated rate versions management UI
 - [ ] Learned worker–client preference affinity and relationship-aware recommendations

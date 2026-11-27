@@ -18,6 +18,7 @@ use crate::{
         ApiRelationshipType, ApiRelationshipWrite, ApiWorkerQualityValue,
         ApiWorkerQualityValueWrite, RelationshipChange,
     },
+    organisation::{ApiOrganisation, ApiOrganisationList, ApiOrganisationWrite},
     rostering::{
         ApiAssignment, ApiAssignmentUpdate, ApiAssignmentWrite, ApiBatchShiftWrite,
         ApiCopyShiftWrite, ApiCostCentre, ApiDivision, ApiService, ApiShift, ApiShiftDetail,
@@ -157,6 +158,34 @@ pub enum RemoteCommand {
         request_id: u64,
         base_url: String,
         token: String,
+    },
+    ListOrganisations {
+        request_id: u64,
+        base_url: String,
+        token: String,
+        search: String,
+        status: &'static str,
+        limit: usize,
+        offset: usize,
+    },
+    CreateOrganisation {
+        request_id: u64,
+        base_url: String,
+        token: String,
+        payload: Box<ApiOrganisationWrite>,
+    },
+    UpdateOrganisation {
+        request_id: u64,
+        base_url: String,
+        token: String,
+        id: String,
+        payload: Box<ApiOrganisationWrite>,
+    },
+    DeleteOrganisation {
+        request_id: u64,
+        base_url: String,
+        token: String,
+        id: String,
     },
     ListSites {
         request_id: u64,
@@ -353,6 +382,19 @@ pub enum RemoteEvent {
         request_id: u64,
         id: String,
         result: Result<Vec<ApiRelationshipEvent>, String>,
+    },
+    OrganisationsListed {
+        request_id: u64,
+        result: Result<ApiOrganisationList, String>,
+    },
+    OrganisationSaved {
+        request_id: u64,
+        result: Result<ApiOrganisation, String>,
+    },
+    OrganisationDeleted {
+        request_id: u64,
+        id: String,
+        result: Result<(), String>,
     },
     SitesListed {
         request_id: u64,
@@ -734,6 +776,75 @@ impl RemoteHandle {
         id: String,
     ) {
         let _ = self.commands.send(RemoteCommand::RelationshipHistory {
+            request_id,
+            base_url,
+            token,
+            id,
+        });
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn list_organisations(
+        &self,
+        request_id: u64,
+        base_url: String,
+        token: String,
+        search: String,
+        status: &'static str,
+        limit: usize,
+        offset: usize,
+    ) {
+        let _ = self.commands.send(RemoteCommand::ListOrganisations {
+            request_id,
+            base_url,
+            token,
+            search,
+            status,
+            limit,
+            offset,
+        });
+    }
+
+    pub fn create_organisation(
+        &self,
+        request_id: u64,
+        base_url: String,
+        token: String,
+        payload: ApiOrganisationWrite,
+    ) {
+        let _ = self.commands.send(RemoteCommand::CreateOrganisation {
+            request_id,
+            base_url,
+            token,
+            payload: Box::new(payload),
+        });
+    }
+
+    pub fn update_organisation(
+        &self,
+        request_id: u64,
+        base_url: String,
+        token: String,
+        id: String,
+        payload: ApiOrganisationWrite,
+    ) {
+        let _ = self.commands.send(RemoteCommand::UpdateOrganisation {
+            request_id,
+            base_url,
+            token,
+            id,
+            payload: Box::new(payload),
+        });
+    }
+
+    pub fn delete_organisation(
+        &self,
+        request_id: u64,
+        base_url: String,
+        token: String,
+        id: String,
+    ) {
+        let _ = self.commands.send(RemoteCommand::DeleteOrganisation {
             request_id,
             base_url,
             token,
@@ -1260,6 +1371,60 @@ fn run(ctx: egui::Context, commands: Receiver<RemoteCommand>, events: Sender<Rem
                     .map(|history| history.items)
                     .map_err(|err| err.to_string());
                 let _ = events.send(RemoteEvent::RelationshipHistoryLoaded {
+                    request_id,
+                    id,
+                    result,
+                });
+            }
+            RemoteCommand::ListOrganisations {
+                request_id,
+                base_url,
+                token,
+                search,
+                status,
+                limit,
+                offset,
+            } => {
+                let result = ApiClient::new(&base_url)
+                    .and_then(|client| {
+                        client.list_organisations(&token, &search, status, limit, offset)
+                    })
+                    .map_err(|err| err.to_string());
+                let _ = events.send(RemoteEvent::OrganisationsListed { request_id, result });
+            }
+            RemoteCommand::CreateOrganisation {
+                request_id,
+                base_url,
+                token,
+                payload,
+            } => {
+                let result = ApiClient::new(&base_url)
+                    .and_then(|client| client.create_organisation(&token, &payload))
+                    .map_err(|err| err.to_string());
+                let _ = events.send(RemoteEvent::OrganisationSaved { request_id, result });
+            }
+            RemoteCommand::UpdateOrganisation {
+                request_id,
+                base_url,
+                token,
+                id,
+                payload,
+            } => {
+                let result = ApiClient::new(&base_url)
+                    .and_then(|client| client.update_organisation(&token, &id, &payload))
+                    .map_err(|err| err.to_string());
+                let _ = events.send(RemoteEvent::OrganisationSaved { request_id, result });
+            }
+            RemoteCommand::DeleteOrganisation {
+                request_id,
+                base_url,
+                token,
+                id,
+            } => {
+                let result = ApiClient::new(&base_url)
+                    .and_then(|client| client.delete_organisation(&token, &id))
+                    .map_err(|err| err.to_string());
+                let _ = events.send(RemoteEvent::OrganisationDeleted {
                     request_id,
                     id,
                     result,

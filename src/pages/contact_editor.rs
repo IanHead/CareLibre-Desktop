@@ -17,7 +17,11 @@ use crate::contact::{
     RoleOption, agreement_status_label, category_label, claiming_model_label, end_reason_label,
     funding_kind_label, history_action_label, quality_value_label, relationship_role_label,
 };
-use crate::theme;
+use crate::{
+    config::RelationshipViewPreference,
+    pages::constellation::{self, ConstellationSource},
+    theme,
+};
 
 /// The contact and organisation roles that make a contact a client: the
 /// organisation provides care to them.
@@ -137,6 +141,10 @@ pub enum ContactEditorAction {
         change: RelationshipChange,
     },
     LoadRelationshipHistory(String),
+    /// Collapse/expand or change the constellation's step count.
+    SetConstellationPreference(RelationshipViewPreference),
+    /// Retry fetching the whole relationship graph.
+    ReloadConstellation,
     CreateContact {
         from_role: String,
         to_role: String,
@@ -352,6 +360,9 @@ pub struct ContactWindowState {
     pub show_ended_relationships: bool,
     pub new_relationship_contact: Option<NewRelationshipContact>,
     pub relationship_error: Option<String>,
+    /// The per-user constellation preference and its cached layout.
+    pub constellation: RelationshipViewPreference,
+    pub constellation_view: Option<constellation::ConstellationView>,
     pub error: Option<String>,
     pub close_requested: bool,
     pub popped_out: bool,
@@ -437,6 +448,8 @@ impl ContactWindowState {
             show_ended_relationships: false,
             new_relationship_contact: None,
             relationship_error: None,
+            constellation: RelationshipViewPreference::default(),
+            constellation_view: None,
             error: None,
             close_requested: false,
             popped_out: false,
@@ -831,7 +844,7 @@ pub fn show_viewport(
     ui: &mut Ui,
     state: &mut ContactWindowState,
     client_side_decorations: bool,
-    catalog: &[ApiGraphNode],
+    source: &ConstellationSource<'_>,
     roles: &[RoleOption],
 ) -> Option<ContactEditorAction> {
     if ui.ctx().input(|i| i.viewport().close_requested()) {
@@ -885,7 +898,7 @@ pub fn show_viewport(
             ui.add_space(6.0);
             ui.separator();
             ui.add_space(8.0);
-            if let Some(next) = body(ui, state, catalog, roles) {
+            if let Some(next) = body(ui, state, source, roles) {
                 action = Some(next);
             }
         });
@@ -901,7 +914,7 @@ pub fn show_viewport(
 pub fn show_docked(
     ui: &mut Ui,
     state: &mut ContactWindowState,
-    catalog: &[ApiGraphNode],
+    source: &ConstellationSource<'_>,
     roles: &[RoleOption],
 ) -> Option<ContactEditorAction> {
     let mut action = None;
@@ -938,7 +951,7 @@ pub fn show_docked(
             ScrollArea::vertical()
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
-                    if let Some(next) = body(ui, state, catalog, roles) {
+                    if let Some(next) = body(ui, state, source, roles) {
                         action = Some(next);
                     }
                 });
@@ -952,7 +965,7 @@ pub fn show_docked(
 pub fn show_column(
     ui: &mut Ui,
     state: &mut ContactWindowState,
-    catalog: &[ApiGraphNode],
+    source: &ConstellationSource<'_>,
     roles: &[RoleOption],
 ) -> Option<ContactEditorAction> {
     let mut action = None;
@@ -965,7 +978,7 @@ pub fn show_column(
         .max_height(body_height)
         .auto_shrink([false, false])
         .show(ui, |ui| {
-            if let Some(next) = body(ui, state, catalog, roles) {
+            if let Some(next) = body(ui, state, source, roles) {
                 action = Some(next);
             }
         });
@@ -1031,7 +1044,7 @@ fn header(ui: &mut Ui, state: &mut ContactWindowState) -> Option<ContactEditorAc
 fn body(
     ui: &mut Ui,
     state: &mut ContactWindowState,
-    catalog: &[ApiGraphNode],
+    source: &ConstellationSource<'_>,
     roles: &[RoleOption],
 ) -> Option<ContactEditorAction> {
     if state.loading {
@@ -1068,7 +1081,7 @@ fn body(
         }
     }
     ui.add_space(12.0);
-    if let Some(next) = relationships_card(ui, state, catalog, roles) {
+    if let Some(next) = relationships_card(ui, state, source, roles) {
         action = Some(next);
     }
     ui.add_space(12.0);
@@ -2462,7 +2475,7 @@ fn weekdays_label(weekdays: &[i16]) -> String {
 fn relationships_card(
     ui: &mut Ui,
     state: &mut ContactWindowState,
-    catalog: &[ApiGraphNode],
+    source: &ConstellationSource<'_>,
     roles: &[RoleOption],
 ) -> Option<ContactEditorAction> {
     let mut action = None;
@@ -2477,6 +2490,31 @@ fn relationships_card(
             .color(theme::muted())
             .size(10.5),
         );
+        ui.add_space(6.0);
+
+        let focus_label = state.computed_display_name();
+        let constellation = constellation::section(
+            ui,
+            source,
+            &state.contact_id,
+            &focus_label,
+            &mut state.constellation,
+            &mut state.constellation_view,
+        );
+        if constellation.preference_changed {
+            action = Some(ContactEditorAction::SetConstellationPreference(
+                state.constellation,
+            ));
+        }
+        if let Some(contact_id) = constellation.open_contact {
+            action = Some(ContactEditorAction::OpenContact(contact_id));
+        }
+        if constellation.reload {
+            action = Some(ContactEditorAction::ReloadConstellation);
+        }
+
+        ui.add_space(4.0);
+        ui.separator();
         ui.add_space(8.0);
 
         if state.relationships_loading {
@@ -2504,7 +2542,7 @@ fn relationships_card(
         let edges = state.relationships.clone();
         let (ended, active): (Vec<_>, Vec<_>) = edges.iter().partition(|edge| edge.is_ended());
         for edge in active {
-            if let Some(next) = relationship_row(ui, state, edge, catalog, roles) {
+            if let Some(next) = relationship_row(ui, state, edge, source.nodes(), roles) {
                 action = Some(next);
             }
         }
@@ -2534,7 +2572,7 @@ fn relationships_card(
             if state.show_ended_relationships {
                 ui.add_space(4.0);
                 for edge in ended {
-                    if let Some(next) = relationship_row(ui, state, edge, catalog, roles) {
+                    if let Some(next) = relationship_row(ui, state, edge, source.nodes(), roles) {
                         action = Some(next);
                     }
                 }
@@ -2582,7 +2620,7 @@ fn relationships_card(
             "relationship-party",
             &mut state.relationship_target,
             Some(&exclude),
-            catalog,
+            source.nodes(),
         );
 
         ui.add(

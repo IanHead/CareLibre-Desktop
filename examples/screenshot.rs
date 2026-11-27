@@ -32,6 +32,7 @@ fn main() {
     };
     let page = match args.get(1).map(String::as_str) {
         Some("contacts" | "clients" | "workers") => Page::Contacts,
+        Some("organisations") => Page::Organisations,
         Some("rostering") => Page::Rostering,
         Some("services") => Page::Services,
         Some("documents") => Page::Documents,
@@ -62,6 +63,10 @@ fn main() {
     });
     let suitability = args.iter().any(|arg| arg == "--suitability");
     let relationships = args.iter().any(|arg| arg == "--relationships");
+    let constellation = args.iter().any(|arg| arg == "--constellation");
+    let org_new = args.iter().any(|arg| arg == "--org-new");
+    let org_edit = args.iter().any(|arg| arg == "--org-edit");
+    let org_hover = args.iter().any(|arg| arg == "--org-hover");
     let funding = args.iter().any(|arg| arg == "--funding");
     let qualities = args.iter().any(|arg| arg == "--qualities");
     // With --relationships: open the first relationship's history or actions menu.
@@ -84,6 +89,7 @@ fn main() {
             list.split(',')
                 .filter_map(|name| match name.trim() {
                     "contacts" | "clients" | "workers" => Some(Page::Contacts),
+                    "organisations" => Some(Page::Organisations),
                     "rostering" => Some(Page::Rostering),
                     "services" => Some(Page::Services),
                     "documents" => Some(Page::Documents),
@@ -183,6 +189,33 @@ fn main() {
             }
         }
 
+        if page == Page::Organisations {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while !harness.state().organisations_ready() && Instant::now() < deadline {
+                harness.run();
+                std::thread::sleep(Duration::from_millis(25));
+            }
+            if org_hover {
+                harness
+                    .get_all_by_label_contains("Edit ")
+                    .next()
+                    .expect("an organisation card")
+                    .hover();
+                harness.run();
+            }
+            if org_new {
+                harness.get_by_label("+ New organisation").click();
+                harness.run();
+            } else if org_edit {
+                harness
+                    .get_all_by_label_contains("Edit ")
+                    .next()
+                    .expect("an organisation card")
+                    .click();
+                harness.run();
+            }
+        }
+
         if page == Page::Rostering {
             let deadline = Instant::now() + Duration::from_secs(15);
             while harness.state().roster_shift_count() == 0 && Instant::now() < deadline {
@@ -213,6 +246,21 @@ fn main() {
             while !harness.state().contact_editor_ready() && Instant::now() < deadline {
                 harness.run();
                 std::thread::sleep(Duration::from_millis(25));
+            }
+            if constellation {
+                let deadline = Instant::now() + Duration::from_secs(10);
+                while !harness.state().relationship_graph_ready() && Instant::now() < deadline {
+                    harness.run();
+                    std::thread::sleep(Duration::from_millis(25));
+                }
+                // Expand in memory only: a screenshot run must not change the
+                // user's saved collapsed state or step count.
+                harness.state_mut().preview_constellation(false, 2);
+                harness.run();
+                harness
+                    .get_by_label_contains("records within")
+                    .scroll_to_me();
+                harness.run();
             }
             if funding {
                 harness.get_by_label("Funding & agreements").scroll_to_me();

@@ -14,6 +14,7 @@ use crate::contact::{
     ApiRelationshipGraph, ApiRelationshipHistory, ApiRelationshipList, ApiRelationshipTypeList,
     ApiRelationshipWrite, ApiWorkerQualityValue, ApiWorkerQualityValueWrite, RelationshipChange,
 };
+use crate::organisation::{ApiOrganisation, ApiOrganisationList, ApiOrganisationWrite};
 use crate::rostering::{
     ApiAssignment, ApiAssignmentUpdate, ApiAssignmentWrite, ApiBatchShiftWrite, ApiCopyShiftWrite,
     ApiCostCentre, ApiDivision, ApiService, ApiShift, ApiShiftDetail, ApiShiftList, ApiShiftUpdate,
@@ -558,6 +559,58 @@ impl ApiClient {
         id: &str,
     ) -> ApiResult<ApiRelationshipHistory> {
         self.get_json_with_token(&format!("/api/v1/relationships/{id}/history"), access_token)
+    }
+
+    // External organisations ------------------------------------------------
+
+    pub fn list_organisations(
+        &self,
+        access_token: &str,
+        search: &str,
+        status: &str,
+        limit: usize,
+        offset: usize,
+    ) -> ApiResult<ApiOrganisationList> {
+        let mut query = url::form_urlencoded::Serializer::new(String::new());
+        if !search.trim().is_empty() {
+            query.append_pair("search", search.trim());
+        }
+        query.append_pair("status", status);
+        query.append_pair("limit", &limit.to_string());
+        query.append_pair("offset", &offset.to_string());
+        self.get_json_with_token(
+            &format!("/api/v1/organisations?{}", query.finish()),
+            access_token,
+        )
+    }
+
+    pub fn create_organisation(
+        &self,
+        access_token: &str,
+        payload: &ApiOrganisationWrite,
+    ) -> ApiResult<ApiOrganisation> {
+        let (status, body) =
+            self.send_with_token("POST", "/api/v1/organisations", access_token, payload)?;
+        decode(status, &body)
+    }
+
+    pub fn update_organisation(
+        &self,
+        access_token: &str,
+        id: &str,
+        payload: &ApiOrganisationWrite,
+    ) -> ApiResult<ApiOrganisation> {
+        let (status, body) = self.send_with_token(
+            "PATCH",
+            &format!("/api/v1/organisations/{id}"),
+            access_token,
+            payload,
+        )?;
+        decode(status, &body)
+    }
+
+    pub fn delete_organisation(&self, access_token: &str, id: &str) -> ApiResult<()> {
+        self.delete_with_token(&format!("/api/v1/organisations/{id}"), access_token)
     }
 
     fn delete_with_token(&self, path: &str, access_token: &str) -> ApiResult<()> {
