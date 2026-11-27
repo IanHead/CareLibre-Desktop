@@ -19,6 +19,7 @@ use crate::contact::{
 };
 use crate::{
     config::RelationshipViewPreference,
+    forms::{date_field, decimal_field, field_label, integer_field, named, text_field, time_field},
     pages::constellation::{self, ConstellationSource},
     theme,
 };
@@ -1179,9 +1180,14 @@ fn core_card(ui: &mut Ui, state: &mut ContactWindowState) -> Option<ContactEdito
         });
         field_row(ui, |ui, right| {
             if right {
-                text_field(ui, "Email", &mut state.email);
+                crate::forms::email_field(ui, "Email", &mut state.email);
             } else {
-                text_field(ui, "Date of birth (YYYY-MM-DD)", &mut state.date_of_birth);
+                date_field(
+                    ui,
+                    "contact-date-of-birth",
+                    "Date of birth",
+                    &mut state.date_of_birth,
+                );
             }
         });
         field_row(ui, |ui, right| {
@@ -1198,7 +1204,7 @@ fn core_card(ui: &mut Ui, state: &mut ContactWindowState) -> Option<ContactEdito
         });
         field_row(ui, |ui, right| {
             if right {
-                text_field(ui, "Phone", &mut state.phone);
+                crate::forms::phone_field(ui, "Phone", &mut state.phone);
             } else {
                 text_field(ui, "Cultural identity", &mut state.cultural_identity);
             }
@@ -1703,7 +1709,7 @@ fn quality_value_input(
             text_field(ui, "Values (comma separated)", text);
         }
         "date" => {
-            text_field(ui, "Date (YYYY-MM-DD)", text);
+            date_field(ui, "quality-value-date", "Date", text);
         }
         _ => {
             text_field(ui, "Value", text);
@@ -1992,7 +1998,7 @@ fn funding_card(ui: &mut Ui, state: &mut ContactWindowState) -> Option<ContactEd
                     date_field(ui, "package-start", "Start", &mut state.new_package_start);
                 }
             });
-            text_field(ui, "Budget (optional)", &mut state.new_package_budget);
+            decimal_field(ui, "Budget (optional)", &mut state.new_package_budget);
             if ui
                 .add_enabled(
                     !state.funding_pending,
@@ -2259,9 +2265,9 @@ fn agreement_line_form(
     text_field(ui, "Line description", &mut state.new_line_description);
     field_row(ui, |ui, right| {
         if right {
-            text_field(ui, "Unit rate", &mut state.new_line_rate);
+            decimal_field(ui, "Unit rate", &mut state.new_line_rate);
         } else {
-            text_field(ui, "Quantity", &mut state.new_line_quantity);
+            decimal_field(ui, "Quantity", &mut state.new_line_quantity);
         }
     });
     ui.horizontal(|ui| {
@@ -2315,9 +2321,9 @@ fn agreement_line_form(
         });
         field_row(ui, |ui, right| {
             if right {
-                text_field(ui, "Duration (minutes)", &mut state.new_line_duration);
+                integer_field(ui, "Duration (minutes)", &mut state.new_line_duration);
             } else {
-                text_field(ui, "Start time (HH:MM)", &mut state.new_line_start_time);
+                time_field(ui, "Start time", &mut state.new_line_start_time);
             }
         });
     }
@@ -2701,9 +2707,9 @@ fn relationships_card(
                     });
                     field_row(ui, |ui, right| {
                         if right {
-                            text_field(ui, "Phone", &mut draft.phone);
+                            crate::forms::phone_field(ui, "Phone", &mut draft.phone);
                         } else {
-                            text_field(ui, "Email", &mut draft.email);
+                            crate::forms::email_field(ui, "Email", &mut draft.email);
                         }
                     });
 
@@ -2943,7 +2949,7 @@ fn relationship_form(
 
             match form.kind {
                 RelationshipFormKind::End => {
-                    text_field(ui, "Last day (YYYY-MM-DD)", &mut form.date);
+                    date_field(ui, "relationship-end-date", "Last day", &mut form.date);
                     reason_select(ui, &mut form.reason, "relationship-end-reason");
                 }
                 RelationshipFormKind::Transfer => {
@@ -2963,7 +2969,7 @@ fn relationship_form(
                         Some(&exclude),
                         catalog,
                     );
-                    text_field(ui, "New party from (YYYY-MM-DD)", &mut form.date);
+                    date_field(ui, "relationship-transfer-date", "New party from", &mut form.date);
                     reason_select(ui, &mut form.reason, "relationship-transfer-reason");
                 }
                 RelationshipFormKind::ChangeRole => {
@@ -2986,7 +2992,7 @@ fn relationship_form(
                             .size(10.0),
                         );
                     }
-                    text_field(ui, "New roles from (YYYY-MM-DD)", &mut form.date);
+                    date_field(ui, "relationship-role-date", "New roles from", &mut form.date);
                     reason_select(ui, &mut form.reason, "relationship-role-reason");
                 }
                 RelationshipFormKind::Correct => {
@@ -3003,9 +3009,9 @@ fn relationship_form(
                     );
                     field_row(ui, |ui, right| {
                         if right {
-                            text_field(ui, "End date (YYYY-MM-DD)", &mut form.end_date);
+                            date_field(ui, "relationship-correct-end", "End date", &mut form.end_date);
                         } else {
-                            text_field(ui, "Start date (YYYY-MM-DD)", &mut form.start_date);
+                            date_field(ui, "relationship-correct-start", "Start date", &mut form.start_date);
                         }
                     });
                     if !form.end_date.trim().is_empty() {
@@ -3412,7 +3418,7 @@ fn render_detail_value(ui: &mut Ui, key: &str, value: &mut Value, depth: usize) 
         }
         Value::Number(number) => {
             let mut text = number.to_string();
-            text_field(ui, &label_for(key), &mut text);
+            decimal_field(ui, &label_for(key), &mut text);
             if let Ok(parsed) = text.parse::<f64>()
                 && let Some(number) = serde_json::Number::from_f64(parsed)
             {
@@ -3423,7 +3429,14 @@ fn render_detail_value(ui: &mut Ui, key: &str, value: &mut Value, depth: usize) 
             let original = existing.clone();
             let mut text = original.clone();
             let long = should_wrap(key);
-            if long {
+            if date_key(key) {
+                date_field(
+                    ui,
+                    &format!("detail-date-{key}"),
+                    &label_for(key),
+                    &mut text,
+                );
+            } else if long {
                 field_label(ui, label_for(key).as_str(), false);
                 named(
                     &ui.add(
@@ -3520,6 +3533,14 @@ fn custom_field(ui: &mut Ui, field: &ApiCustomField, text: &mut String) {
                 &field.label,
             );
         }
+        "date" | "datetime" => {
+            date_field(ui, &format!("custom-date-{}", field.id), &field.label, text);
+        }
+        "integer" => integer_field(ui, &field.label, text),
+        "decimal" => decimal_field(ui, &field.label, text),
+        "email" => crate::forms::email_field(ui, &field.label, text),
+        "phone" => crate::forms::phone_field(ui, &field.label, text),
+        "url" => crate::forms::url_field(ui, &field.label, text),
         _ => {
             text_field(ui, &field.label, text);
         }
@@ -3668,6 +3689,14 @@ fn role_label(role: &str) -> &'static str {
     }
 }
 
+fn date_key(key: &str) -> bool {
+    key.contains("date")
+        || key.ends_with("_expiry")
+        || key.ends_with("_start")
+        || key.ends_with("_end")
+        || matches!(key, "dob" | "plan_start" | "plan_end")
+}
+
 fn label_for(key: &str) -> String {
     let mapped = match key {
         "line1" => "Address line 1",
@@ -3739,147 +3768,6 @@ fn field_row(ui: &mut Ui, mut add: impl FnMut(&mut Ui, bool)) {
         add(ui, false);
         add(ui, true);
     }
-}
-
-fn text_field(ui: &mut Ui, label: &str, value: &mut String) {
-    if !label.is_empty() {
-        field_label(ui, label, false);
-    }
-    let response = ui.add(
-        egui::TextEdit::singleline(value)
-            .desired_width(ui.available_width())
-            .margin(Margin::symmetric(10, 8)),
-    );
-    if !label.is_empty() {
-        named(&response, label);
-    }
-    ui.add_space(4.0);
-}
-
-/// A validated date field with a calendar popup. The text stays editable, but
-/// the value must parse as `YYYY-MM-DD` before it can be saved.
-fn date_field(ui: &mut Ui, id: &str, label: &str, value: &mut String) {
-    field_label(ui, label, false);
-    let field_id = ui.make_persistent_id(id);
-    ui.horizontal(|ui| {
-        let response = ui.add(
-            egui::TextEdit::singleline(value)
-                .hint_text("YYYY-MM-DD")
-                .desired_width(110.0)
-                .margin(Margin::symmetric(8, 6)),
-        );
-        named(&response, label);
-
-        let picker = ui.add(
-            egui::Button::new(RichText::new("📅").size(12.0))
-                .frame(false)
-                .min_size(vec2(24.0, 22.0)),
-        );
-        named(&picker, "Choose a date");
-
-        let valid = value.trim().is_empty()
-            || chrono::NaiveDate::parse_from_str(value.trim(), "%Y-%m-%d").is_ok();
-        if !valid {
-            ui.label(
-                RichText::new("Use YYYY-MM-DD")
-                    .color(theme::danger())
-                    .size(10.0),
-            );
-        }
-
-        egui::Popup::from_toggle_button_response(&picker).show(|ui| {
-            if let Some(date) = calendar(ui, value, field_id) {
-                *value = date.format("%Y-%m-%d").to_string();
-                ui.close();
-            }
-            if ui.button("Clear").clicked() {
-                value.clear();
-                ui.close();
-            }
-        });
-    });
-    ui.add_space(4.0);
-}
-
-/// A compact month calendar. Returns the clicked date, if any.
-fn calendar(ui: &mut Ui, value: &str, id: egui::Id) -> Option<chrono::NaiveDate> {
-    use chrono::{Datelike, Months, NaiveDate};
-
-    let today = chrono::Local::now().date_naive();
-    let selected = NaiveDate::parse_from_str(value.trim(), "%Y-%m-%d").ok();
-    let month_key = id.with("month");
-    let mut month = ui
-        .data(|data| data.get_temp::<NaiveDate>(month_key))
-        .unwrap_or_else(|| selected.unwrap_or(today))
-        .with_day(1)
-        .unwrap_or(today);
-
-    let mut picked = None;
-    ui.horizontal(|ui| {
-        if ui.small_button("◀").clicked() {
-            month = month.checked_sub_months(Months::new(1)).unwrap_or(month);
-        }
-        ui.label(RichText::new(month.format("%B %Y").to_string()).font(theme::strong_font(11.0)));
-        if ui.small_button("▶").clicked() {
-            month = month.checked_add_months(Months::new(1)).unwrap_or(month);
-        }
-    });
-    ui.data_mut(|data| data.insert_temp(month_key, month));
-
-    egui::Grid::new(id.with("grid"))
-        .num_columns(7)
-        .spacing([2.0, 2.0])
-        .show(ui, |ui| {
-            for day in ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"] {
-                ui.label(RichText::new(day).color(theme::faint()).size(9.0));
-            }
-            ui.end_row();
-
-            let offset = month.weekday().num_days_from_monday() as i64;
-            let next_month = month.checked_add_months(Months::new(1)).unwrap_or(month);
-            let days = (next_month - month).num_days();
-
-            let mut column = 0;
-            for _ in 0..offset {
-                ui.label("");
-                column += 1;
-            }
-            for day in 0..days {
-                let date = month + chrono::Duration::days(day);
-                let is_selected = selected == Some(date);
-                let is_today = date == today;
-                let text = if is_today {
-                    RichText::new(date.day().to_string())
-                        .color(theme::accent())
-                        .strong()
-                } else {
-                    RichText::new(date.day().to_string())
-                };
-                if ui.selectable_label(is_selected, text).clicked() {
-                    picked = Some(date);
-                }
-                column += 1;
-                if column % 7 == 0 {
-                    ui.end_row();
-                }
-            }
-        });
-
-    picked
-}
-
-fn field_label(ui: &mut Ui, label: &str, required: bool) {
-    ui.horizontal(|ui| {
-        ui.label(RichText::new(label).color(theme::muted()).size(10.5));
-        if required {
-            ui.label(RichText::new("*").color(theme::accent()).size(10.5));
-        }
-    });
-    ui.add_space(3.0);
-}
-
-fn named(response: &egui::Response, label: &str) {
-    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::TextInput, true, label));
 }
 
 fn error_box(ui: &mut Ui, message: &str) {

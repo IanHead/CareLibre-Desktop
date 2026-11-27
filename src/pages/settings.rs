@@ -490,7 +490,7 @@ pub fn sign_in_form(
 
     match form.mode {
         AuthMode::Login => {
-            field(ui, "Email", &mut form.email, "you@example.com", false);
+            crate::forms::email_field(ui, "Email", &mut form.email);
             field(ui, "Password", &mut form.password, "Your password", true);
             remember_me(ui, form, action);
             ui.add_space(8.0);
@@ -518,7 +518,7 @@ pub fn sign_in_form(
                 false,
             );
             field(ui, "Full name", &mut form.full_name, "Jane Doe", false);
-            field(ui, "Email", &mut form.email, "you@example.com", false);
+            crate::forms::email_field(ui, "Email", &mut form.email);
             field(
                 ui,
                 "Password",

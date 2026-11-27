@@ -14,6 +14,11 @@ use crate::contact::{
     ApiRelationshipGraph, ApiRelationshipHistory, ApiRelationshipList, ApiRelationshipTypeList,
     ApiRelationshipWrite, ApiWorkerQualityValue, ApiWorkerQualityValueWrite, RelationshipChange,
 };
+use crate::intake_board::{
+    ApiChecklistToggleResponse, ApiChecklistToggleWrite, ApiContactMatchList, ApiIntakeBoard,
+    ApiIntakeCancelWrite, ApiIntakeCaseCreate, ApiIntakeCaseCreateResponse, ApiIntakeCaseDetail,
+    ApiIntakeCaseUpdate, ApiIntakeFieldCatalog, ApiIntakeFlowList, ApiTransitionWrite,
+};
 use crate::organisation::{ApiOrganisation, ApiOrganisationList, ApiOrganisationWrite};
 use crate::rostering::{
     ApiAssignment, ApiAssignmentUpdate, ApiAssignmentWrite, ApiBatchShiftWrite, ApiCopyShiftWrite,
@@ -280,6 +285,151 @@ impl ApiClient {
 
     pub fn get_contact(&self, access_token: &str, id: &str) -> ApiResult<ApiContactDetail> {
         self.get_json_with_token(&format!("/api/v1/contacts/{id}"), access_token)
+    }
+
+    pub fn list_intake_flows(&self, access_token: &str) -> ApiResult<ApiIntakeFlowList> {
+        self.get_json_with_token("/api/v1/intake/flows", access_token)
+    }
+
+    pub fn get_intake_board(
+        &self,
+        access_token: &str,
+        flow_ids: &[String],
+        subject_kind: Option<&str>,
+        assignee: &str,
+        search: &str,
+    ) -> ApiResult<ApiIntakeBoard> {
+        let mut query = url::form_urlencoded::Serializer::new(String::new());
+        query.append_pair("limit_per_stage", "100");
+        if !flow_ids.is_empty() {
+            query.append_pair("flow_id", &flow_ids.join(","));
+        }
+        if let Some(subject_kind) = subject_kind.filter(|value| !value.is_empty()) {
+            query.append_pair("subject_kind", subject_kind);
+        }
+        if assignee != "all" {
+            query.append_pair("assignee_user_id", assignee);
+        }
+        if !search.trim().is_empty() {
+            query.append_pair("search", search.trim());
+        }
+        self.get_json_with_token(
+            &format!("/api/v1/intake/board?{}", query.finish()),
+            access_token,
+        )
+    }
+
+    pub fn get_intake_case(&self, access_token: &str, id: &str) -> ApiResult<ApiIntakeCaseDetail> {
+        self.get_json_with_token(&format!("/api/v1/intake/cases/{id}"), access_token)
+    }
+
+    pub fn transition_intake_case(
+        &self,
+        access_token: &str,
+        id: &str,
+        payload: &ApiTransitionWrite,
+    ) -> ApiResult<ApiIntakeCaseDetail> {
+        let (status, body) = self.send_with_token(
+            "POST",
+            &format!("/api/v1/intake/cases/{id}/transition"),
+            access_token,
+            payload,
+        )?;
+        decode(status, &body)
+    }
+
+    pub fn intake_field_catalog(&self, access_token: &str) -> ApiResult<ApiIntakeFieldCatalog> {
+        self.get_json_with_token("/api/v1/intake/field-catalog", access_token)
+    }
+
+    pub fn intake_contact_matches(
+        &self,
+        access_token: &str,
+        search: &str,
+    ) -> ApiResult<ApiContactMatchList> {
+        let search = search.trim();
+        let mut query = url::form_urlencoded::Serializer::new(String::new());
+        query.append_pair("name", search);
+        query.append_pair("limit", "15");
+        self.get_json_with_token(
+            &format!("/api/v1/intake/contact-matches?{}", query.finish()),
+            access_token,
+        )
+    }
+
+    pub fn create_intake_case(
+        &self,
+        access_token: &str,
+        payload: &ApiIntakeCaseCreate,
+    ) -> ApiResult<ApiIntakeCaseCreateResponse> {
+        let (status, body) =
+            self.send_with_token("POST", "/api/v1/intake/cases", access_token, payload)?;
+        decode(status, &body)
+    }
+
+    pub fn update_intake_case(
+        &self,
+        access_token: &str,
+        id: &str,
+        payload: &ApiIntakeCaseUpdate,
+    ) -> ApiResult<ApiIntakeCaseDetail> {
+        let (status, body) = self.send_with_token(
+            "PATCH",
+            &format!("/api/v1/intake/cases/{id}"),
+            access_token,
+            payload,
+        )?;
+        decode(status, &body)
+    }
+
+    pub fn toggle_intake_checklist(
+        &self,
+        access_token: &str,
+        case_id: &str,
+        item_id: &str,
+        payload: &ApiChecklistToggleWrite,
+    ) -> ApiResult<ApiChecklistToggleResponse> {
+        let (status, body) = self.send_with_token(
+            "POST",
+            &format!("/api/v1/intake/cases/{case_id}/checklist/{item_id}"),
+            access_token,
+            payload,
+        )?;
+        decode(status, &body)
+    }
+
+    pub fn delete_intake_case(&self, access_token: &str, id: &str) -> ApiResult<()> {
+        let mut response = self
+            .agent
+            .delete(self.endpoint(&format!("/api/v1/intake/cases/{id}")))
+            .header("authorization", format!("Bearer {access_token}"))
+            .call()
+            .map_err(map_transport_error)?;
+        let status = response.status().as_u16();
+        let body = response
+            .body_mut()
+            .read_to_string()
+            .map_err(|err| ApiError::Network(err.to_string()))?;
+        if status == 204 || status == 200 {
+            Ok(())
+        } else {
+            decode::<serde_json::Value>(status, &body).map(|_| ())
+        }
+    }
+
+    pub fn cancel_intake_case(
+        &self,
+        access_token: &str,
+        id: &str,
+        payload: &ApiIntakeCancelWrite,
+    ) -> ApiResult<ApiIntakeCaseDetail> {
+        let (status, body) = self.send_with_token(
+            "POST",
+            &format!("/api/v1/intake/cases/{id}/cancel"),
+            access_token,
+            payload,
+        )?;
+        decode(status, &body)
     }
 
     pub fn update_contact(

@@ -10,7 +10,7 @@ use eframe::egui::{
     self, Align, Align2, Color32, CornerRadius, FontId, Frame, Layout, Margin, RichText, Sense,
     Stroke, StrokeKind, Ui, vec2,
 };
-use serde_json::Value;
+use serde_json::{Value, json};
 
 use crate::{
     api, chrome,
@@ -64,6 +64,7 @@ enum ColumnKind {
     Contact(String),
     /// A `new` or organisation-id key for an open editor column.
     Organisation(String),
+    IntakeCase(String),
 }
 
 #[derive(Clone, Debug)]
@@ -95,6 +96,7 @@ impl ColumnKind {
             Self::Page(page) => format!("__page_{}__", page.label()),
             Self::Contact(id) => id.clone(),
             Self::Organisation(key) => format!("__organisation_{key}__"),
+            Self::IntakeCase(id) => format!("__intake_case_{id}__"),
         }
     }
 }
@@ -117,6 +119,11 @@ pub struct CareLibreApp {
     organisation_delete_requests: BTreeMap<u64, (String, Option<String>)>,
     organisation_query_started: Option<Instant>,
     intake: IntakeState,
+    intake_board: pages::intake::board::IntakeBoardState,
+    intake_case_columns: BTreeMap<String, pages::intake::board::IntakeCaseColumnState>,
+    discard_intake_case: Option<String>,
+    discard_intake_request: Option<u64>,
+    discard_intake_error: Option<String>,
     contact_windows: BTreeMap<String, ContactWindowState>,
     organisation_editors: BTreeMap<String, OrganisationEditorState>,
     columns: Vec<ColumnState>,
@@ -257,6 +264,11 @@ impl CareLibreApp {
             organisation_delete_requests: BTreeMap::new(),
             organisation_query_started: None,
             intake: IntakeState::new(),
+            intake_board: pages::intake::board::IntakeBoardState::default(),
+            intake_case_columns: BTreeMap::new(),
+            discard_intake_case: None,
+            discard_intake_request: None,
+            discard_intake_error: None,
             contact_windows: BTreeMap::new(),
             organisation_editors: BTreeMap::new(),
             columns: Vec::new(),
@@ -431,7 +443,9 @@ impl CareLibreApp {
     pub fn set_page(&mut self, page: Page) {
         self.columns.retain(|column| match &column.kind {
             ColumnKind::Page(open) => *open == page,
-            ColumnKind::Contact(_) | ColumnKind::Organisation(_) => true,
+            ColumnKind::Contact(_) | ColumnKind::Organisation(_) | ColumnKind::IntakeCase(_) => {
+                true
+            }
         });
         self.open_page(page);
         self.reset_column_weights();
@@ -519,12 +533,18 @@ impl CareLibreApp {
         for key in organisations {
             self.close_organisation_editor(&key);
         }
+        let intake_cases: Vec<String> = self.intake_case_columns.keys().cloned().collect();
+        for id in intake_cases {
+            self.close_intake_case(&id);
+        }
         let pages: Vec<Page> = self
             .columns
             .iter()
             .filter_map(|column| match &column.kind {
                 ColumnKind::Page(page) => Some(*page),
-                ColumnKind::Contact(_) | ColumnKind::Organisation(_) => None,
+                ColumnKind::Contact(_)
+                | ColumnKind::Organisation(_)
+                | ColumnKind::IntakeCase(_) => None,
             })
             .collect();
         for page in pages {
@@ -569,6 +589,11 @@ impl CareLibreApp {
         self.columns_initialised = false;
 
         self.intake = IntakeState::new();
+        self.intake_board.reset();
+        self.intake_case_columns.clear();
+        self.discard_intake_case = None;
+        self.discard_intake_request = None;
+        self.discard_intake_error = None;
         self.contacts = ContactsState::new(ContactFilter::All);
         self.organisations = OrganisationsState::new();
         self.rostering = RosteringState::default();
@@ -654,7 +679,9 @@ impl CareLibreApp {
             .filter(|column| {
                 !column.closing
                     && match &column.kind {
-                        ColumnKind::Page(_) | ColumnKind::Organisation(_) => true,
+                        ColumnKind::Page(_)
+                        | ColumnKind::Organisation(_)
+                        | ColumnKind::IntakeCase(_) => true,
                         ColumnKind::Contact(id) => self
                             .contact_windows
                             .get(id)
@@ -739,6 +766,44 @@ impl CareLibreApp {
         self.contacts.loaded()
     }
 
+    /// Whether the intake board has loaded, failed, or has no flows to show.
+    pub fn intake_board_ready(&self) -> bool {
+        self.intake_board.board.is_some()
+            || self.intake_board.flows_error.is_some()
+            || self.intake_board.board_error.is_some()
+            || (self.intake_board.flows_requested && !self.intake_board.flows_loading)
+    }
+
+    /// Number of cards currently rendered across all intake columns.
+    pub fn intake_cards_loaded(&self) -> usize {
+        self.intake_board
+            .board
+            .as_ref()
+            .map(|board| board.columns.iter().map(|column| column.cards.len()).sum())
+            .unwrap_or(0)
+    }
+
+    /// Open the first intake card as a column. Used by previews and tests.
+    pub fn open_first_intake_case(&mut self) -> bool {
+        let Some(card) = self
+            .intake_board
+            .board
+            .as_ref()
+            .and_then(|board| board.columns.iter().find_map(|column| column.cards.first()))
+        else {
+            return false;
+        };
+        self.open_intake_case(card.id.clone());
+        true
+    }
+
+    /// Whether at least one open intake case column has loaded.
+    pub fn intake_case_column_ready(&self) -> bool {
+        self.intake_case_columns
+            .values()
+            .any(|state| state.case.is_some() || state.error.is_some())
+    }
+
     /// Contacts loaded for the global list; also proves server counts are ready.
     pub fn server_contacts_loaded(&self) -> usize {
         self.contacts.loaded()
@@ -781,7 +846,7 @@ impl CareLibreApp {
         if self.intake.view == IntakeView::Wizard {
             self.ensure_party_catalog();
         }
-        self.ensure_intake_list();
+        self.ensure_intake_board_loaded();
         self.refresh_session_if_needed();
 
         if self.config.client_side_decorations {
@@ -840,6 +905,7 @@ impl CareLibreApp {
         self.render_contact_windows(ui.ctx());
         self.render_intake_window(ui.ctx());
         self.render_page_viewports(ui.ctx());
+        self.render_discard_intake_modal(ui.ctx());
 
         if self.config.client_side_decorations {
             chrome::resize_handles(ui.ctx());
@@ -908,18 +974,26 @@ impl CareLibreApp {
             Page::Settings => pages::settings::show(ui, &mut self.settings, &self.server),
             Page::Intake => {
                 let signed_in = self.access_token().is_some();
-                let store_ready = self.store_ready;
-                let catalog = self.lookup_parties();
-                let roles = self.role_options.clone();
-                if let Some(action) = pages::intake::show(
-                    ui,
-                    &mut self.intake,
-                    store_ready,
-                    signed_in,
-                    &catalog,
-                    &roles,
-                ) {
-                    *intake_action = Some(action);
+                if self.intake.view == IntakeView::Wizard
+                    || self.intake.view == IntakeView::Completed
+                {
+                    let store_ready = self.store_ready;
+                    let catalog = self.lookup_parties();
+                    let roles = self.role_options.clone();
+                    if let Some(action) = pages::intake::show(
+                        ui,
+                        &mut self.intake,
+                        store_ready,
+                        signed_in,
+                        &catalog,
+                        &roles,
+                    ) {
+                        *intake_action = Some(action);
+                    }
+                } else if let Some(action) =
+                    pages::intake::board::show(ui, &mut self.intake_board, signed_in)
+                {
+                    *intake_action = Some(IntakeAction::Board(action));
                 }
                 None
             }
@@ -1372,32 +1446,427 @@ impl CareLibreApp {
         self.note_relationship_network_changed();
     }
 
-    fn ensure_intake_list(&mut self) {
+    fn ensure_intake_board_loaded(&mut self) {
         if self.page != Page::Intake
-            || !self.store_ready
             || self.intake.view != IntakeView::Picker
-            || self.intake.list_requested
-            || self.intake.list_loading
+            || self.access_token().is_none()
+            || self.remote.is_none()
         {
             return;
         }
 
-        self.request_intake_list();
+        if self.intake_board.flows.is_empty()
+            && !self.intake_board.flows_loading
+            && !self.intake_board.flows_requested
+        {
+            self.request_intake_flows();
+            return;
+        }
+
+        if self.intake_board.fields.is_empty()
+            && !self.intake_board.fields_loading
+            && !self.intake_board.fields_requested
+        {
+            self.request_intake_fields();
+        }
+
+        let known: BTreeSet<String> = self
+            .intake_board
+            .flows
+            .iter()
+            .map(|flow| flow.id.clone())
+            .collect();
+        self.intake_board
+            .selected_flows
+            .retain(|flow_id| known.contains(flow_id));
+
+        if self.intake_board.board.is_none()
+            && !self.intake_board.board_loading
+            && !self.intake_board.board_requested
+        {
+            self.request_intake_board();
+        }
     }
 
-    fn request_intake_list(&mut self) {
-        let request_id = self.intake.next_request();
-        self.intake.list_request = Some(request_id);
-        self.intake.list_loading = true;
-        self.intake.list_requested = true;
+    fn request_intake_flows(&mut self) {
+        let Some(token) = self.access_token() else {
+            return;
+        };
+        let Some(remote) = &self.remote else {
+            return;
+        };
+        let request_id = self.intake_board.next_request();
+        self.intake_board.flows_loading = true;
+        self.intake_board.flows_requested = true;
+        self.intake_board.flows_error = None;
+        self.intake_board.flows_request_id = Some(request_id);
+        remote.load_intake_flows(request_id, self.server.base_url.clone(), token);
+    }
 
-        if let Some(store) = &self.store {
-            store.list_intakes(request_id);
-        } else {
-            self.intake.list_loading = false;
-            self.intake.list_requested = false;
-            self.intake.error = Some("The local cache is not running.".to_owned());
+    fn request_intake_fields(&mut self) {
+        let Some(token) = self.access_token() else {
+            return;
+        };
+        let Some(remote) = &self.remote else {
+            return;
+        };
+        let request_id = self.intake_board.next_request();
+        self.intake_board.fields_loading = true;
+        self.intake_board.fields_requested = true;
+        self.intake_board.fields_request_id = Some(request_id);
+        self.intake_board.fields_error = None;
+        remote.load_intake_fields(request_id, self.server.base_url.clone(), token);
+    }
+
+    fn request_intake_board(&mut self) {
+        let Some(token) = self.access_token() else {
+            return;
+        };
+        let Some(remote) = &self.remote else {
+            return;
+        };
+        let request_id = self.intake_board.next_request();
+        self.intake_board.board_loading = true;
+        self.intake_board.board_requested = true;
+        self.intake_board.board_error = None;
+        self.intake_board.board_request_id = Some(request_id);
+        remote.load_intake_board(
+            request_id,
+            self.server.base_url.clone(),
+            token,
+            self.intake_board.flow_filter_ids(),
+            self.intake_board.subject_kind.clone(),
+            self.intake_board.assignee_filter.clone(),
+            self.intake_board.search.clone(),
+        );
+    }
+
+    fn open_intake_case(&mut self, case_id: String) {
+        if let Some(index) = self.columns.iter().position(
+            |column| matches!(&column.kind, ColumnKind::IntakeCase(open) if open == &case_id),
+        ) {
+            if self.columns[index].closing {
+                self.cancel_column_close(index);
+            }
+            return;
         }
+        if self.visible_column_count() >= self.max_total_columns {
+            if let Some(ctx) = self.app_ctx.clone() {
+                self.notify(
+                    &ctx,
+                    format!(
+                        "Close a column before opening another. Up to {} columns can be open at once in this window; pop a record out for more.",
+                        self.max_total_columns
+                    ),
+                );
+            }
+            return;
+        }
+        self.intake_case_columns
+            .entry(case_id.clone())
+            .or_insert_with(|| pages::intake::board::IntakeCaseColumnState::new(case_id.clone()));
+        self.columns.push(ColumnState {
+            kind: ColumnKind::IntakeCase(case_id.clone()),
+            width: 520.0,
+            weight: 1.0,
+            display_width: 0.0,
+            anim_from: 0.0,
+            anim_to: 520.0,
+            anim_start: 0.0,
+            position_x: -1.0,
+            pos_from: 0.0,
+            pos_to: 0.0,
+            pos_start: 0.0,
+            closing: false,
+            close_start: 0.0,
+        });
+        self.reset_column_weights();
+        self.request_intake_case(case_id);
+    }
+
+    fn close_intake_case(&mut self, case_id: &str) {
+        if self
+            .intake_case_columns
+            .get(case_id)
+            .and_then(|state| state.case.as_ref())
+            .is_some_and(|case| case.case.is_draft)
+        {
+            self.discard_intake_case = Some(case_id.to_owned());
+            self.discard_intake_error = None;
+            return;
+        }
+        if let Some(index) = self.columns.iter().position(
+            |column| matches!(&column.kind, ColumnKind::IntakeCase(open) if open == case_id),
+        ) {
+            self.begin_column_close(index, self.frame_time);
+        }
+    }
+
+    fn force_close_intake_case(&mut self, case_id: &str) {
+        if let Some(index) = self.columns.iter().position(
+            |column| matches!(&column.kind, ColumnKind::IntakeCase(open) if open == case_id),
+        ) {
+            self.begin_column_close(index, self.frame_time);
+        }
+    }
+
+    fn request_delete_intake_case(&mut self, case_id: String) {
+        let Some(token) = self.access_token() else {
+            return;
+        };
+        let Some(remote) = &self.remote else {
+            return;
+        };
+        let request_id = self.intake_board.next_request();
+        self.discard_intake_request = Some(request_id);
+        self.discard_intake_error = None;
+        remote.delete_intake_case(request_id, self.server.base_url.clone(), token, case_id);
+    }
+
+    fn render_discard_intake_modal(&mut self, ctx: &egui::Context) {
+        let Some(case_id) = self.discard_intake_case.clone() else {
+            return;
+        };
+        if !self.intake_case_columns.contains_key(&case_id) {
+            self.discard_intake_case = None;
+            self.discard_intake_error = None;
+            return;
+        }
+        let mut delete = false;
+        let mut keep_editing = false;
+        let saving = self.discard_intake_request.is_some();
+        let response = egui::Modal::new(egui::Id::unique("discard-intake-modal"))
+            .backdrop_color(Color32::from_black_alpha(170))
+            .frame(theme::card())
+            .show(ctx, |ui| {
+                ui.set_width(460.0);
+                ui.label(
+                    RichText::new("Discard this intake?")
+                        .font(theme::strong_font(18.0)),
+                );
+                ui.add_space(4.0);
+                ui.label(
+                    RichText::new(
+                        "This intake has not been saved. If you close it, the record will be deleted.",
+                    )
+                    .color(theme::muted())
+                    .size(12.0),
+                );
+                if let Some(error) = &self.discard_intake_error {
+                    ui.add_space(6.0);
+                    ui.colored_label(theme::danger(), error);
+                }
+                ui.add_space(12.0);
+                ui.horizontal(|ui| {
+                    ui.add_enabled_ui(!saving, |ui| {
+                        if ui
+                            .add(egui::Button::new(
+                                RichText::new("Delete intake").color(theme::danger()),
+                            ))
+                            .clicked()
+                        {
+                            delete = true;
+                        }
+                    });
+                    if ui.add_enabled(!saving, egui::Button::new("Keep editing")).clicked() {
+                        keep_editing = true;
+                    }
+                    if saving {
+                        ui.spinner();
+                    }
+                });
+            });
+        if response.should_close() {
+            keep_editing = true;
+        }
+        if keep_editing {
+            self.discard_intake_case = None;
+            self.discard_intake_error = None;
+        }
+        if delete {
+            self.request_delete_intake_case(case_id);
+        }
+    }
+
+    fn request_intake_case(&mut self, case_id: String) {
+        let Some(token) = self.access_token() else {
+            return;
+        };
+        let Some(remote) = &self.remote else {
+            return;
+        };
+        let request_id = self.intake_board.next_request();
+        if let Some(state) = self.intake_case_columns.get_mut(&case_id) {
+            state.loading = true;
+            state.requested = true;
+            state.request_id = Some(request_id);
+            state.error = None;
+            state.transition_error = None;
+        }
+        remote.load_intake_case(request_id, self.server.base_url.clone(), token, case_id);
+    }
+
+    fn request_intake_transition(&mut self, case_id: String, stage_id: String, version: i32) {
+        let Some(token) = self.access_token() else {
+            return;
+        };
+        let Some(remote) = &self.remote else {
+            return;
+        };
+        let request_id = self.intake_board.next_request();
+        if let Some(state) = self.intake_case_columns.get_mut(&case_id) {
+            state.transitioning = true;
+            state.transition_request_id = Some(request_id);
+            state.transition_error = None;
+        }
+        remote.transition_intake_case(
+            request_id,
+            self.server.base_url.clone(),
+            token,
+            case_id,
+            crate::intake_board::ApiTransitionWrite {
+                to_stage_id: stage_id,
+                version,
+            },
+        );
+    }
+
+    fn request_intake_contacts(&mut self) {
+        let Some(token) = self.access_token() else {
+            return;
+        };
+        let Some(remote) = &self.remote else {
+            return;
+        };
+        let search = self.intake_board.new_search.trim().to_owned();
+        if search.is_empty() {
+            self.intake_board.new_error =
+                Some("Enter a name, email or phone to search.".to_owned());
+            return;
+        }
+        let request_id = self.intake_board.next_request();
+        self.intake_board.contacts_request_id = Some(request_id);
+        self.intake_board.new_candidates.clear();
+        self.intake_board.new_error = None;
+        remote.match_intake_contacts(request_id, self.server.base_url.clone(), token, search);
+    }
+
+    fn request_create_intake(&mut self) {
+        let Some(token) = self.access_token() else {
+            return;
+        };
+        let Some(remote) = &self.remote else {
+            return;
+        };
+        let Some(flow_id) = self.intake_board.new_flow_id.clone() else {
+            self.intake_board.new_error = Some("Choose an intake path.".to_owned());
+            return;
+        };
+        let request_id = self.intake_board.next_request();
+        self.intake_board.new_saving = true;
+        self.intake_board.new_request_id = Some(request_id);
+        self.intake_board.new_error = None;
+        remote.create_intake_case(
+            request_id,
+            self.server.base_url.clone(),
+            token,
+            crate::intake_board::ApiIntakeCaseCreate {
+                flow_id,
+                contact_id: None,
+                contact: None,
+                display_name: None,
+                source: Some("enquiry".to_owned()),
+                data: json!({}),
+                allow_duplicate_contact: false,
+                duplicate_reason: None,
+                draft: true,
+            },
+        );
+    }
+
+    fn request_intake_case_update(&mut self, case_id: String) {
+        let Some(token) = self.access_token() else {
+            return;
+        };
+        let Some(remote) = &self.remote else {
+            return;
+        };
+        let Some(state) = self.intake_case_columns.get_mut(&case_id) else {
+            return;
+        };
+        let Some(case) = &state.case else {
+            return;
+        };
+        let data = state.build_patch(&self.intake_board.fields);
+        let request_id = self.intake_board.next_request();
+        let version = case.case.version;
+        state.saving = true;
+        state.save_request_id = Some(request_id);
+        state.save_error = None;
+        remote.update_intake_case(
+            request_id,
+            self.server.base_url.clone(),
+            token,
+            case_id,
+            crate::intake_board::ApiIntakeCaseUpdate {
+                version,
+                data,
+                force: false,
+            },
+        );
+    }
+
+    fn request_intake_checklist(&mut self, case_id: String, item_id: String, completed: bool) {
+        let Some(token) = self.access_token() else {
+            return;
+        };
+        let Some(remote) = &self.remote else {
+            return;
+        };
+        let request_id = self.intake_board.next_request();
+        if let Some(state) = self.intake_case_columns.get_mut(&case_id) {
+            state.checklist_pending = true;
+            state.checklist_request_id = Some(request_id);
+            state.checklist_error = None;
+        }
+        remote.toggle_intake_checklist(
+            request_id,
+            self.server.base_url.clone(),
+            token,
+            case_id,
+            item_id,
+            crate::intake_board::ApiChecklistToggleWrite {
+                completed,
+                note: None,
+            },
+        );
+    }
+
+    fn request_intake_cancel(&mut self, case_id: String, reason: String) {
+        let Some(token) = self.access_token() else {
+            return;
+        };
+        let Some(remote) = &self.remote else {
+            return;
+        };
+        let Some(state) = self.intake_case_columns.get_mut(&case_id) else {
+            return;
+        };
+        let Some(case) = &state.case else {
+            return;
+        };
+        let request_id = self.intake_board.next_request();
+        let version = case.case.version;
+        state.cancel_saving = true;
+        state.cancel_request_id = Some(request_id);
+        state.cancel_error = None;
+        remote.cancel_intake_case(
+            request_id,
+            self.server.base_url.clone(),
+            token,
+            case_id,
+            crate::intake_board::ApiIntakeCancelWrite { version, reason },
+        );
     }
 
     fn tick_intake_autosave(&mut self) {
@@ -1428,6 +1897,7 @@ impl CareLibreApp {
 
     fn handle_intake_action(&mut self, ctx: &egui::Context, action: IntakeAction) {
         match action {
+            IntakeAction::Board(action) => self.handle_intake_board_action(action),
             IntakeAction::Start(kind) => {
                 self.intake.start(kind);
                 self.save_intake_now();
@@ -1504,6 +1974,77 @@ impl CareLibreApp {
                 self.open_page(Page::Contacts);
                 self.show_contacts(filter, Some(name));
                 let _ = ctx;
+            }
+        }
+    }
+
+    fn handle_intake_board_action(&mut self, action: pages::intake::board::IntakeBoardAction) {
+        use pages::intake::board::IntakeBoardAction;
+        match action {
+            IntakeBoardAction::ReloadFlows => {
+                self.intake_board.reset();
+                self.request_intake_flows();
+            }
+            IntakeBoardAction::Search => {
+                self.intake_board.reset_board();
+                self.request_intake_board();
+            }
+            IntakeBoardAction::ReloadBoard => {
+                self.intake_board.reset_board();
+                self.request_intake_board();
+            }
+            IntakeBoardAction::OpenCase(case_id) => {
+                self.open_intake_case(case_id);
+            }
+            IntakeBoardAction::OpenNewIntake => {
+                self.intake_board.new_open = true;
+                self.intake_board.new_error = None;
+                if self.intake_board.new_flow_id.is_none() {
+                    self.intake_board.new_flow_id = self
+                        .intake_board
+                        .flows
+                        .iter()
+                        .find(|flow| flow.is_active)
+                        .or_else(|| self.intake_board.flows.first())
+                        .map(|flow| flow.id.clone());
+                }
+                if self.intake_board.fields.is_empty()
+                    && !self.intake_board.fields_loading
+                    && !self.intake_board.fields_requested
+                {
+                    self.request_intake_fields();
+                }
+            }
+            IntakeBoardAction::CloseNewIntake => {
+                self.intake_board.new_open = false;
+                self.intake_board.new_error = None;
+                self.intake_board.new_saving = false;
+                self.intake_board.new_request_id = None;
+            }
+            IntakeBoardAction::SearchNewContacts => self.request_intake_contacts(),
+            IntakeBoardAction::CreateIntake => self.request_create_intake(),
+        }
+    }
+
+    fn handle_intake_case_action(
+        &mut self,
+        case_id: &str,
+        action: pages::intake::board::IntakeCaseAction,
+    ) {
+        use pages::intake::board::IntakeCaseAction;
+        match action {
+            IntakeCaseAction::Reload => self.request_intake_case(case_id.to_owned()),
+            IntakeCaseAction::SaveFields => self.request_intake_case_update(case_id.to_owned()),
+            IntakeCaseAction::ToggleChecklist { item_id, completed } => {
+                self.request_intake_checklist(case_id.to_owned(), item_id, completed);
+            }
+            IntakeCaseAction::Transition {
+                case_id,
+                stage_id,
+                version,
+            } => self.request_intake_transition(case_id, stage_id, version),
+            IntakeCaseAction::Cancel { reason } => {
+                self.request_intake_cancel(case_id.to_owned(), reason);
             }
         }
     }
@@ -2323,7 +2864,7 @@ impl CareLibreApp {
             .retain(|_, window| !window.close_requested);
         let open_ids: BTreeSet<String> = self.contact_windows.keys().cloned().collect();
         self.columns.retain(|column| match &column.kind {
-            ColumnKind::Page(_) | ColumnKind::Organisation(_) => true,
+            ColumnKind::Page(_) | ColumnKind::Organisation(_) | ColumnKind::IntakeCase(_) => true,
             ColumnKind::Contact(id) => open_ids.contains(id),
         });
     }
@@ -2341,10 +2882,13 @@ impl CareLibreApp {
         let mut page_action = None;
         let mut close: Option<String> = None;
         let mut close_organisation: Option<String> = None;
+        let mut close_intake_case: Option<String> = None;
         let mut close_page: Option<Page> = None;
         let mut resize: Option<(usize, usize, f32)> = None;
         let mut editor_actions: Vec<(String, ContactEditorAction)> = Vec::new();
         let mut organisation_editor_actions: Vec<(String, OrganisationEditorAction)> = Vec::new();
+        let mut intake_case_actions: Vec<(String, pages::intake::board::IntakeCaseAction)> =
+            Vec::new();
 
         let visible: Vec<usize> = self
             .columns
@@ -2359,6 +2903,7 @@ impl CareLibreApp {
                         .is_some_and(|window| !window.popped_out))
                 .then_some(index),
                 ColumnKind::Organisation(_) => Some(index),
+                ColumnKind::IntakeCase(_) => Some(index),
             })
             .collect();
         if visible.is_empty() {
@@ -2484,7 +3029,9 @@ impl CareLibreApp {
                         ui.set_min_height(height);
                         let column_page = match &kind {
                             ColumnKind::Page(open) => *open,
-                            ColumnKind::Contact(_) | ColumnKind::Organisation(_) => self.page,
+                            ColumnKind::Contact(_)
+                            | ColumnKind::Organisation(_)
+                            | ColumnKind::IntakeCase(_) => self.page,
                         };
                         let column_popped = self.page_popped_out(column_page);
                         let (drag, close_clicked, pop_out, toggle_page) = Self::column_header(
@@ -2493,6 +3040,7 @@ impl CareLibreApp {
                             column_popped,
                             &self.contact_windows,
                             &self.organisation_editors,
+                            &self.intake_case_columns,
                         );
                         if !closing {
                             match &kind {
@@ -2513,6 +3061,11 @@ impl CareLibreApp {
                                 ColumnKind::Organisation(key) => {
                                     if close_clicked {
                                         close_organisation = Some(key.clone());
+                                    }
+                                }
+                                ColumnKind::IntakeCase(id) => {
+                                    if close_clicked {
+                                        close_intake_case = Some(id.clone());
                                     }
                                 }
                             }
@@ -2612,6 +3165,30 @@ impl CareLibreApp {
                                         }
                                     });
                             }
+                            ColumnKind::IntakeCase(id) => {
+                                Frame::new()
+                                    .fill(theme::bg())
+                                    .corner_radius(CornerRadius {
+                                        nw: 0,
+                                        ne: 0,
+                                        sw: 9,
+                                        se: 9,
+                                    })
+                                    .inner_margin(Margin::same(12))
+                                    .show(ui, |ui| {
+                                        ui.set_min_height((height - 40.0).max(120.0));
+                                        if let Some(state) = self.intake_case_columns.get_mut(id)
+                                            && let Some(action) =
+                                                pages::intake::board::show_case_column(
+                                                    ui,
+                                                    state,
+                                                    &self.intake_board.fields,
+                                                )
+                                        {
+                                            intake_case_actions.push((id.clone(), action));
+                                        }
+                                    });
+                            }
                         }
                     });
 
@@ -2703,6 +3280,12 @@ impl CareLibreApp {
         if let Some(key) = close_organisation {
             self.close_organisation_editor(&key);
         }
+        if let Some(id) = close_intake_case {
+            self.close_intake_case(&id);
+        }
+        for (id, action) in intake_case_actions {
+            self.handle_intake_case_action(&id, action);
+        }
         for (id, action) in editor_actions {
             let ctx = ui.ctx().clone();
             self.handle_editor_action(&ctx, &id, action);
@@ -2753,6 +3336,14 @@ impl CareLibreApp {
                     self.organisation_editors.remove(&key);
                     removed_any |= self.columns.len() != before;
                 }
+                ColumnKind::IntakeCase(id) => {
+                    let before = self.columns.len();
+                    self.columns.retain(
+                        |column| !matches!(&column.kind, ColumnKind::IntakeCase(open) if open == &id),
+                    );
+                    self.intake_case_columns.remove(&id);
+                    removed_any |= self.columns.len() != before;
+                }
             }
         }
         if removed_any {
@@ -2777,6 +3368,7 @@ impl CareLibreApp {
         page_popped: bool,
         windows: &BTreeMap<String, ContactWindowState>,
         organisations: &BTreeMap<String, OrganisationEditorState>,
+        intake_cases: &BTreeMap<String, pages::intake::board::IntakeCaseColumnState>,
     ) -> (egui::Response, bool, bool, bool) {
         let mut close_clicked = false;
         let mut pop_out = false;
@@ -2828,7 +3420,7 @@ impl CareLibreApp {
                         }
                         control_rects.push(response.rect);
                     }
-                    ColumnKind::Organisation(_) => {}
+                    ColumnKind::Organisation(_) | ColumnKind::IntakeCase(_) => {}
                 }
 
                 let controls_left = control_rects
@@ -2871,6 +3463,15 @@ impl CareLibreApp {
                             });
                         ("🏢", name, subtitle)
                     }
+                    ColumnKind::IntakeCase(id) => {
+                        let (name, subtitle) = intake_cases
+                            .get(id)
+                            .map(|state| (state.title(), state.subtitle()))
+                            .unwrap_or_else(|| {
+                                ("Intake case".to_owned(), "INTAKE CASE".to_owned())
+                            });
+                        ("📝", name, subtitle)
+                    }
                 };
 
                 let mut title_ui = ui.new_child(
@@ -2896,6 +3497,9 @@ impl CareLibreApp {
                 );
                 let saving = match kind {
                     ColumnKind::Contact(id) => windows.get(id).is_some_and(|window| window.saving),
+                    ColumnKind::IntakeCase(id) => intake_cases
+                        .get(id)
+                        .is_some_and(|state| state.loading || state.transitioning),
                     ColumnKind::Organisation(key) => {
                         organisations.get(key).is_some_and(|editor| editor.pending)
                     }
@@ -4028,6 +4632,291 @@ impl CareLibreApp {
 
         for event in events {
             match event {
+                RemoteEvent::IntakeFlowsLoaded { request_id, result } => {
+                    if self.intake_board.flows_request_id != Some(request_id) {
+                        continue;
+                    }
+                    self.intake_board.flows_request_id = None;
+                    self.intake_board.flows_loading = false;
+                    self.intake_board.flows_requested = false;
+                    match result {
+                        Ok(list) => {
+                            self.intake_board.flows = list.items;
+                            self.intake_board.flows_error = None;
+                        }
+                        Err(error) => {
+                            self.intake_board.flows_error = Some(error);
+                        }
+                    }
+                }
+                RemoteEvent::IntakeFieldsLoaded { request_id, result } => {
+                    if self.intake_board.fields_request_id != Some(request_id) {
+                        continue;
+                    }
+                    self.intake_board.fields_request_id = None;
+                    self.intake_board.fields_loading = false;
+                    match result {
+                        Ok(catalog) => {
+                            self.intake_board.fields = catalog.fields;
+                            self.intake_board.fields_error = None;
+                            let fields = self.intake_board.fields.clone();
+                            for state in self.intake_case_columns.values_mut() {
+                                if !state.dirty {
+                                    state.load_drafts(&fields);
+                                }
+                            }
+                        }
+                        Err(error) => {
+                            self.intake_board.fields_error = Some(error);
+                        }
+                    }
+                }
+                RemoteEvent::IntakeContactsMatched { request_id, result } => {
+                    if self.intake_board.contacts_request_id != Some(request_id) {
+                        continue;
+                    }
+                    self.intake_board.contacts_request_id = None;
+                    match result {
+                        Ok(list) => {
+                            self.intake_board.new_candidates = list.candidates;
+                            self.intake_board.new_error = None;
+                        }
+                        Err(error) => {
+                            self.intake_board.new_error = Some(error);
+                        }
+                    }
+                }
+                RemoteEvent::IntakeCaseCreated { request_id, result } => {
+                    if self.intake_board.new_request_id != Some(request_id) {
+                        continue;
+                    }
+                    self.intake_board.new_request_id = None;
+                    self.intake_board.new_saving = false;
+                    match result {
+                        Ok(response) => {
+                            let detail = response.case;
+                            let case_id = detail.case.id.clone();
+                            self.intake_board.new_open = false;
+                            self.intake_board.new_error = None;
+                            self.intake_board.new_candidates.clear();
+                            self.intake_board.new_contact_id = None;
+                            let fields = self.intake_board.fields.clone();
+                            let mut state =
+                                pages::intake::board::IntakeCaseColumnState::new(case_id.clone());
+                            state.apply_case(detail, &fields);
+                            self.intake_case_columns.insert(case_id.clone(), state);
+                            self.open_intake_case(case_id);
+                            self.intake_board.reset_board();
+                            self.request_intake_board();
+                        }
+                        Err(error) => {
+                            self.intake_board.new_error = Some(error);
+                        }
+                    }
+                }
+                RemoteEvent::IntakeCaseUpdated {
+                    request_id,
+                    case_id,
+                    result,
+                } => {
+                    let matches = self
+                        .intake_case_columns
+                        .get(&case_id)
+                        .is_some_and(|state| state.save_request_id == Some(request_id));
+                    if !matches {
+                        continue;
+                    }
+                    let fields = self.intake_board.fields.clone();
+                    let case = self.intake_case_columns.get_mut(&case_id);
+                    let Some(state) = case else {
+                        continue;
+                    };
+                    state.saving = false;
+                    state.save_request_id = None;
+                    match result {
+                        Ok(detail) => {
+                            state.apply_case(detail, &fields);
+                            self.intake_board.reset_board();
+                            self.request_intake_board();
+                        }
+                        Err(error) => {
+                            state.save_error = Some(error);
+                        }
+                    }
+                }
+                RemoteEvent::IntakeChecklistToggled {
+                    request_id,
+                    case_id,
+                    result,
+                } => {
+                    let matches = self
+                        .intake_case_columns
+                        .get(&case_id)
+                        .is_some_and(|state| state.checklist_request_id == Some(request_id));
+                    if !matches {
+                        continue;
+                    }
+                    let state = self.intake_case_columns.get_mut(&case_id);
+                    let Some(state) = state else {
+                        continue;
+                    };
+                    state.checklist_pending = false;
+                    state.checklist_request_id = None;
+                    match result {
+                        Ok(response) => {
+                            state.save_error = None;
+                            state.checklist_error = None;
+                            if let Some(case) = state.case.as_mut() {
+                                let item_id = response.item.id.clone();
+                                if let Some(item) =
+                                    case.checklist.iter_mut().find(|item| item.id == item_id)
+                                {
+                                    *item = response.item;
+                                }
+                                case.case.checklist = response.checklist;
+                            }
+                            self.intake_board.reset_board();
+                            self.request_intake_board();
+                        }
+                        Err(error) => {
+                            state.checklist_error = Some(error);
+                        }
+                    }
+                }
+                RemoteEvent::IntakeCaseCancelled {
+                    request_id,
+                    case_id,
+                    result,
+                } => {
+                    let matches = self
+                        .intake_case_columns
+                        .get(&case_id)
+                        .is_some_and(|state| state.cancel_request_id == Some(request_id));
+                    if !matches {
+                        continue;
+                    }
+                    let fields = self.intake_board.fields.clone();
+                    let state = self.intake_case_columns.get_mut(&case_id);
+                    let Some(state) = state else {
+                        continue;
+                    };
+                    state.cancel_saving = false;
+                    state.cancel_request_id = None;
+                    match result {
+                        Ok(detail) => {
+                            state.apply_case(detail, &fields);
+                            self.intake_board.reset_board();
+                            self.request_intake_board();
+                            self.notify(ctx, "Intake case cancelled.");
+                        }
+                        Err(error) => {
+                            state.cancel_error = Some(error);
+                        }
+                    }
+                }
+                RemoteEvent::IntakeCaseDeleted {
+                    request_id,
+                    case_id,
+                    result,
+                } => {
+                    if self.discard_intake_request != Some(request_id) {
+                        continue;
+                    }
+                    self.discard_intake_request = None;
+                    match result {
+                        Ok(()) => {
+                            self.discard_intake_case = None;
+                            self.discard_intake_error = None;
+                            self.force_close_intake_case(&case_id);
+                            self.intake_board.reset_board();
+                            self.request_intake_board();
+                            self.notify(ctx, "Draft intake deleted.");
+                        }
+                        Err(error) => {
+                            self.discard_intake_error = Some(error);
+                        }
+                    }
+                }
+                RemoteEvent::IntakeBoardLoaded { request_id, result } => {
+                    if self.intake_board.board_request_id != Some(request_id) {
+                        continue;
+                    }
+                    self.intake_board.board_request_id = None;
+                    self.intake_board.board_loading = false;
+                    self.intake_board.board_requested = false;
+                    match result {
+                        Ok(board) => {
+                            self.intake_board.board = Some(board);
+                            self.intake_board.board_error = None;
+                        }
+                        Err(error) => {
+                            self.intake_board.board_error = Some(error);
+                        }
+                    }
+                }
+                RemoteEvent::IntakeCaseLoaded {
+                    request_id,
+                    case_id,
+                    result,
+                } => {
+                    let matches = self
+                        .intake_case_columns
+                        .get(&case_id)
+                        .is_some_and(|state| state.request_id == Some(request_id));
+                    if !matches {
+                        continue;
+                    }
+                    if let Some(state) = self.intake_case_columns.get_mut(&case_id) {
+                        state.request_id = None;
+                        state.loading = false;
+                        state.requested = false;
+                    }
+                    match result {
+                        Ok(case) => {
+                            let fields = self.intake_board.fields.clone();
+                            if let Some(state) = self.intake_case_columns.get_mut(&case_id) {
+                                state.apply_case(case, &fields);
+                            }
+                        }
+                        Err(error) => {
+                            if let Some(state) = self.intake_case_columns.get_mut(&case_id) {
+                                state.error = Some(error);
+                            }
+                        }
+                    }
+                }
+                RemoteEvent::IntakeCaseTransitioned {
+                    request_id,
+                    case_id,
+                    result,
+                } => {
+                    let matches = self
+                        .intake_case_columns
+                        .get(&case_id)
+                        .is_some_and(|state| state.transition_request_id == Some(request_id));
+                    if !matches {
+                        continue;
+                    }
+                    self.intake_board.reset_board();
+                    match result {
+                        Ok(case) => {
+                            let fields = self.intake_board.fields.clone();
+                            if let Some(state) = self.intake_case_columns.get_mut(&case_id) {
+                                state.apply_case(case, &fields);
+                            }
+                            self.request_intake_board();
+                        }
+                        Err(error) => {
+                            if let Some(state) = self.intake_case_columns.get_mut(&case_id) {
+                                state.transition_error = Some(error);
+                            }
+                        }
+                    }
+                    if let Some(state) = self.intake_case_columns.get_mut(&case_id) {
+                        state.transition_request_id = None;
+                        state.transitioning = false;
+                    }
+                }
                 RemoteEvent::ContactsListed {
                     request_id,
                     filter,
@@ -5544,20 +6433,6 @@ impl CareLibreApp {
 
                         ui.add_space(4.0);
 
-                        let intake_button = ui.add(
-                            egui::Button::new(
-                                RichText::new("+  Intake")
-                                    .color(theme::on_accent())
-                                    .font(theme::strong_font(13.0)),
-                            )
-                            .fill(theme::accent())
-                            .corner_radius(CornerRadius::same(8))
-                            .min_size(vec2(92.0, 32.0)),
-                        );
-                        if intake_button.clicked() {
-                            self.open_intake();
-                        }
-
                         let close_all_target = if self.visible_column_count() > 1 {
                             1.0
                         } else {
@@ -5717,8 +6592,8 @@ impl CareLibreApp {
                 if nav_button(
                     &mut menu_ui,
                     "📝",
-                    "Start intake",
-                    "Guided onboarding for clients, workers and other contacts.",
+                    "Intake",
+                    "Enquiries, referrals and onboarding across configurable stages.",
                     centeredness,
                     38.0 + 8.0 * centeredness,
                 )

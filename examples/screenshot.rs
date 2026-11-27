@@ -69,6 +69,9 @@ fn main() {
     let org_hover = args.iter().any(|arg| arg == "--org-hover");
     let funding = args.iter().any(|arg| arg == "--funding");
     let qualities = args.iter().any(|arg| arg == "--qualities");
+    let intake_case = args.iter().any(|arg| arg == "--intake-case");
+    let new_intake = args.iter().any(|arg| arg == "--new-intake");
+    let intake_path = args.iter().any(|arg| arg == "--intake-path");
     // With --relationships: open the first relationship's history or actions menu.
     let history = args.iter().any(|arg| arg == "--history");
     let actions = args.iter().any(|arg| arg == "--actions");
@@ -152,7 +155,7 @@ fn main() {
                 if Instant::now() >= deadline {
                     panic!("timed out signing in");
                 }
-                harness.run();
+                harness.step();
                 std::thread::sleep(Duration::from_millis(25));
             }
         }
@@ -162,14 +165,14 @@ fn main() {
             if Instant::now() >= deadline {
                 panic!("timed out waiting for the local cache");
             }
-            harness.run();
+            harness.step();
             std::thread::sleep(Duration::from_millis(25));
         }
 
         if login.is_some() {
             let deadline = Instant::now() + Duration::from_secs(10);
             while harness.state().server_contacts_loaded() == 0 && Instant::now() < deadline {
-                harness.run();
+                harness.step();
                 std::thread::sleep(Duration::from_millis(25));
             }
         }
@@ -212,6 +215,29 @@ fn main() {
                     .next()
                     .expect("an organisation card")
                     .click();
+                harness.run();
+            }
+        }
+
+        if page == Page::Intake {
+            let deadline = Instant::now() + Duration::from_secs(15);
+            while !harness.state().intake_board_ready() && Instant::now() < deadline {
+                harness.step();
+                std::thread::sleep(Duration::from_millis(25));
+            }
+            if intake_case && harness.state_mut().open_first_intake_case() {
+                let deadline = Instant::now() + Duration::from_secs(15);
+                while !harness.state().intake_case_column_ready() && Instant::now() < deadline {
+                    harness.step();
+                    std::thread::sleep(Duration::from_millis(25));
+                }
+            }
+            if new_intake {
+                harness.get_by_label("+ New intake").click();
+                harness.run();
+            }
+            if intake_path {
+                harness.get_by_label("Path").scroll_to_me();
                 harness.run();
             }
         }

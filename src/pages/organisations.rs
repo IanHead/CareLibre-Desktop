@@ -535,13 +535,13 @@ pub fn show_editor(
             field(ui, "Name", &mut state.form.name);
             ui.columns(2, |columns| {
                 kind_field(&mut columns[0], "Kind", &mut state.form.kind);
-                field(&mut columns[1], "ABN", &mut state.form.abn);
+                crate::forms::digits_field(&mut columns[1], "ABN", &mut state.form.abn);
             });
             ui.columns(2, |columns| {
-                field(&mut columns[0], "Email", &mut state.form.email);
-                field(&mut columns[1], "Phone", &mut state.form.phone);
+                crate::forms::email_field(&mut columns[0], "Email", &mut state.form.email);
+                crate::forms::phone_field(&mut columns[1], "Phone", &mut state.form.phone);
             });
-            field(ui, "Website", &mut state.form.website);
+            crate::forms::url_field(ui, "Website", &mut state.form.website);
 
             ui.label(RichText::new("Notes").color(theme::faint()).size(10.5));
             let notes = ui.add(

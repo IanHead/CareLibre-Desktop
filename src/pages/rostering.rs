@@ -1757,9 +1757,12 @@ fn editor_card(
         });
 
         ui.horizontal_wrapped(|ui| {
-            field_sized(ui, "Date", &mut editor.date, 110.0);
-            field_sized(ui, "Start", &mut editor.start, 70.0);
-            field_sized(ui, "End", &mut editor.end, 70.0);
+            ui.label(RichText::new("Date").color(theme::muted()).size(10.5));
+            crate::forms::date_input(ui, "shift-date", &mut editor.date);
+            ui.label(RichText::new("Start").color(theme::muted()).size(10.5));
+            crate::forms::time_input(ui, &mut editor.start);
+            ui.label(RichText::new("End").color(theme::muted()).size(10.5));
+            crate::forms::time_input(ui, &mut editor.end);
 
             ui.label(RichText::new("Site").color(theme::muted()).size(10.5));
             let site_label = editor
@@ -1813,8 +1816,14 @@ fn editor_card(
                     });
                 name_combo(&recurrence.response, "Recurrence");
                 if editor.recurrence != "none" {
-                    field_sized(ui, "Occurrences", &mut editor.recurrence_count, 60.0);
-                    field_sized(ui, "or until", &mut editor.recurrence_until, 110.0);
+                    ui.label(
+                        RichText::new("Occurrences")
+                            .color(theme::muted())
+                            .size(10.5),
+                    );
+                    crate::forms::number_sized(ui, &mut editor.recurrence_count, 60.0, true);
+                    ui.label(RichText::new("or until").color(theme::muted()).size(10.5));
+                    crate::forms::date_input(ui, "recurrence-until", &mut editor.recurrence_until);
                     ui.label(
                         RichText::new("Up to 100 shifts; dates use local wall time.")
                             .color(theme::faint())
@@ -1915,9 +1924,12 @@ fn paste_card(ui: &mut Ui, paste: &mut PasteForm, action: &mut Option<RosteringA
             });
         });
         ui.horizontal_wrapped(|ui| {
-            field_sized(ui, "Date", &mut paste.date, 110.0);
-            field_sized(ui, "Start", &mut paste.start, 70.0);
-            field_sized(ui, "End", &mut paste.end, 70.0);
+            ui.label(RichText::new("Date").color(theme::muted()).size(10.5));
+            crate::forms::date_input(ui, "paste-date", &mut paste.date);
+            ui.label(RichText::new("Start").color(theme::muted()).size(10.5));
+            crate::forms::time_input(ui, &mut paste.start);
+            ui.label(RichText::new("End").color(theme::muted()).size(10.5));
+            crate::forms::time_input(ui, &mut paste.end);
             ui.checkbox(
                 &mut paste.include_assignments,
                 RichText::new("Copy assignments").size(11.0),
