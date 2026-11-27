@@ -8,7 +8,8 @@ use eframe::egui::{
 };
 
 use crate::organisation::{
-    ApiOrganisation, ApiOrganisationWrite, OrganisationStatusFilter, optional,
+    ApiOrganisation, ApiOrganisationWrite, ORGANISATION_KINDS, OrganisationStatusFilter,
+    kind_label, optional,
 };
 use crate::theme;
 
@@ -533,7 +534,7 @@ pub fn show_editor(
 
             field(ui, "Name", &mut state.form.name);
             ui.columns(2, |columns| {
-                field(&mut columns[0], "Kind", &mut state.form.kind);
+                kind_field(&mut columns[0], "Kind", &mut state.form.kind);
                 field(&mut columns[1], "ABN", &mut state.form.abn);
             });
             ui.columns(2, |columns| {
@@ -796,18 +797,37 @@ fn row(ui: &mut Ui, organisation: &ApiOrganisation) -> bool {
     response.clicked()
 }
 
-fn kind_label(kind: &str) -> String {
-    kind.split(['_', '-', ' '])
-        .filter(|word| !word.is_empty())
-        .map(|word| {
-            let mut characters = word.chars();
-            match characters.next() {
-                Some(first) => first.to_uppercase().collect::<String>() + characters.as_str(),
-                None => String::new(),
-            }
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
+fn kind_field(ui: &mut Ui, label: &str, value: &mut String) {
+    ui.vertical(|ui| {
+        ui.label(RichText::new(label).color(theme::faint()).size(10.5));
+        let mut current = value.clone();
+        let response = egui::ComboBox::from_id_salt("organisation-kind")
+            .selected_text(if current.is_empty() {
+                "Select…".to_owned()
+            } else {
+                kind_label(&current)
+            })
+            .width(ui.available_width())
+            .show_ui(ui, |ui| {
+                ui.selectable_value(&mut current, String::new(), "Not set");
+                for kind in ORGANISATION_KINDS {
+                    ui.selectable_value(&mut current, (*kind).to_owned(), kind_label(kind));
+                }
+                // Records written before Kind became a picklist may hold an
+                // arbitrary descriptor. Keep it selectable so saving an
+                // unrelated change does not silently clear it.
+                if !current.is_empty() && !ORGANISATION_KINDS.contains(&current.as_str()) {
+                    let legacy = current.clone();
+                    ui.selectable_value(&mut current, legacy.clone(), kind_label(&legacy));
+                }
+            });
+        response.response.widget_info(|| {
+            egui::WidgetInfo::labeled(egui::Role::ComboBox, ui.is_enabled(), label)
+        });
+        if current != *value {
+            *value = current;
+        }
+    });
 }
 
 fn field(ui: &mut Ui, label: &str, value: &mut String) {

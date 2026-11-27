@@ -77,7 +77,71 @@ impl OrganisationStatusFilter {
     }
 }
 
+/// The kinds offered by the organisation editor picklist.
+///
+/// Values are stored in snake_case to match the descriptors the server seeds
+/// and imports use. Existing records may still hold other free-text kinds; the
+/// editor keeps those selectable so editing does not discard them.
+pub const ORGANISATION_KINDS: &[&str] = &[
+    "provider",
+    "broker",
+    "agency",
+    "health",
+    "medical_specialists",
+    "allied_health",
+    "pharmacy",
+    "support_coordinator",
+    "plan_manager",
+    "transport",
+    "equipment",
+    "advocacy",
+    "government",
+    "local_business",
+    "other",
+];
+
+/// Formats a stored kind value for display, e.g. `support_coordinator` becomes
+/// `Support Coordinator`.
+pub fn kind_label(kind: &str) -> String {
+    kind.split(['_', '-', ' '])
+        .filter(|word| !word.is_empty())
+        .map(|word| {
+            let mut characters = word.chars();
+            match characters.next() {
+                Some(first) => first.to_uppercase().collect::<String>() + characters.as_str(),
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 pub fn optional(value: &str) -> Option<String> {
     let value = value.trim();
     (!value.is_empty()).then(|| value.to_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn kind_picklist_covers_the_known_descriptors() {
+        for kind in [
+            "provider",
+            "broker",
+            "agency",
+            "health",
+            "support_coordinator",
+        ] {
+            assert!(ORGANISATION_KINDS.contains(&kind), "{kind} is missing");
+        }
+    }
+
+    #[test]
+    fn kind_labels_are_human_readable() {
+        assert_eq!(kind_label("support_coordinator"), "Support Coordinator");
+        assert_eq!(kind_label("local-business"), "Local Business");
+        assert_eq!(kind_label("provider"), "Provider");
+    }
 }
