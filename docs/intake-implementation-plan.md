@@ -176,9 +176,8 @@ A **flow** is a complete pipeline for one subject kind and variant:
 
 - client / standard
 - client / aged care
-- client / disability (parent and a runnable generic flow)
-- client / disability / standard
-- client / disability / emergency
+- client / disability standard
+- client / disability emergency
 - client / fee for service
 - worker / standard
 - other contact / standard
@@ -1113,7 +1112,9 @@ Remaining Phase 0 work:
 - Capabilities and persona seeds.
 - Flow/stage config CRUD and field catalogue.
 - Server admin pages for flows, stages, fields, actions, checklists and assignees.
-- Seed the nine default flows, each with the six default stages.
+- Seed the eight default flows, each with the six default stages. The generic
+  `client_disability` parent was removed because it duplicated the standard pipeline;
+  the disability standard/emergency variants are top-level flows.
 - Integration tests for config and permissions.
 
 **Exit:** an admin can define a flow and its stages; the API returns a complete
@@ -1296,18 +1297,115 @@ edited but funding and rostering cannot", and both the UI and API enforce it.
 
 ---
 
-## 17. Next step
+## 17. Current state and next step
 
-The ADR and API contract are drafted:
+The ADR and API contract are written:
 
 - `CareLibre/docs/adr/0013-intake-cases.md`
 - `CareLibre/docs/intake.md`
 
-Review and accept them, then:
+Phases 1 and 2 are implemented on `CareLibre` branch `feature/intake-cases`:
+schema, capabilities, seeded flows, configuration API, server admin configuration and a
+read-only admin board, case creation/matching, board/list APIs, transitions, checklist
+gates, assignment resolution, in-app notifications, onboarding role linking and contact
+lifecycle.
 
-1. Implement Phase 1: migration, capabilities, config API, server admin UI and default flow
-   seed.
-2. Implement Phase 2: transactional contact + case creation at enquiry, duplicate matching,
-   transitions, board API and lifecycle rules.
-3. Start the desktop board once the board response is stable; keep the old wizard only as a
-   migration fallback.
+Next:
+
+1. Build the interactive desktop board and case detail (Phase 3).
+2. Add the desktop notification bell and action-policy disabling (Phases 4–5).
+3. Add referrals/waitlist and lifecycle polish (Phase 6).
+4. Revisit the provider discovery gaps in Appendix A before finalising the roadmap.
+
+---
+
+## Appendix A — Provider discovery notes (November 2026)
+
+These notes summarise operational reality from intake discovery sessions. They are
+sanitised: names, individuals and identifying details are deliberately omitted. They
+inform sequencing and future scope; they are not a commitment for the first desktop board.
+
+### How intake actually runs today
+
+- Some intakes arrive as **leads already in the CRM**, started by another coordinator;
+  others arrive as direct calls. Direct calls can land with the aged-care team first.
+- Aged care work is physically tracked on a whiteboard; the intake board should replace it.
+- Aged care needs a **referral code entered into the MAC portal first**. Funding problems are
+  often visible immediately. The person then goes onto the MAC waitlist, and the MAC record is
+  transcribed into the CRM. An API integration to pull MAC data is a possible stretch goal.
+- Different document packs apply by domain. Aged care and community variants differ. The
+  current pack includes new-client, risk, in-home support, consent, falls/Barthel and advance
+  care plan documents depending on the care domain.
+- Aged-care clients usually do not complete online forms. Staff fill the form on the phone or
+  in person, then visit to get signatures, take photos, and return. Some clients still need
+  printed copies. Consents are difficult on small phone screens.
+- Community supports are quoted before delivery; no supports start until the quote is agreed
+  and approved. SAH funding is visible up front, so it is budgeted rather than quoted.
+- Brokerage referrals are usually short-term PAC/hospital or carer-support referrals. They
+  turn around quickly; the risk assessment is often compressed or skipped in practice.
+- Emergency intakes bypass the normal coordinator, often happen after hours, and can come from
+  child protection or similar agencies. The referrer may not know the funding source.
+- Emergency intake needs only enough information to write a safe care plan, populate the
+  worker mobile app, and warn workers about immediate risks. Placeholder data is acceptable.
+  Documentation and funding are completed after rostering starts.
+- Emergency supports can be grafted onto existing rosters. Care plans may be temporary.
+  Billing can sometimes happen before delivery for agency-funded work.
+- Documents still live on a shared drive because upload/storage and e-signing are seen as
+  clunky. Drag-and-drop upload into the right folder would be valuable.
+- Cold enquiries currently disappear into the ether; coordinators lack a reliable follow-up
+  store and prompts.
+- Support coordinators may guess at remaining funding and withhold evidence. Providers need
+  evidence of **remaining funds**, not just a plan total, and can ask for it early with a
+  gentle advisory that it is optional but speeds up intake.
+- Intake handoffs are organised by type: aged care/community, brokerage, fee-for-service and
+  respite are handled by different people. Stage assignment alone may not capture this.
+- The fields used most are the detailed profile and notes/forms (referral forms and follow-up
+  notes). Accommodation EOI forms duplicate much of the new-client form.
+- After an emergency is rostered, the team circles back to finish documentation and funding.
+
+### Feature gaps to consider later
+
+| Gap | Why it matters | Suggested home |
+|---|---|---|
+| CRM lead linkage and referral code | Avoid duplicate entry and support MAC-first workflows | `intake_cases.crm_lead_id`, `external_referral_code`; CRM import |
+| MAC portal integration | Aged care starts with a MAC code and waitlist entry | Future integration; stretch goal |
+| Document requirements per flow/domain | Document packs differ by aged care/community/care domain | Flow/stage document requirements, document records |
+| Document upload, storage and drag-and-drop | Shared drive is still used for agreements and copies | Documents workspace; storage integration |
+| Generated forms, e-sign and print | Older clients often need staff-assisted or printed forms | Document merge templates; e-sign provider |
+| Call transcription into new-client forms | Staff currently transcribe long conversations | AI-assisted form fill with consent; deferred |
+| Emergency intake mode | Required fields block work when a name/address is unavailable | Per-flow optional-required fields, placeholder values, completeness flags |
+| Minimum roster-readiness checklist | Workers need care plan, warnings and app access before first shift | Separate readiness policy from document completeness |
+| Post-intake catch-up tasks | Funding and documents finish after rostering | Case tasks/reminders, not just stage checklists |
+| Cold-enquiry follow-up | Enquiries currently go cold with no prompt | Follow-up tasks, SLA reminders, stale filter |
+| Type-based assignment groups | Work is split by aged care/community/brokerage/fee-for-service/respite | Assignment groups or permission-set queues per intake type |
+| Quote-required and budget-only modes | Community is quoted; SAH is budgeted; emergency may skip quoting | `quote_required` flag and links to Quote Builder/agreements |
+| Funding evidence capture | Coordinators may withhold or guess remaining funds | Attachment/evidence field with advisory copy |
+| Brokerage fast lane | Short-term PAC referrals need a compressed flow | Brokerage flow variant with minimal gates |
+| Fee-for-service short form | Only basic contact details are needed | Dedicated short flow |
+| Accommodation EOI | Word form duplicates new-client data | EOI flow or document template |
+| External referrer portal / no-name quotes | Referrers sometimes request a quote without a name | Referral intake endpoint/portal; deferred |
+| Shared-drive/deep-link integration | Staff rely on folder drag-and-drop | Storage integration; deferred |
+| Pre-delivery billing exceptions | Some agency work pays before delivery | Finance exception workflow; outside intake core |
+
+### What the current design already handles
+
+- Configurable flows and stage columns.
+- Per-stage field visibility, required fields and checklists.
+- Named-user and queue-based assignment and in-app alerts.
+- Division/subdivision filtering.
+- Contact created at enquiry and reused across attempts.
+- Stage checklists, contact lifecycle and onboarding.
+- Flow variants for aged care, disability standard/emergency and fee-for-service.
+
+### Planning consequences
+
+1. Keep emergency intake as a **flow variant** with relaxed required fields and a separate
+   roster-readiness checklist, rather than weakening validation globally.
+2. Treat documents as a first-class future workspace. Checklist items can track “document
+   received” now, but they do not replace document storage or e-signing.
+3. Model referral code, CRM lead and funding-evidence status on the case before building
+   reporting, because they are the fields coordinators most need to see on the board.
+4. Allow assignment by intake type (aged care/community, brokerage, fee-for-service,
+   respite) in addition to stage.
+5. Do not assume every client can use an online form or phone signature. The desktop should
+   support staff-assisted entry and print flows even if mobile/portal forms come later.
