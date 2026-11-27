@@ -276,10 +276,12 @@ latency). The full architecture and roadmap for local-first caching and delta sy
 
 ## Development
 
+CI runs only for releases. Run these checks locally before opening a pull request:
+
 ```sh
+cargo fmt --all -- --check # formatting
+cargo clippy --all-targets -- -D warnings
 cargo test                 # UI smoke tests and navigation checks
-cargo clippy --all-targets # lints
-cargo fmt                  # formatting
 ```
 
 ### Headless screenshots

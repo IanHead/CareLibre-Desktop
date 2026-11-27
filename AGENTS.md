@@ -18,6 +18,9 @@ lists are virtualised.
 - Do not commit unrelated changes, generated files or another person's work in
   progress. Check `git status` before staging.
 - Do not rewrite or discard uncommitted changes unless explicitly asked.
+- CI runs only for releases. Run the local checks before pushing or opening a
+  pull request; GitHub Actions is the release gate, not the everyday feedback
+  loop.
 - Prefer small, focused commits. Commit subjects are short imperative sentences in
   sentence case with no conventional-commit prefix, for example
   `Add relationship constellation and organisation management`.
@@ -30,6 +33,7 @@ lists are virtualised.
 cargo run                     # development build
 cargo run --release           # release build
 cargo fmt --all               # format
+cargo fmt --all -- --check    # verify formatting without changing files
 cargo clippy --all-targets -- -D warnings
 cargo test                    # UI smoke tests, navigation and store tests
 cargo test --test server_live -- --ignored   # needs a running server
@@ -73,8 +77,9 @@ cargo run --example screenshot -- docs/contacts.png contacts --live \
 
 ## Conventions
 
-- Rust 2024 edition, `rustfmt` formatting and Clippy with warnings denied. CI runs
-  fmt, Clippy, tests and a release build on Linux, Windows and macOS.
+- Rust 2024 edition, `rustfmt` formatting and Clippy with warnings denied. Release CI
+  runs fmt, Clippy, tests and a release build on Linux, Windows and macOS; run the
+  same checks locally first.
 - Keep network, database and other blocking work off the UI thread. Long-running or
   fallible work goes through background workers and channels, with the UI rendering
   the last snapshot.
