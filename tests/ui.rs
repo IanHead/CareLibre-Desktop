@@ -34,6 +34,9 @@ fn test_auth() -> AuthSession {
 
 fn harness_with(app: CareLibreApp, signed_in: bool) -> Harness<'static, CareLibreApp> {
     let mut app = app;
+    // Sidebar tests start from the expanded menu regardless of the developer's
+    // saved preference.
+    app.set_menu_collapsed(false);
     if signed_in {
         app.use_session(test_auth());
     }
@@ -114,6 +117,116 @@ fn sidebar_navigation_works() {
     harness.run();
 
     assert_eq!(harness.state().page(), Page::Rostering);
+}
+
+#[test]
+fn launcher_menu_is_not_collapsible() {
+    let mut harness = harness(CareLibreApp::new());
+    harness.run();
+
+    assert_eq!(harness.query_all_by_label("Collapse menu").count(), 0);
+    assert_eq!(harness.query_all_by_label("Expand menu").count(), 0);
+}
+
+#[test]
+fn ctrl_b_toggles_the_docked_menu() {
+    let mut app = CareLibreApp::new();
+    app.set_page(Page::Contacts);
+    let mut harness = harness(app);
+    harness.run();
+
+    assert!(!harness.state().menu_collapsed());
+    harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::B);
+    harness.run_steps(40);
+    assert!(harness.state().menu_collapsed());
+
+    harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::B);
+    harness.run_steps(40);
+    assert!(!harness.state().menu_collapsed());
+}
+
+#[test]
+fn ctrl_b_does_not_collapse_the_launcher() {
+    let mut harness = harness(CareLibreApp::new());
+    harness.run();
+
+    harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::B);
+    harness.run();
+
+    assert!(!harness.state().menu_collapsed());
+}
+
+#[test]
+fn rail_icons_show_instant_bubble_tooltips() {
+    let mut app = CareLibreApp::new();
+    app.set_page(Page::Contacts);
+    let mut harness = harness(app);
+    harness.state_mut().set_menu_collapsed(true);
+    harness.run_steps(40);
+
+    harness
+        .get_by_role_and_label(egui::Role::Button, "Contacts")
+        .hover();
+    harness.run();
+
+    assert_eq!(
+        harness
+            .query_all_by_label_contains("Everyone the organisation works with")
+            .count(),
+        1,
+        "hovering a rail icon should show its description straight away"
+    );
+}
+
+#[test]
+fn docked_menu_collapses_to_a_rail_and_expands_again() {
+    let mut app = CareLibreApp::new();
+    app.set_page(Page::Contacts);
+    let mut harness = harness(app);
+    harness.run();
+
+    assert!(!harness.state().menu_collapsed());
+    let expanded_contacts = harness
+        .get_by_role_and_label(egui::Role::Button, "Contacts")
+        .rect();
+    assert!(
+        expanded_contacts.right() > 150.0,
+        "expected the full docked menu, got {expanded_contacts:?}"
+    );
+
+    harness
+        .get_by_role_and_label(egui::Role::Button, "Collapse menu")
+        .click();
+    harness.run_steps(40);
+
+    assert!(harness.state().menu_collapsed());
+    let rail_contacts = harness
+        .get_by_role_and_label(egui::Role::Button, "Contacts")
+        .rect();
+    assert!(
+        rail_contacts.right() < 100.0,
+        "expected the icon rail, got {rail_contacts:?}"
+    );
+    assert!(rail_contacts.width() < expanded_contacts.width());
+
+    // Navigation stays available from the rail and keeps it collapsed.
+    harness
+        .get_by_role_and_label(egui::Role::Button, "Rostering")
+        .click();
+    harness.run();
+    assert_eq!(harness.state().page(), Page::Rostering);
+    assert!(harness.state().menu_collapsed());
+
+    harness
+        .get_by_role_and_label(egui::Role::Button, "Expand menu")
+        .click();
+    harness.run_steps(40);
+
+    assert!(!harness.state().menu_collapsed());
+    let expanded_again = harness
+        .get_by_role_and_label(egui::Role::Button, "Contacts")
+        .rect();
+    assert!(expanded_again.width() > rail_contacts.width());
 }
 
 #[test]
@@ -255,6 +368,7 @@ fn close_all_button_animates_and_makes_room() {
     app.set_page(Page::Contacts);
     app.use_session(test_auth());
     app.set_theme_mode(ThemeMode::Dark);
+    app.set_menu_collapsed(false);
     let mut harness = Harness::builder()
         .with_size(egui::vec2(1280.0, 800.0))
         .with_max_steps(40)

@@ -56,6 +56,9 @@ pub struct Config {
     pub theme: ThemeMode,
     #[serde(default)]
     pub client_side_decorations: bool,
+    /// Whether the docked main menu is collapsed to its icon rail.
+    #[serde(default)]
+    pub menu_collapsed: bool,
     #[serde(default)]
     pub remember_login: bool,
     #[serde(default)]
@@ -74,6 +77,7 @@ impl Default for Config {
             // Existing configs that predate this field keep native decorations,
             // because the field-level serde default below is `false`.
             client_side_decorations: true,
+            menu_collapsed: false,
             remember_login: false,
             remembered_email: None,
             relationship_views: BTreeMap::new(),
@@ -177,6 +181,26 @@ mod tests {
         )
         .unwrap();
         assert!(!config.client_side_decorations);
+    }
+
+    #[test]
+    fn the_menu_starts_expanded() {
+        assert!(!Config::default().menu_collapsed);
+    }
+
+    #[test]
+    fn old_configs_keep_the_menu_expanded() {
+        let config: Config =
+            serde_json::from_str(r#"{"server_url":"http://127.0.0.1:8484"}"#).unwrap();
+        assert!(!config.menu_collapsed);
+    }
+
+    #[test]
+    fn a_collapsed_menu_preference_is_remembered() {
+        let config: Config =
+            serde_json::from_str(r#"{"server_url":"http://127.0.0.1:8484","menu_collapsed":true}"#)
+                .unwrap();
+        assert!(config.menu_collapsed);
     }
 
     #[test]

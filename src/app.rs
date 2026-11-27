@@ -50,6 +50,7 @@ const COLUMN_STRIP_PADDING: f32 = 10.0;
 const COLUMN_STRIP_TOP_PADDING: f32 = 10.0;
 const COLUMN_STRIP_BOTTOM_PADDING: f32 = 10.0;
 const SIDEBAR_WIDTH: f32 = 232.0;
+const SIDEBAR_RAIL_WIDTH: f32 = 64.0;
 const CENTERED_MENU_WIDTH: f32 = 440.0;
 const CENTERED_MENU_HEIGHT: f32 = 710.0;
 const COLUMN_ANIM_DURATION: f64 = 0.32;
@@ -734,6 +735,17 @@ impl CareLibreApp {
         self.settings.theme = mode;
     }
 
+    /// Collapse or expand the docked main menu for previews/tests without
+    /// persisting the preference.
+    pub fn set_menu_collapsed(&mut self, collapsed: bool) {
+        self.config.menu_collapsed = collapsed;
+    }
+
+    /// Whether the docked main menu is collapsed to its icon rail.
+    pub fn menu_collapsed(&self) -> bool {
+        self.config.menu_collapsed
+    }
+
     /// Current server connection state (for previews and integration checks).
     pub fn connection(&self) -> &ConnectionState {
         &self.server.connection
@@ -826,6 +838,15 @@ impl CareLibreApp {
         if !self.signed_in() {
             self.signed_out_shell(ui);
             return;
+        }
+
+        if !self.columns.is_empty()
+            && !ui.ctx().egui_wants_keyboard_input()
+            && ui
+                .ctx()
+                .input_mut(|input| input.consume_key(egui::Modifiers::COMMAND, egui::Key::B))
+        {
+            self.toggle_menu_collapsed(ui.ctx());
         }
 
         if self.page != self.last_page {
@@ -6346,20 +6367,15 @@ impl CareLibreApp {
         let account = self.account_badge();
         let signed_in = self.signed_in();
 
-        egui::Panel::top("top_bar")
+        let top_bar = egui::Panel::top("top_bar")
             .exact_size(64.0)
             .show_separator_line(false)
-            .frame(
-                Frame::new()
-                    .fill(theme::bg())
-                    .inner_margin(Margin {
-                        left: 20,
-                        right: 20,
-                        top: 0,
-                        bottom: 0,
-                    })
-                    .stroke(Stroke::new(1.0, theme::border())),
-            )
+            .frame(Frame::new().fill(theme::bg()).inner_margin(Margin {
+                left: 20,
+                right: 20,
+                top: 0,
+                bottom: 0,
+            }))
             .show(ui, |ui| {
                 ui.horizontal_centered(|ui| {
                     // Brand
@@ -6513,6 +6529,25 @@ impl CareLibreApp {
                     });
                 });
             });
+
+        ui.painter().hline(
+            top_bar.response.rect.x_range(),
+            top_bar.response.rect.bottom() - 0.5,
+            Stroke::new(1.0, theme::border()),
+        );
+    }
+
+    /// Collapse or expand the docked main menu and remember the choice.
+    fn toggle_menu_collapsed(&mut self, ctx: &egui::Context) {
+        self.config.menu_collapsed = !self.config.menu_collapsed;
+        // Headless previews and UI tests never connect, so they must not write
+        // to the developer's saved preferences.
+        if self.app_ctx.is_some()
+            && let Err(error) = self.config.save()
+        {
+            self.notify(ctx, format!("Could not save the menu preference: {error}"));
+        }
+        ctx.request_repaint();
     }
 
     fn sidebar(&mut self, ui: &mut Ui) {
@@ -6524,8 +6559,11 @@ impl CareLibreApp {
         let account = self.account_badge();
         let now = ui.ctx().input(|input| input.time);
         let full_width = ui.available_width().max(1.0);
-        let target = if self.columns.is_empty() {
+        let docked = !self.columns.is_empty();
+        let target = if !docked {
             full_width
+        } else if self.config.menu_collapsed {
+            SIDEBAR_RAIL_WIDTH.min(full_width)
         } else {
             SIDEBAR_WIDTH.min(full_width)
         };
@@ -6556,8 +6594,16 @@ impl CareLibreApp {
         let panel_width = self.sidebar_width.clamp(1.0, full_width);
         let centeredness =
             ((panel_width - SIDEBAR_WIDTH) / (full_width - SIDEBAR_WIDTH).max(1.0)).clamp(0.0, 1.0);
-        let content_width =
-            (SIDEBAR_WIDTH - 24.0) + (CENTERED_MENU_WIDTH - (SIDEBAR_WIDTH - 24.0)) * centeredness;
+        // 0 at the icon rail, 1 at the full docked width.
+        let rail = ((panel_width - SIDEBAR_RAIL_WIDTH)
+            / (SIDEBAR_WIDTH - SIDEBAR_RAIL_WIDTH).max(1.0))
+        .clamp(0.0, 1.0);
+        let content_width = if panel_width < SIDEBAR_WIDTH {
+            (panel_width - 24.0).max(24.0)
+        } else {
+            (SIDEBAR_WIDTH - 24.0) + (CENTERED_MENU_WIDTH - (SIDEBAR_WIDTH - 24.0)) * centeredness
+        };
+        let mut toggle_menu = false;
 
         egui::Panel::left("sidebar")
             .exact_size(panel_width)
@@ -6588,40 +6634,47 @@ impl CareLibreApp {
                 menu_ui.set_clip_rect(rect);
                 menu_ui.spacing_mut().item_spacing.y = 8.0 - 4.0 * centeredness;
 
-                group_label(&mut menu_ui, "WORKSPACE");
+                if docked {
+                    menu_ui.add_space(12.0);
+                    if menu_toggle(&mut menu_ui, self.config.menu_collapsed, rail).clicked() {
+                        toggle_menu = true;
+                    }
+                }
+
+                group_label(&mut menu_ui, "WORKSPACE", rail);
                 if nav_button(
                     &mut menu_ui,
                     "📝",
                     "Intake",
                     "Enquiries, referrals and onboarding across configurable stages.",
-                    centeredness,
-                    38.0 + 8.0 * centeredness,
+                    rail,
+                    rail,
+                    38.0 + 8.0 * rail,
                 )
                 .clicked()
                 {
                     self.open_intake();
                 }
                 for page in [Page::Contacts, Page::Organisations, Page::Rostering] {
-                    if nav_item(&mut menu_ui, page, centeredness).clicked() {
+                    if nav_item(&mut menu_ui, page, rail, rail).clicked() {
                         self.open_page(page);
                     }
                 }
 
                 menu_ui.add_space(14.0);
-                group_label(&mut menu_ui, "OPERATIONS");
+                group_label(&mut menu_ui, "OPERATIONS", rail);
                 for page in [
                     Page::Services,
                     Page::Documents,
                     Page::Communications,
                     Page::Reports,
                 ] {
-                    if nav_item(&mut menu_ui, page, centeredness).clicked() {
+                    if nav_item(&mut menu_ui, page, rail, rail).clicked() {
                         self.open_page(page);
                     }
                 }
 
-                if centeredness > 0.5
-                    && nav_item(&mut menu_ui, Page::Settings, centeredness).clicked()
+                if centeredness > 0.5 && nav_item(&mut menu_ui, Page::Settings, rail, 0.0).clicked()
                 {
                     self.open_page(Page::Settings);
                 }
@@ -6631,19 +6684,23 @@ impl CareLibreApp {
                         ui.multiply_opacity(1.0 - centeredness);
                         ui.with_layout(Layout::bottom_up(Align::Min), |ui| {
                             ui.add_space(8.0);
-                            if user_row(ui, account.as_ref()) {
+                            if user_row(ui, account.as_ref(), rail) {
                                 self.open_page(Page::Settings);
                             }
                             ui.add_space(8.0);
                             ui.separator();
                             ui.add_space(8.0);
-                            if nav_item(ui, Page::Settings, 0.0).clicked() {
+                            if nav_item(ui, Page::Settings, rail, 0.0).clicked() {
                                 self.open_page(Page::Settings);
                             }
                         });
                     });
                 }
             });
+
+        if toggle_menu {
+            self.toggle_menu_collapsed(ui.ctx());
+        }
     }
 
     /// Replace the main menu with the sign-in form while no account is
@@ -6792,14 +6849,13 @@ impl CareLibreApp {
             ),
         };
 
-        egui::Panel::bottom("status_bar")
+        let status_bar = egui::Panel::bottom("status_bar")
             .exact_size(36.0)
             .show_separator_line(false)
             .frame(
                 Frame::new()
                     .fill(theme::sidebar())
-                    .inner_margin(Margin::symmetric(20, 4))
-                    .stroke(Stroke::new(1.0, theme::border())),
+                    .inner_margin(Margin::symmetric(20, 4)),
             )
             .show(ui, |ui| {
                 ui.horizontal_centered(|ui| {
@@ -6828,6 +6884,12 @@ impl CareLibreApp {
                     });
                 });
             });
+
+        ui.painter().hline(
+            status_bar.response.rect.x_range(),
+            status_bar.response.rect.top() + 0.5,
+            Stroke::new(1.0, theme::border()),
+        );
     }
 
     fn show_notice(&mut self, ctx: &egui::Context) {
@@ -6924,19 +6986,154 @@ fn column_icon_button(ui: &mut Ui, glyph: &str, tooltip: &str) -> egui::Response
     response.on_hover_text(tooltip)
 }
 
-fn group_label(ui: &mut Ui, text: &str) {
+fn group_label(ui: &mut Ui, text: &str, opacity: f32) {
     ui.add_space(4.0);
     ui.label(
         RichText::new(text)
-            .color(theme::faint())
+            .color(theme::faint().gamma_multiply(opacity))
             .font(theme::strong_font(9.5)),
     );
     ui.add_space(4.0);
 }
 
-fn nav_item(ui: &mut Ui, page: Page, detail: f32) -> egui::Response {
+/// The chevron that collapses or expands the docked main menu.
+fn menu_toggle(ui: &mut Ui, collapsed: bool, rail: f32) -> egui::Response {
+    let label = if collapsed {
+        "Expand menu"
+    } else {
+        "Collapse menu"
+    };
+    let glyph = if collapsed { "»" } else { "«" };
+    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 32.0), Sense::hover());
+    let x = rect.center().x + (rect.right() - 16.0 - rect.center().x) * rail;
+    let hit = egui::Rect::from_center_size(egui::pos2(x, rect.center().y), vec2(32.0, 32.0));
+    let response = ui.interact(hit, ui.scope_id().with("menu-toggle"), Sense::click());
+    let hovered = response.hovered();
+
+    ui.painter().rect(
+        hit,
+        CornerRadius::same(8),
+        if hovered {
+            theme::hover()
+        } else {
+            theme::surface_raised()
+        },
+        Stroke::new(
+            1.0,
+            if hovered {
+                theme::accent()
+            } else {
+                theme::border()
+            },
+        ),
+        StrokeKind::Inside,
+    );
+
+    ui.painter().text(
+        hit.center(),
+        Align2::CENTER_CENTER,
+        glyph,
+        FontId::proportional(16.0),
+        theme::text(),
+    );
+
+    if hovered {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, ui.is_enabled(), label));
+    let shortcut = ui.ctx().format_shortcut(&egui::KeyboardShortcut::new(
+        egui::Modifiers::COMMAND,
+        egui::Key::B,
+    ));
+    bubble_tooltip(ui, &response, label, &format!("Shortcut: {shortcut}"), hit);
+    response
+}
+
+/// An instant, bubble-styled tooltip anchored to `anchor`.
+///
+/// egui's built-in tooltip waits for the pointer to settle and points at the
+/// widget's whole rect. The icon rail needs a tooltip that appears straight away
+/// and points at the glyph, so draw one in the tooltip layer and add a small
+/// tail on its left edge.
+fn bubble_tooltip(
+    ui: &Ui,
+    response: &egui::Response,
+    title: &str,
+    detail: &str,
+    anchor: egui::Rect,
+) {
+    if !response.hovered() {
+        return;
+    }
+
+    let anchor = response
+        .ctx
+        .layer_transform_to_global(response.layer_id)
+        .map_or(anchor, |transform| transform * anchor);
+
+    let mut tooltip =
+        egui::Tooltip::always_open(response.ctx.clone(), response.layer_id, response.id, anchor)
+            .gap(6.0);
+    tooltip.popup = tooltip
+        .popup
+        .align(egui::RectAlign::RIGHT)
+        .align_alternatives(&[])
+        .width(260.0)
+        .frame(
+            Frame::new()
+                .fill(theme::surface())
+                .stroke(Stroke::new(1.0, theme::border()))
+                .corner_radius(CornerRadius::same(10))
+                .inner_margin(Margin::symmetric(12, 9))
+                .shadow(egui::epaint::Shadow {
+                    offset: [0, 2],
+                    blur: 10,
+                    spread: 0,
+                    color: Color32::from_black_alpha(70),
+                }),
+        );
+
+    let Some(shown) = tooltip.show(|ui| {
+        ui.set_max_width(236.0);
+        ui.label(
+            RichText::new(title)
+                .font(theme::strong_font(12.5))
+                .color(theme::text()),
+        );
+        ui.add_space(1.0);
+        ui.label(RichText::new(detail).color(theme::muted()).size(10.5));
+    }) else {
+        return;
+    };
+
+    let bubble = shown.response.rect;
+    let painter = ui.ctx().layer_painter(shown.response.layer_id);
+    let centre_y = bubble.center().y;
+    let tip = egui::pos2(bubble.left() - 7.0, centre_y);
+    let base_top = egui::pos2(bubble.left() + 1.0, centre_y - 6.0);
+    let base_bottom = egui::pos2(bubble.left() + 1.0, centre_y + 6.0);
+    painter.add(egui::Shape::convex_polygon(
+        vec![tip, base_top, base_bottom],
+        theme::surface(),
+        Stroke::NONE,
+    ));
+    let edge = Stroke::new(1.0, theme::border());
+    painter.line_segment([tip, base_top], edge);
+    painter.line_segment([tip, base_bottom], edge);
+}
+
+fn nav_item(ui: &mut Ui, page: Page, rail: f32, detail: f32) -> egui::Response {
     let height = 38.0 + 8.0 * detail;
-    nav_button(ui, page.icon(), page.label(), page.blurb(), detail, height)
+    nav_button(
+        ui,
+        page.icon(),
+        page.label(),
+        page.blurb(),
+        rail,
+        detail,
+        height,
+    )
 }
 
 fn nav_button(
@@ -6944,6 +7141,7 @@ fn nav_button(
     icon: &str,
     label: &str,
     tooltip: &str,
+    rail: f32,
     detail: f32,
     height: f32,
 ) -> egui::Response {
@@ -6955,27 +7153,37 @@ fn nav_button(
             .rect_filled(rect, CornerRadius::same(9), theme::surface_raised());
     }
 
-    let text_colour = theme::muted();
-    let icon_colour = theme::faint();
+    let icon_font = FontId::proportional(14.0);
+    let icon_width = ui
+        .painter()
+        .layout_no_wrap(icon.to_owned(), icon_font.clone(), theme::faint())
+        .size()
+        .x;
+    // Centre the glyph on the rail, and keep its left edge at 24 px when the
+    // menu is expanded.
+    let icon_x = rect.width() / 2.0 + (24.0 + icon_width / 2.0 - rect.width() / 2.0) * rail;
+    let icon_center = rect.left_center() + vec2(icon_x, 0.0);
 
     ui.painter().text(
-        rect.left_center() + vec2(24.0, 0.0),
-        Align2::LEFT_CENTER,
+        icon_center,
+        Align2::CENTER_CENTER,
         icon,
-        FontId::proportional(14.0),
-        icon_colour,
+        icon_font,
+        theme::faint(),
     );
-    ui.painter().text(
-        rect.left_center() + vec2(50.0, -5.0 * detail),
-        Align2::LEFT_CENTER,
-        label,
-        if detail > 0.5 {
-            theme::strong_font(13.0 + detail * 0.5)
-        } else {
-            FontId::proportional(13.0)
-        },
-        text_colour,
-    );
+    if rail > 0.01 {
+        ui.painter().text(
+            rect.left_center() + vec2(50.0, -5.0 * detail),
+            Align2::LEFT_CENTER,
+            label,
+            if detail > 0.5 {
+                theme::strong_font(13.0 + detail * 0.5)
+            } else {
+                FontId::proportional(13.0)
+            },
+            theme::muted().gamma_multiply(rail),
+        );
+    }
     if detail > 0.01 {
         ui.painter().text(
             rect.left_center() + vec2(50.0, 9.0),
@@ -6992,57 +7200,100 @@ fn nav_button(
 
     response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, ui.is_enabled(), label));
 
-    response.on_hover_text(tooltip)
+    if rail < 0.5 {
+        bubble_tooltip(
+            ui,
+            &response,
+            label,
+            tooltip,
+            egui::Rect::from_center_size(icon_center, vec2(18.0, 18.0)),
+        );
+        response
+    } else {
+        response.on_hover_text(tooltip)
+    }
 }
 
-fn user_row(ui: &mut Ui, account: Option<&AccountBadge>) -> bool {
+fn user_row(ui: &mut Ui, account: Option<&AccountBadge>, rail: f32) -> bool {
     let mut clicked = false;
+    let expanded = rail > 0.5;
 
-    ui.horizontal(|ui| match account {
-        Some(account) => {
-            let response = theme::avatar(ui, &account.initials, 28.0, theme::accent_blue());
-            if response.clicked() {
-                clicked = true;
-            }
-            response.on_hover_text(format!(
-                "{}\n{} · {}",
-                account.name, account.organisation, account.role
-            ));
-            ui.vertical(|ui| {
-                ui.label(RichText::new(&account.name).font(theme::strong_font(12.0)));
-                ui.label(
-                    RichText::new(format!(
-                        "{} · {}",
-                        capitalize(&account.role),
-                        account.organisation
-                    ))
-                    .color(theme::faint())
-                    .size(10.0),
-                );
-            });
+    ui.horizontal(|ui| {
+        if !expanded {
+            ui.add_space(6.0);
         }
-        None => {
-            theme::avatar(ui, "?", 28.0, theme::surface_raised());
-            ui.vertical(|ui| {
-                ui.label(
-                    RichText::new("Not signed in")
-                        .color(theme::muted())
-                        .font(theme::strong_font(12.0)),
-                );
-                if ui
-                    .add(
-                        egui::Button::new(
-                            RichText::new("Connect to server  →")
-                                .color(theme::accent())
-                                .size(10.0),
-                        )
-                        .frame(false),
-                    )
-                    .clicked()
-                {
+        match account {
+            Some(account) => {
+                let response = theme::avatar(ui, &account.initials, 28.0, theme::accent_blue());
+                if response.clicked() {
                     clicked = true;
                 }
-            });
+                if expanded {
+                    response.on_hover_text(format!(
+                        "{}\n{} · {}",
+                        account.name, account.organisation, account.role
+                    ));
+                } else {
+                    bubble_tooltip(
+                        ui,
+                        &response,
+                        &account.name,
+                        &format!("{} · {}", capitalize(&account.role), account.organisation),
+                        response.rect,
+                    );
+                }
+                if expanded {
+                    ui.vertical(|ui| {
+                        ui.label(RichText::new(&account.name).font(theme::strong_font(12.0)));
+                        ui.label(
+                            RichText::new(format!(
+                                "{} · {}",
+                                capitalize(&account.role),
+                                account.organisation
+                            ))
+                            .color(theme::faint())
+                            .size(10.0),
+                        );
+                    });
+                }
+            }
+            None => {
+                let response = theme::avatar(ui, "?", 28.0, theme::surface_raised());
+                if response.clicked() {
+                    clicked = true;
+                }
+                if !expanded {
+                    bubble_tooltip(
+                        ui,
+                        &response,
+                        "Not signed in",
+                        "Open settings to connect to your server.",
+                        response.rect,
+                    );
+                }
+                if expanded {
+                    ui.vertical(|ui| {
+                        ui.label(
+                            RichText::new("Not signed in")
+                                .color(theme::muted())
+                                .font(theme::strong_font(12.0)),
+                        );
+                        if ui
+                            .add(
+                                egui::Button::new(
+                                    RichText::new("Connect to server  →")
+                                        .color(theme::accent())
+                                        .size(10.0),
+                                )
+                                .frame(false),
+                            )
+                            .clicked()
+                        {
+                            clicked = true;
+                        }
+                    });
+                }
+            }
         }
     });
 
