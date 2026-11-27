@@ -284,6 +284,14 @@ cargo clippy --all-targets -- -D warnings
 cargo test                 # UI smoke tests and navigation checks
 ```
 
+### Releasing
+
+Before tagging a release, add `docs/release-notes/vX.Y.Z.md` from
+[`docs/release-notes/TEMPLATE.md`](docs/release-notes/TEMPLATE.md). Release notes
+are published with the GitHub release and must contain **New**, **Changed** and
+**Fixed** sections, written for care providers rather than developers. The release
+workflow will not publish without them.
+
 ### Headless screenshots
 
 The UI can be rendered without a display, which is handy for design review and CI:
