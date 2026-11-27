@@ -409,9 +409,20 @@ fn account_card(
         if let Some(session) = &server.session {
             signed_in(ui, form, session, action);
         } else {
-            signed_out(ui, form, server, action);
+            signed_out_notice(ui);
         }
     });
+}
+
+/// Shown when settings is rendered without a session. The sign-in form lives
+/// on the main menu, so settings never offers a second way to sign in.
+fn signed_out_notice(ui: &mut Ui) {
+    ui.label(RichText::new("Not signed in").font(theme::strong_font(14.0)));
+    ui.label(
+        RichText::new("Sign in from the main menu to use CareLibre.")
+            .color(theme::muted())
+            .size(11.0),
+    );
 }
 
 fn signed_in(ui: &mut Ui, form: &mut SettingsForm, session: &Session, action: &mut Option<Action>) {
@@ -457,7 +468,9 @@ fn signed_in(ui: &mut Ui, form: &mut SettingsForm, session: &Session, action: &m
     }
 }
 
-fn signed_out(
+/// The sign-in and create-organisation form. The app shell renders this on the
+/// main menu while no account is signed in; settings itself never shows it.
+pub fn sign_in_form(
     ui: &mut Ui,
     form: &mut SettingsForm,
     server: &ServerState,
