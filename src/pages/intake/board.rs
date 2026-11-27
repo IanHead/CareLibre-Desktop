@@ -984,90 +984,29 @@ fn case_body(
         }
 
         ui.add_space(12.0);
-        ui.label(RichText::new("Move to stage").font(theme::strong_font(14.0)));
+        ui.label(RichText::new("Path").font(theme::strong_font(14.0)));
+        let sequential = case.flow.stage_movement == "sequential";
+        let enabled = !state.transitioning && !state.dirty && !case.stage.is_terminal;
+        if let Some(stage_id) = stage_path(ui, case, sequential, enabled) {
+            *action = Some(IntakeCaseAction::Transition {
+                case_id: case.case.id.clone(),
+                stage_id,
+                version: case.case.version,
+            });
+        }
+        if sequential && !case.stage.is_terminal {
+            ui.label(
+                RichText::new("This path only moves to the previous or next stage.")
+                    .color(theme::muted())
+                    .size(11.0),
+            );
+        }
         if case.stage.is_terminal {
             ui.label(
                 RichText::new("This case is in a terminal stage.")
                     .color(theme::muted())
                     .size(12.0),
             );
-        } else {
-            let mut stages: Vec<_> = case
-                .flow
-                .stages
-                .iter()
-                .filter(|stage| stage.kind != "cancelled")
-                .collect();
-            stages.sort_by_key(|stage| stage.sort_order);
-            let current_index = stages
-                .iter()
-                .position(|stage| stage.id == case.case.stage_id);
-            if case.flow.stage_movement == "sequential" {
-                ui.add_enabled_ui(!state.transitioning && !state.dirty, |ui| {
-                    ui.horizontal_wrapped(|ui| {
-                        let Some(index) = current_index else {
-                            return;
-                        };
-                        if index > 0 {
-                            let previous = stages[index - 1];
-                            if ui
-                                .button(format!("← Move back to {}", previous.name))
-                                .on_hover_text(format!("Move back to {}", previous.name))
-                                .clicked()
-                            {
-                                *action = Some(IntakeCaseAction::Transition {
-                                    case_id: case.case.id.clone(),
-                                    stage_id: previous.id.clone(),
-                                    version: case.case.version,
-                                });
-                            }
-                        }
-                        if let Some(next) = stages.get(index + 1)
-                            && ui
-                                .button(format!("Move forward to {} →", next.name))
-                                .on_hover_text(format!("Move forward to {}", next.name))
-                                .clicked()
-                        {
-                            *action = Some(IntakeCaseAction::Transition {
-                                case_id: case.case.id.clone(),
-                                stage_id: next.id.clone(),
-                                version: case.case.version,
-                            });
-                        }
-                    });
-                });
-                ui.label(
-                    RichText::new("This path only moves to the previous or next stage.")
-                        .color(theme::muted())
-                        .size(11.0),
-                );
-            } else {
-                ui.add_enabled_ui(!state.transitioning && !state.dirty, |ui| {
-                    ui.horizontal_wrapped(|ui| {
-                        for stage in &stages {
-                            if stage.id == case.case.stage_id {
-                                ui.add(
-                                    egui::Button::new(
-                                        RichText::new(&stage.name).font(theme::strong_font(12.0)),
-                                    )
-                                    .selected(true),
-                                )
-                                .on_hover_text("Current stage");
-                            } else if ui
-                                .button(&stage.name)
-                                .on_hover_text(format!("Move to {}", stage.name))
-                                .clicked()
-                            {
-                                *action = Some(IntakeCaseAction::Transition {
-                                    case_id: case.case.id.clone(),
-                                    stage_id: stage.id.clone(),
-                                    version: case.case.version,
-                                });
-                            }
-                        }
-                    });
-                });
-            }
         }
         if state.dirty {
             ui.label(
@@ -1126,6 +1065,109 @@ fn case_body(
             }
         }
     });
+}
+
+fn stage_path(
+    ui: &mut Ui,
+    case: &ApiIntakeCaseDetail,
+    sequential: bool,
+    enabled: bool,
+) -> Option<String> {
+    const ROW_HEIGHT: f32 = 30.0;
+    const NODE_SIZE: f32 = 18.0;
+    let mut stages: Vec<_> = case
+        .flow
+        .stages
+        .iter()
+        .filter(|stage| stage.kind != "cancelled" || stage.id == case.case.stage_id)
+        .collect();
+    stages.sort_by_key(|stage| stage.sort_order);
+    let current_index = stages
+        .iter()
+        .position(|stage| stage.id == case.case.stage_id);
+    let line_x = ui.cursor().left() + NODE_SIZE / 2.0;
+    let line_start = ui.cursor().top() + ROW_HEIGHT / 2.0;
+    let line_end = line_start + ROW_HEIGHT * stages.len().saturating_sub(1) as f32;
+    if stages.len() > 1 {
+        let painter = ui.painter();
+        painter.line_segment(
+            [egui::pos2(line_x, line_start), egui::pos2(line_x, line_end)],
+            Stroke::new(2.0, theme::border_strong()),
+        );
+        if let Some(index) = current_index
+            && index > 0
+        {
+            painter.line_segment(
+                [
+                    egui::pos2(line_x, line_start),
+                    egui::pos2(line_x, line_start + ROW_HEIGHT * index as f32),
+                ],
+                Stroke::new(2.0, theme::accent()),
+            );
+        }
+    }
+
+    let mut selected = None;
+    for (index, stage) in stages.iter().enumerate() {
+        let active = Some(index) == current_index;
+        let adjacent = current_index.is_some_and(|current| current.abs_diff(index) == 1);
+        let clickable = enabled && !active && (!sequential || adjacent);
+        ui.allocate_ui_with_layout(
+            egui::vec2(ui.available_width(), ROW_HEIGHT),
+            Layout::left_to_right(Align::Center),
+            |ui| {
+                let (node_rect, node_response) = ui.allocate_exact_size(
+                    egui::vec2(NODE_SIZE, NODE_SIZE),
+                    if clickable {
+                        egui::Sense::click()
+                    } else {
+                        egui::Sense::hover()
+                    },
+                );
+                let painter = ui.painter();
+                let fill = if active {
+                    theme::accent()
+                } else if clickable {
+                    theme::surface_raised()
+                } else {
+                    theme::surface()
+                };
+                let stroke = if active || clickable {
+                    theme::accent()
+                } else {
+                    theme::border_strong()
+                };
+                painter.circle_filled(node_rect.center(), NODE_SIZE / 2.0, fill);
+                painter.circle_stroke(
+                    node_rect.center(),
+                    NODE_SIZE / 2.0,
+                    Stroke::new(1.5, stroke),
+                );
+                if active {
+                    painter.circle_filled(node_rect.center(), 4.0, theme::on_accent());
+                }
+                ui.add_space(7.0);
+                let clicked = if active {
+                    ui.label(
+                        RichText::new(&stage.name)
+                            .font(theme::strong_font(12.0))
+                            .color(theme::accent()),
+                    );
+                    theme::pill(ui, "Current", theme::accent());
+                    false
+                } else if clickable {
+                    ui.selectable_label(false, &stage.name).clicked()
+                } else {
+                    ui.label(RichText::new(&stage.name).color(theme::faint()).size(12.0));
+                    false
+                };
+                if (clicked || node_response.clicked()) && clickable {
+                    selected = Some(stage.id.clone());
+                }
+            },
+        );
+    }
+    selected
 }
 
 fn field_editor(

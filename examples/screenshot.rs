@@ -71,6 +71,7 @@ fn main() {
     let qualities = args.iter().any(|arg| arg == "--qualities");
     let intake_case = args.iter().any(|arg| arg == "--intake-case");
     let new_intake = args.iter().any(|arg| arg == "--new-intake");
+    let intake_path = args.iter().any(|arg| arg == "--intake-path");
     // With --relationships: open the first relationship's history or actions menu.
     let history = args.iter().any(|arg| arg == "--history");
     let actions = args.iter().any(|arg| arg == "--actions");
@@ -233,6 +234,10 @@ fn main() {
             }
             if new_intake {
                 harness.get_by_label("+ New intake").click();
+                harness.run();
+            }
+            if intake_path {
+                harness.get_by_label("Path").scroll_to_me();
                 harness.run();
             }
         }
