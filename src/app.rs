@@ -6633,8 +6633,11 @@ impl CareLibreApp {
                 menu_ui.set_clip_rect(rect);
                 menu_ui.spacing_mut().item_spacing.y = 8.0 - 4.0 * centeredness;
 
-                if docked && menu_toggle(&mut menu_ui, self.config.menu_collapsed, rail).clicked() {
-                    toggle_menu = true;
+                if docked {
+                    menu_ui.add_space(12.0);
+                    if menu_toggle(&mut menu_ui, self.config.menu_collapsed, rail).clicked() {
+                        toggle_menu = true;
+                    }
                 }
 
                 group_label(&mut menu_ui, "WORKSPACE", rail);
