@@ -370,6 +370,10 @@ pub struct ContactWindowState {
     /// The per-user constellation preference and its cached layout.
     pub constellation: RelationshipViewPreference,
     pub constellation_view: Option<constellation::ConstellationView>,
+    /// Interpolated node positions while the constellation changes shape.
+    pub constellation_animation: constellation::ConstellationAnimation,
+    /// The party selected inside the constellation, opened on double-click.
+    pub constellation_selection: Option<String>,
     pub error: Option<String>,
     pub close_requested: bool,
     pub popped_out: bool,
@@ -457,6 +461,8 @@ impl ContactWindowState {
             relationship_error: None,
             constellation: RelationshipViewPreference::default(),
             constellation_view: None,
+            constellation_animation: constellation::ConstellationAnimation::default(),
+            constellation_selection: None,
             error: None,
             close_requested: false,
             popped_out: false,
@@ -2538,6 +2544,8 @@ fn relationships_card(
             &focus_label,
             &mut state.constellation,
             &mut state.constellation_view,
+            &mut state.constellation_animation,
+            &mut state.constellation_selection,
         );
         if constellation.preference_changed {
             action = Some(ContactEditorAction::SetConstellationPreference(

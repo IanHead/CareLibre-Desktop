@@ -4,7 +4,7 @@
 //! so the constellation is built client-side: a breadth-first walk from the
 //! open contact, capped at the number of steps the user has chosen.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use eframe::egui::{
     self, Align2, Color32, CornerRadius, FontId, Pos2, Rect, RichText, Sense, Stroke, StrokeKind,
@@ -13,7 +13,7 @@ use eframe::egui::{
 
 use crate::config::{CONSTELLATION_MAX_STEPS, CONSTELLATION_MIN_STEPS, RelationshipViewPreference};
 use crate::contact::{ApiGraphNode, ApiRelationship, PartyKind, relationship_role_label};
-use crate::graph::{GraphFilters, RelationshipGraph, node_key};
+use crate::graph::{GraphFilters, RelationshipGraph, node_key, transition_factor};
 use crate::theme;
 
 pub use crate::graph::RelationshipNetwork;
@@ -23,6 +23,105 @@ pub use crate::graph::RelationshipNetwork;
 pub const MAX_NODES: usize = 60;
 const CANVAS_HEIGHT: f32 = 300.0;
 const NARROW_CANVAS_HEIGHT: f32 = 230.0;
+
+/// Interpolated positions for the constellation, so changing the step count or
+/// resizing the record glides nodes to their new rings instead of snapping.
+#[derive(Default)]
+pub struct ConstellationAnimation {
+    displayed: BTreeMap<String, AnimatedNode>,
+    last_frame: f64,
+}
+
+#[derive(Clone, Debug)]
+pub struct AnimatedNode {
+    kind: PartyKind,
+    label: String,
+    hop: usize,
+    pos: Pos2,
+    radius: f32,
+    alpha: f32,
+}
+
+impl ConstellationAnimation {
+    pub fn clear(&mut self) {
+        self.displayed.clear();
+        self.last_frame = 0.0;
+    }
+
+    fn get(&self, kind: PartyKind, id: &str) -> Option<&AnimatedNode> {
+        self.displayed.get(&node_key(kind, id))
+    }
+
+    fn update(&mut self, view: &ConstellationView, ctx: &egui::Context, now: f64) -> bool {
+        let dt = if self.last_frame <= 0.0 {
+            0.0
+        } else {
+            (now - self.last_frame).clamp(0.0, 0.12) as f32
+        };
+        self.last_frame = now;
+        let factor = transition_factor(dt);
+        let mut moving = false;
+        let mut targets = BTreeSet::new();
+
+        for node in &view.nodes {
+            let key = node_key(node.kind, &node.id);
+            targets.insert(key.clone());
+            match self.displayed.get_mut(&key) {
+                Some(display) => {
+                    display.label = node.label.clone();
+                    display.hop = node.hop;
+                    let dx = node.pos.x - display.pos.x;
+                    let dy = node.pos.y - display.pos.y;
+                    let dr = node.radius - display.radius;
+                    let da = 1.0 - display.alpha;
+                    if dx.abs() + dy.abs() > 0.05 || dr.abs() > 0.05 || da.abs() > 0.005 {
+                        moving = true;
+                    }
+                    display.pos.x += dx * factor;
+                    display.pos.y += dy * factor;
+                    display.radius += dr * factor;
+                    display.alpha += da * factor;
+                }
+                None => {
+                    self.displayed.insert(
+                        key,
+                        AnimatedNode {
+                            kind: node.kind,
+                            label: node.label.clone(),
+                            hop: node.hop,
+                            pos: node.pos,
+                            radius: node.radius * 0.6,
+                            alpha: 0.0,
+                        },
+                    );
+                    moving = true;
+                }
+            }
+        }
+
+        let ghosts: Vec<String> = self
+            .displayed
+            .keys()
+            .filter(|key| !targets.contains(*key))
+            .cloned()
+            .collect();
+        for key in ghosts {
+            if let Some(display) = self.displayed.get_mut(&key) {
+                display.alpha -= display.alpha * factor;
+                if display.alpha < 0.02 {
+                    self.displayed.remove(&key);
+                } else {
+                    moving = true;
+                }
+            }
+        }
+
+        if moving {
+            ctx.request_repaint();
+        }
+        moving
+    }
+}
 
 /// Everything the constellation needs from the application shell.
 pub struct ConstellationSource<'a> {
@@ -87,6 +186,7 @@ pub struct ConstellationView {
 }
 
 /// Draw the collapsible constellation section inside the Relationships card.
+#[allow(clippy::too_many_arguments)]
 pub fn section(
     ui: &mut Ui,
     source: &ConstellationSource<'_>,
@@ -94,6 +194,8 @@ pub fn section(
     focus_label: &str,
     preference: &mut RelationshipViewPreference,
     cache: &mut Option<ConstellationView>,
+    animation: &mut ConstellationAnimation,
+    selection: &mut Option<String>,
 ) -> SectionResult {
     let mut result = SectionResult::default();
 
@@ -131,6 +233,7 @@ pub fn section(
     });
 
     if preference.collapsed {
+        animation.clear();
         return result;
     }
 
@@ -179,7 +282,7 @@ pub fn section(
 
     ui.label(
         RichText::new(
-            "Each ring is one step from this contact. Click a contact to open their record.",
+            "Each ring is one step from this contact. Click a party to inspect it, or double-click a contact to open their record.",
         )
         .color(theme::faint())
         .size(10.0),
@@ -236,6 +339,18 @@ pub fn section(
         return result;
     };
 
+    if selection.as_ref().is_some_and(|key| {
+        !view
+            .nodes
+            .iter()
+            .any(|node| &node_key(node.kind, &node.id) == key)
+    }) {
+        *selection = None;
+    }
+
+    let now = ui.ctx().input(|input| input.time);
+    animation.update(view, ui.ctx(), now);
+
     if view.nodes.len() <= 1 {
         ui.label(
             RichText::new("No active relationships to visualise yet.")
@@ -256,7 +371,14 @@ pub fn section(
         ui.add_space(2.0);
     }
 
-    if let Some(contact_id) = draw_canvas(ui, view, focus_id, vec2(width, height)) {
+    if let Some(contact_id) = draw_canvas(
+        ui,
+        view,
+        focus_id,
+        vec2(width, height),
+        animation,
+        selection,
+    ) {
         result.open_contact = Some(contact_id);
     }
 
@@ -301,6 +423,8 @@ fn draw_canvas(
     view: &ConstellationView,
     focus_id: &str,
     size: Vec2,
+    animation: &ConstellationAnimation,
+    selection: &mut Option<String>,
 ) -> Option<String> {
     let (rect, response) = ui.allocate_exact_size(size, Sense::click());
     let painter = ui.painter_at(rect);
@@ -336,34 +460,54 @@ fn draw_canvas(
         );
     }
 
+    let target_keys: BTreeSet<String> = view
+        .nodes
+        .iter()
+        .map(|node| node_key(node.kind, &node.id))
+        .collect();
     let pointer = response.hover_pos().filter(|pos| rect.contains(*pos));
-    let hovered = pointer.and_then(|pos| {
-        view.nodes
+    let hovered_key = pointer.and_then(|pos| {
+        animation
+            .displayed
             .iter()
-            .enumerate()
-            .filter_map(|(index, node)| {
+            .filter(|(key, node)| target_keys.contains(*key) && node.alpha > 0.35)
+            .filter_map(|(key, node)| {
                 let centre = rect.min + node.pos.to_vec2();
                 let distance = centre.distance(pos);
-                (distance <= node.radius + 7.0).then_some((index, distance))
+                (distance <= node.radius + 7.0).then_some((key, distance))
             })
             .min_by(|left, right| left.1.total_cmp(&right.1))
-            .map(|(index, _)| index)
+            .map(|(key, _)| key.clone())
     });
-
+    let hovered = hovered_key.as_ref().and_then(|key| {
+        view.nodes
+            .iter()
+            .position(|node| &node_key(node.kind, &node.id) == key)
+    });
     let hovered_node = hovered.map(|index| &view.nodes[index]);
 
     for edge in &view.edges {
-        let from = &view.nodes[edge.from];
-        let to = &view.nodes[edge.to];
+        let from_node = &view.nodes[edge.from];
+        let to_node = &view.nodes[edge.to];
+        let (Some(from), Some(to)) = (
+            animation.get(from_node.kind, &from_node.id),
+            animation.get(to_node.kind, &to_node.id),
+        ) else {
+            continue;
+        };
+        let alpha = from.alpha.min(to.alpha);
+        if alpha < 0.02 {
+            continue;
+        }
         let highlighted = hovered.is_some_and(|index| index == edge.from || index == edge.to);
         let colour = if highlighted {
-            theme::accent()
+            with_alpha(theme::accent(), alpha)
         } else {
             Color32::from_rgba_unmultiplied(
                 theme::muted().r(),
                 theme::muted().g(),
                 theme::muted().b(),
-                80,
+                (80.0 * alpha) as u8,
             )
         };
         painter.line_segment(
@@ -375,10 +519,18 @@ fn draw_canvas(
     let labels_everywhere = view.nodes.len() <= 10;
     let label_first_hop = view.nodes.iter().filter(|node| node.hop == 1).count() <= 14;
     let mut placed_labels: Vec<Rect> = Vec::new();
-    for (index, node) in view.nodes.iter().enumerate() {
+    let mut displays: Vec<(&String, &AnimatedNode)> = animation.displayed.iter().collect();
+    displays.sort_by_key(|(_, node)| node.alpha < 0.5);
+    for (key, node) in displays {
+        let alpha = node.alpha.clamp(0.0, 1.0);
+        if alpha < 0.02 {
+            continue;
+        }
         let centre = rect.min + node.pos.to_vec2();
         let is_focus = node.hop == 0;
-        let is_hovered = hovered == Some(index);
+        let is_hovered = hovered_key.as_deref() == Some(key.as_str());
+        let is_selected = selection.as_deref() == Some(key.as_str());
+        let is_target = target_keys.contains(key);
         let colour = if is_focus {
             theme::accent()
         } else if node.kind == PartyKind::Organisation {
@@ -386,34 +538,41 @@ fn draw_canvas(
         } else {
             theme::accent_blue()
         };
-        let fill = Color32::from_rgba_unmultiplied(colour.r(), colour.g(), colour.b(), 55);
+        let fill = Color32::from_rgba_unmultiplied(
+            colour.r(),
+            colour.g(),
+            colour.b(),
+            (55.0 * alpha) as u8,
+        );
 
         if is_focus {
             painter.circle_stroke(
                 centre,
                 node.radius + 4.0,
-                Stroke::new(1.5, theme::accent_soft(160)),
+                Stroke::new(1.5, theme::accent_soft((160.0 * alpha) as u8)),
+            );
+        }
+        if is_selected && !is_focus {
+            painter.circle_stroke(
+                centre,
+                node.radius + 3.0,
+                Stroke::new(1.5, with_alpha(theme::text(), alpha)),
             );
         }
 
+        let stroke = Stroke::new(
+            if is_hovered { 2.2 } else { 1.4 },
+            with_alpha(colour, alpha),
+        );
         match node.kind {
             PartyKind::Contact => {
                 painter.circle_filled(centre, node.radius, fill);
-                painter.circle_stroke(
-                    centre,
-                    node.radius,
-                    Stroke::new(if is_hovered { 2.2 } else { 1.4 }, colour),
-                );
+                painter.circle_stroke(centre, node.radius, stroke);
             }
             PartyKind::Organisation => {
                 let box_rect = Rect::from_center_size(centre, Vec2::splat(node.radius * 1.85));
                 painter.rect_filled(box_rect, CornerRadius::same(3), fill);
-                painter.rect_stroke(
-                    box_rect,
-                    CornerRadius::same(3),
-                    Stroke::new(if is_hovered { 2.2 } else { 1.4 }, colour),
-                    StrokeKind::Inside,
-                );
+                painter.rect_stroke(box_rect, CornerRadius::same(3), stroke, StrokeKind::Inside);
             }
         }
 
@@ -422,13 +581,15 @@ fn draw_canvas(
             Align2::CENTER_CENTER,
             initials(&node.label),
             FontId::proportional((node.radius * 0.75).clamp(5.5, 11.0)),
-            colour,
+            with_alpha(colour, alpha),
         );
 
-        if is_focus
-            || is_hovered
-            || (node.hop == 1 && label_first_hop)
-            || (labels_everywhere && node.hop > 1)
+        if is_target
+            && alpha > 0.55
+            && (is_focus
+                || is_hovered
+                || (node.hop == 1 && label_first_hop)
+                || (labels_everywhere && node.hop > 1))
         {
             draw_node_label(
                 &painter,
@@ -511,7 +672,7 @@ fn draw_canvas(
             }
             if node.kind == PartyKind::Contact && node.id != focus_id {
                 ui.label(
-                    RichText::new("Click to open this record.")
+                    RichText::new("Click to inspect · double-click to open this record")
                         .color(theme::accent())
                         .size(10.0),
                 );
@@ -531,7 +692,11 @@ fn draw_canvas(
         )
     });
 
-    if response.clicked()
+    if response.clicked() {
+        *selection = hovered_key.clone();
+    }
+
+    if response.double_clicked()
         && let Some(node) = hovered_node
         && node.kind == PartyKind::Contact
         && node.id != focus_id
@@ -542,13 +707,22 @@ fn draw_canvas(
     None
 }
 
+fn with_alpha(colour: Color32, alpha: f32) -> Color32 {
+    Color32::from_rgba_unmultiplied(
+        colour.r(),
+        colour.g(),
+        colour.b(),
+        (colour.a() as f32 * alpha.clamp(0.0, 1.0)) as u8,
+    )
+}
+
 #[allow(clippy::too_many_arguments)]
 fn draw_node_label(
     painter: &egui::Painter,
     rect: Rect,
     focus_centre: Pos2,
     centre: Pos2,
-    node: &ViewNode,
+    node: &AnimatedNode,
     emphasised: bool,
     placed: &mut Vec<Rect>,
 ) {
@@ -896,6 +1070,59 @@ mod tests {
     }
 
     #[test]
+    fn the_constellation_animates_between_step_counts() {
+        let catalog = vec![
+            node(PartyKind::Contact, "a", "Alice"),
+            node(PartyKind::Contact, "b", "Bob"),
+            node(PartyKind::Contact, "c", "Carol"),
+        ];
+        let edges = vec![edge("1", "a", "b"), edge("2", "b", "c")];
+        let ctx = egui::Context::default();
+        let size = vec2(400.0, 300.0);
+
+        let one = build_view(&catalog, &edges, "a", "Alice", 1, size);
+        let mut animation = ConstellationAnimation::default();
+        animation.update(&one, &ctx, 0.0);
+        for step in 1..=30 {
+            animation.update(&one, &ctx, step as f64 * 0.016);
+        }
+        let focus = animation
+            .get(PartyKind::Contact, "a")
+            .expect("the focus is drawn");
+        assert!(focus.alpha > 0.95);
+
+        let two = build_view(&catalog, &edges, "a", "Alice", 2, size);
+        animation.update(&two, &ctx, 0.5);
+        let carol = animation
+            .get(PartyKind::Contact, "c")
+            .expect("the new party fades in");
+        assert!(carol.alpha < 1.0, "a new node should fade rather than pop");
+        for step in 1..=60 {
+            animation.update(&two, &ctx, 0.5 + step as f64 * 0.016);
+        }
+        let carol = animation.get(PartyKind::Contact, "c").expect("Carol");
+        assert!(carol.alpha > 0.95);
+    }
+
+    #[test]
+    fn collapsing_clears_the_animation() {
+        let mut animation = ConstellationAnimation::default();
+        animation.displayed.insert(
+            "contact:a".to_owned(),
+            AnimatedNode {
+                kind: PartyKind::Contact,
+                label: "Alice".to_owned(),
+                hop: 0,
+                pos: pos2(10.0, 10.0),
+                radius: 10.0,
+                alpha: 1.0,
+            },
+        );
+        animation.clear();
+        assert!(animation.displayed.is_empty());
+    }
+
+    #[test]
     fn the_section_toggles_and_changes_steps() {
         use egui_kittest::{Harness, kittest::Queryable};
 
@@ -904,6 +1131,8 @@ mod tests {
             network: RelationshipNetwork,
             preference: RelationshipViewPreference,
             cache: Option<ConstellationView>,
+            animation: ConstellationAnimation,
+            selection: Option<String>,
         }
 
         let catalog = vec![
@@ -917,6 +1146,8 @@ mod tests {
             network: RelationshipNetwork { edges, revision: 1 },
             preference: RelationshipViewPreference::default(),
             cache: None,
+            animation: ConstellationAnimation::default(),
+            selection: None,
         };
 
         let mut harness = Harness::builder()
@@ -940,6 +1171,8 @@ mod tests {
                         "Alice",
                         &mut state.preference,
                         &mut state.cache,
+                        &mut state.animation,
+                        &mut state.selection,
                     );
                 },
                 state,

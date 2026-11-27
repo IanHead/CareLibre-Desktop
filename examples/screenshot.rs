@@ -220,7 +220,11 @@ fn main() {
             }
             if let Some(levels) = explore_levels {
                 harness.state_mut().preview_explorer_levels(levels);
+            }
+            // Let node and camera transitions finish before the capture.
+            for _ in 0..40 {
                 harness.run();
+                std::thread::sleep(Duration::from_millis(16));
             }
         }
 
@@ -318,7 +322,11 @@ fn main() {
                 harness
                     .get_by_label_contains("records within")
                     .scroll_to_me();
-                harness.run();
+                // Let the constellation settle before capturing the frame.
+                for _ in 0..30 {
+                    harness.run();
+                    std::thread::sleep(Duration::from_millis(16));
+                }
             }
             if funding {
                 harness.get_by_label("Funding & agreements").scroll_to_me();

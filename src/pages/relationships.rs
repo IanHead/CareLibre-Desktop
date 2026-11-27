@@ -18,7 +18,9 @@ use crate::config::{
     EXPLORER_DEFAULT_LEVELS, EXPLORER_MAX_LEVELS, EXPLORER_MIN_LEVELS, ExplorerPreference,
 };
 use crate::contact::{ApiGraphNode, ApiRelationship, PartyKind, relationship_role_label};
-use crate::graph::{GraphFilters, RelationshipGraph, RelationshipNetwork, node_key};
+use crate::graph::{
+    GraphFilters, RelationshipGraph, RelationshipNetwork, node_key, transition_factor,
+};
 use crate::theme;
 
 /// Total parties drawn. A larger cap than the record constellation would be
@@ -91,10 +93,17 @@ pub struct ExplorerState {
     picking: bool,
     pan: Vec2,
     zoom: f32,
+    /// Camera goals; the rendered pan and zoom ease toward these.
+    target_pan: Vec2,
+    target_zoom: f32,
     layout: Option<ExplorerLayout>,
     canvas_size: Vec2,
     auto_fit: bool,
     hovered: Option<String>,
+    /// Interpolated node positions, keyed by party. Removed parties stay for a
+    /// few frames so they can fade out instead of disappearing abruptly.
+    displayed: BTreeMap<String, NodeDisplay>,
+    last_frame: f64,
 }
 
 impl Default for ExplorerState {
@@ -109,10 +118,14 @@ impl Default for ExplorerState {
             picking: true,
             pan: Vec2::ZERO,
             zoom: 1.0,
+            target_pan: Vec2::ZERO,
+            target_zoom: 1.0,
             layout: None,
             canvas_size: Vec2::ZERO,
             auto_fit: true,
             hovered: None,
+            displayed: BTreeMap::new(),
+            last_frame: 0.0,
         }
     }
 }
@@ -233,8 +246,10 @@ impl ExplorerState {
     fn restore(&mut self, visited: Visited) {
         self.focus = Some(visited.focus);
         self.levels = visited.levels;
-        self.pan = visited.pan;
-        self.zoom = visited.zoom;
+        // Keep the current camera so returning to a party glides back to the
+        // view it was left in rather than snapping.
+        self.target_pan = visited.pan;
+        self.target_zoom = visited.zoom;
         self.selection = None;
         self.picking = false;
         self.auto_fit = false;
@@ -246,6 +261,17 @@ impl ExplorerState {
 struct Ring {
     hop: u8,
     radius: f32,
+}
+
+/// One node's interpolated position while the graph transitions.
+#[derive(Clone, Debug)]
+struct NodeDisplay {
+    kind: PartyKind,
+    label: String,
+    hop: usize,
+    pos: Pos2,
+    radius: f32,
+    alpha: f32,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -415,7 +441,7 @@ pub fn show(
     ui.add_space(4.0);
     ui.label(
         RichText::new(
-            "Click a party to see their direct relationships · drag to pan · scroll to zoom · Enter focuses the selected party",
+            "Click a party to see its direct relationships · double-click to focus it · drag to pan · scroll to zoom",
         )
         .color(theme::faint())
         .size(10.0),
@@ -998,12 +1024,17 @@ fn canvas(
 ) -> Option<ExplorerAction> {
     let (rect, response) = ui.allocate_exact_size(size, Sense::click_and_drag());
 
+    let now = ui.ctx().input(|input| input.time);
+    let dt = if state.last_frame <= 0.0 {
+        1.0 / 60.0
+    } else {
+        (now - state.last_frame).clamp(0.0, 0.12) as f32
+    };
+    state.last_frame = now;
+
+    let first_draw = state.canvas_size == Vec2::ZERO;
     if state.canvas_size != size {
-        let first_draw = state.canvas_size == Vec2::ZERO;
         state.canvas_size = size;
-        if state.auto_fit {
-            fit(state, layout, size);
-        }
         if first_draw {
             response.request_focus();
         }
@@ -1011,9 +1042,16 @@ fn canvas(
     if state.auto_fit {
         fit(state, layout, size);
     }
+    if first_draw {
+        // Land on the fitted view instead of zooming in from a default
+        // camera. Later focus changes animate.
+        state.pan = state.target_pan;
+        state.zoom = state.target_zoom;
+    }
 
     if response.dragged() {
         state.pan += response.drag_delta();
+        state.target_pan = state.pan;
         state.auto_fit = false;
     }
 
@@ -1028,12 +1066,27 @@ fn canvas(
         }
     }
 
+    let nodes_moving = update_displayed(state, layout, dt);
+    let camera_moving = update_camera(state, dt);
+    if nodes_moving || camera_moving {
+        ui.ctx().request_repaint();
+    }
+
     let hovered = pointer.and_then(|pos| hit_test(state, layout, rect, pos));
     state.hovered = hovered.map(|index| layout.nodes[index].key.clone());
 
     if response.clicked() {
         response.request_focus();
         state.selection = hovered.map(|index| layout.nodes[index].key.clone());
+    }
+
+    if response.double_clicked()
+        && let Some(index) = hovered
+    {
+        let node = &layout.nodes[index];
+        if node.hop > 0 {
+            state.focus_on(node.kind, &node.id, &node.label);
+        }
     }
 
     let action = handle_keys(ui, state, &response, layout);
@@ -1082,17 +1135,25 @@ fn canvas(
     }
 
     for edge in &layout.edges {
-        let from = &layout.nodes[edge.from];
-        let to = &layout.nodes[edge.to];
-        let highlighted = active_key.is_some_and(|key| key == from.key || key == to.key);
+        let from_key = &layout.nodes[edge.from].key;
+        let to_key = &layout.nodes[edge.to].key;
+        let (Some(from), Some(to)) = (state.displayed.get(from_key), state.displayed.get(to_key))
+        else {
+            continue;
+        };
+        let alpha = from.alpha.min(to.alpha);
+        if alpha < 0.02 {
+            continue;
+        }
+        let highlighted = active_key.is_some_and(|key| key == from_key || key == to_key);
         let colour = if highlighted {
-            theme::accent()
+            with_alpha(theme::accent(), alpha)
         } else {
             Color32::from_rgba_unmultiplied(
                 theme::muted().r(),
                 theme::muted().g(),
                 theme::muted().b(),
-                85,
+                (85.0 * alpha) as u8,
             )
         };
         painter.line_segment(
@@ -1113,83 +1174,42 @@ fn canvas(
 
     let labels_everywhere = state.zoom >= 0.8 && layout.nodes.len() <= 30;
     let mut placed_labels: Vec<Rect> = Vec::new();
-    for (index, node) in layout.nodes.iter().enumerate() {
-        let position = centre + node.pos.to_vec2() * state.zoom;
-        if !rect.contains(position) && node.hop > 0 {
+    // Draw faded-out parties first so the new graph sits on top.
+    let mut displays: Vec<(&String, &NodeDisplay)> = state.displayed.iter().collect();
+    displays.sort_by_key(|(_, node)| node.alpha < 0.5);
+    for (key, node) in displays {
+        let Some(index) = layout.node_index(key) else {
+            if node.alpha > 0.02 {
+                draw_node(
+                    &painter, rect, centre, state.zoom, node, false, false, false,
+                );
+            }
             continue;
-        }
+        };
         let is_focus = node.hop == 0;
-        let is_selected = selected.as_deref() == Some(node.key.as_str());
+        let is_selected = selected.as_deref() == Some(key.as_str());
         let is_hovered = hovered == Some(index);
         let emphasis = is_focus || is_selected || is_hovered;
-        let colour = if is_focus {
-            theme::accent()
-        } else if node.kind == PartyKind::Organisation {
-            theme::warning()
-        } else {
-            theme::accent_blue()
-        };
-        // Keep the focus and its immediate neighbours large enough to find
-        // when a wide network forces the view to zoom out.
-        let floor = if is_focus {
-            9.0
-        } else if node.hop == 1 {
-            5.0
-        } else {
-            3.0
-        };
-        let radius = (node.radius * state.zoom).clamp(floor, 26.0);
-        let fill = Color32::from_rgba_unmultiplied(colour.r(), colour.g(), colour.b(), 55);
+        draw_node(
+            &painter,
+            rect,
+            centre,
+            state.zoom,
+            node,
+            is_focus,
+            is_selected,
+            emphasis,
+        );
 
-        if is_focus {
-            painter.circle_stroke(
-                position,
-                radius + 5.0,
-                Stroke::new(1.5, theme::accent_soft(150)),
-            );
-        }
-        if is_selected {
-            painter.circle_stroke(position, radius + 3.5, Stroke::new(1.5, theme::text()));
-        }
-
-        match node.kind {
-            PartyKind::Contact => {
-                painter.circle_filled(position, radius, fill);
-                painter.circle_stroke(
-                    position,
-                    radius,
-                    Stroke::new(if emphasis { 2.2 } else { 1.4 }, colour),
-                );
-            }
-            PartyKind::Organisation => {
-                let box_rect = Rect::from_center_size(position, Vec2::splat(radius * 1.85));
-                painter.rect_filled(box_rect, CornerRadius::same(3), fill);
-                painter.rect_stroke(
-                    box_rect,
-                    CornerRadius::same(3),
-                    Stroke::new(if emphasis { 2.2 } else { 1.4 }, colour),
-                    StrokeKind::Inside,
-                );
-            }
-        }
-
-        if radius >= 7.0 {
-            painter.text(
-                position,
-                Align2::CENTER_CENTER,
-                initials(&node.label),
-                FontId::proportional((radius * 0.72).clamp(5.0, 10.5)),
-                colour,
-            );
-        }
-
-        if emphasis || labels_everywhere || (node.hop == 1 && layout.nodes.len() <= 18) {
+        if node.alpha > 0.55
+            && (emphasis || labels_everywhere || (node.hop == 1 && layout.nodes.len() <= 18))
+        {
             draw_label(
                 &painter,
                 rect,
-                position,
-                radius,
-                node,
+                centre + node.pos.to_vec2() * state.zoom,
+                (node.radius * state.zoom).clamp(3.0, 26.0),
+                &node.label,
                 emphasis,
                 &mut placed_labels,
             );
@@ -1274,7 +1294,7 @@ fn canvas(
             }
             if node.hop > 0 {
                 ui.label(
-                    RichText::new("Click to select · Enter to focus here")
+                    RichText::new("Click to select · double-click to focus here")
                         .color(theme::accent())
                         .size(10.0),
                 );
@@ -1295,6 +1315,166 @@ fn canvas(
     });
 
     action
+}
+
+fn with_alpha(colour: Color32, alpha: f32) -> Color32 {
+    Color32::from_rgba_unmultiplied(
+        colour.r(),
+        colour.g(),
+        colour.b(),
+        (colour.a() as f32 * alpha.clamp(0.0, 1.0)) as u8,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_node(
+    painter: &egui::Painter,
+    rect: Rect,
+    centre: Pos2,
+    zoom: f32,
+    node: &NodeDisplay,
+    is_focus: bool,
+    is_selected: bool,
+    emphasis: bool,
+) {
+    let position = centre + node.pos.to_vec2() * zoom;
+    if !rect.expand(30.0).contains(position) {
+        return;
+    }
+    let alpha = node.alpha.clamp(0.0, 1.0);
+    if alpha < 0.02 {
+        return;
+    }
+    let colour = if is_focus {
+        theme::accent()
+    } else if node.kind == PartyKind::Organisation {
+        theme::warning()
+    } else {
+        theme::accent_blue()
+    };
+    let floor = if is_focus {
+        9.0
+    } else if node.hop == 1 {
+        5.0
+    } else {
+        3.0
+    };
+    let radius = (node.radius * zoom).clamp(floor, 26.0);
+    let fill =
+        Color32::from_rgba_unmultiplied(colour.r(), colour.g(), colour.b(), (55.0 * alpha) as u8);
+
+    if is_focus {
+        painter.circle_stroke(
+            position,
+            radius + 5.0,
+            Stroke::new(1.5, theme::accent_soft((150.0 * alpha) as u8)),
+        );
+    }
+    if is_selected {
+        painter.circle_stroke(
+            position,
+            radius + 3.5,
+            Stroke::new(1.5, with_alpha(theme::text(), alpha)),
+        );
+    }
+
+    let stroke = Stroke::new(if emphasis { 2.2 } else { 1.4 }, with_alpha(colour, alpha));
+    match node.kind {
+        PartyKind::Contact => {
+            painter.circle_filled(position, radius, fill);
+            painter.circle_stroke(position, radius, stroke);
+        }
+        PartyKind::Organisation => {
+            let box_rect = Rect::from_center_size(position, Vec2::splat(radius * 1.85));
+            painter.rect_filled(box_rect, CornerRadius::same(3), fill);
+            painter.rect_stroke(box_rect, CornerRadius::same(3), stroke, StrokeKind::Inside);
+        }
+    }
+
+    if radius >= 7.0 {
+        painter.text(
+            position,
+            Align2::CENTER_CENTER,
+            initials(&node.label),
+            FontId::proportional((radius * 0.72).clamp(5.0, 10.5)),
+            with_alpha(colour, alpha),
+        );
+    }
+}
+
+fn update_displayed(state: &mut ExplorerState, layout: &ExplorerLayout, dt: f32) -> bool {
+    let k = transition_factor(dt);
+    let mut moving = false;
+    let target: BTreeSet<&str> = layout.nodes.iter().map(|node| node.key.as_str()).collect();
+
+    for node in &layout.nodes {
+        match state.displayed.get_mut(&node.key) {
+            Some(display) => {
+                display.kind = node.kind;
+                if display.label != node.label {
+                    display.label.clone_from(&node.label);
+                }
+                display.hop = node.hop;
+                let dx = node.pos.x - display.pos.x;
+                let dy = node.pos.y - display.pos.y;
+                let dr = node.radius - display.radius;
+                let da = 1.0 - display.alpha;
+                if dx.abs() + dy.abs() > 0.05 || dr.abs() > 0.05 || da.abs() > 0.005 {
+                    moving = true;
+                }
+                display.pos.x += dx * k;
+                display.pos.y += dy * k;
+                display.radius += dr * k;
+                display.alpha += da * k;
+            }
+            None => {
+                state.displayed.insert(
+                    node.key.clone(),
+                    NodeDisplay {
+                        kind: node.kind,
+                        label: node.label.clone(),
+                        hop: node.hop,
+                        pos: node.pos,
+                        radius: node.radius * 0.6,
+                        alpha: 0.0,
+                    },
+                );
+                moving = true;
+            }
+        }
+    }
+
+    let ghosts: Vec<String> = state
+        .displayed
+        .keys()
+        .filter(|key| !target.contains(key.as_str()))
+        .cloned()
+        .collect();
+    for key in ghosts {
+        if let Some(display) = state.displayed.get_mut(&key) {
+            display.alpha -= display.alpha * k;
+            if display.alpha < 0.02 {
+                state.displayed.remove(&key);
+            } else {
+                moving = true;
+            }
+        }
+    }
+    moving
+}
+
+fn update_camera(state: &mut ExplorerState, dt: f32) -> bool {
+    let k = transition_factor(dt);
+    let dz = state.target_zoom - state.zoom;
+    let dp = state.target_pan - state.pan;
+    if dz.abs() < 0.0005 && dp.length() < 0.05 {
+        state.zoom = state.target_zoom;
+        state.pan = state.target_pan;
+        return false;
+    }
+    state.zoom += dz * k;
+    state.pan += dp * k;
+    true
 }
 
 fn handle_keys(
@@ -1625,8 +1805,8 @@ fn direct_row(ui: &mut Ui, edge: &ApiRelationship, selected_key: &str) -> Option
 
 fn fit(state: &mut ExplorerState, layout: &ExplorerLayout, size: Vec2) {
     let usable = (size.x.min(size.y) - 40.0).max(80.0);
-    state.zoom = (usable / (2.0 * layout.radius.max(1.0))).clamp(0.12, 1.8);
-    state.pan = Vec2::ZERO;
+    state.target_zoom = (usable / (2.0 * layout.radius.max(1.0))).clamp(0.12, 1.8);
+    state.target_pan = Vec2::ZERO;
 }
 
 fn zoom_around(state: &mut ExplorerState, scroll: f32, pointer: Pos2, rect: Rect) {
@@ -1639,6 +1819,8 @@ fn zoom_around(state: &mut ExplorerState, scroll: f32, pointer: Pos2, rect: Rect
     let world = (pointer - centre) / old;
     state.pan = pointer - rect.center() - world * next;
     state.zoom = next;
+    state.target_pan = state.pan;
+    state.target_zoom = state.zoom;
 }
 
 fn hit_test(
@@ -1653,8 +1835,12 @@ fn hit_test(
         .iter()
         .enumerate()
         .filter_map(|(index, node)| {
-            let distance = (node.pos.to_vec2() - world).length();
-            let target = node.radius + 9.0 / state.zoom.max(0.12);
+            let display = state.displayed.get(&node.key)?;
+            if display.alpha < 0.35 {
+                return None;
+            }
+            let distance = (display.pos.to_vec2() - world).length();
+            let target = display.radius + 9.0 / state.zoom.max(0.12);
             (distance <= target).then_some((index, distance))
         })
         .min_by(|left, right| left.1.total_cmp(&right.1))
@@ -1666,12 +1852,12 @@ fn draw_label(
     rect: Rect,
     position: Pos2,
     radius: f32,
-    node: &ExplorerNode,
+    label: &str,
     emphasised: bool,
     placed: &mut Vec<Rect>,
 ) {
     let galley = painter.layout_no_wrap(
-        truncate(&node.label, 24),
+        truncate(label, 24),
         FontId::proportional(if emphasised { 10.0 } else { 9.0 }),
         if emphasised {
             theme::text()
@@ -1945,6 +2131,88 @@ mod tests {
                 .iter()
                 .all(|edge| edge.to_kind == PartyKind::Organisation)
         );
+    }
+
+    #[test]
+    fn changing_focus_glides_nodes_to_their_new_positions() {
+        let mut state = ExplorerState::default();
+        state.focus_on(PartyKind::Contact, "a", "Alice");
+        let first = layout(1);
+        update_displayed(&mut state, &first, 0.05);
+        for _ in 0..20 {
+            update_displayed(&mut state, &first, 0.016);
+        }
+
+        let second = build_layout(
+            &catalog(),
+            &[edge("1", "a", "b"), edge("2", "b", "c")],
+            &Focus::new(PartyKind::Contact, "b", "Bob"),
+            2,
+            &GraphFilters::default(),
+            1,
+        );
+        for _ in 0..60 {
+            update_displayed(&mut state, &second, 0.016);
+        }
+
+        let focus = state
+            .displayed
+            .get(&node_key(PartyKind::Contact, "b"))
+            .expect("the new focus is drawn");
+        assert!(focus.pos.to_vec2().length() < 0.5);
+        assert!(focus.alpha > 0.95);
+        let carol = state
+            .displayed
+            .get(&node_key(PartyKind::Contact, "c"))
+            .expect("a new party fades in");
+        assert!(carol.alpha > 0.95);
+    }
+
+    #[test]
+    fn removed_parties_fade_out() {
+        let mut state = ExplorerState::default();
+        state.focus_on(PartyKind::Contact, "a", "Alice");
+        let two_levels = layout(2);
+        for _ in 0..30 {
+            update_displayed(&mut state, &two_levels, 0.016);
+        }
+        assert!(
+            state
+                .displayed
+                .contains_key(&node_key(PartyKind::Contact, "c"))
+        );
+
+        let one_level = layout(1);
+        update_displayed(&mut state, &one_level, 0.016);
+        let carol = state
+            .displayed
+            .get(&node_key(PartyKind::Contact, "c"))
+            .expect("the old node lingers while it fades");
+        assert!(carol.alpha < 1.0);
+        for _ in 0..80 {
+            update_displayed(&mut state, &one_level, 0.016);
+        }
+        assert!(
+            !state
+                .displayed
+                .contains_key(&node_key(PartyKind::Contact, "c"))
+        );
+    }
+
+    #[test]
+    fn the_camera_eases_towards_the_fitted_view() {
+        let mut state = ExplorerState::default();
+        let layout = layout(2);
+        fit(&mut state, &layout, vec2(640.0, 420.0));
+        assert!(state.zoom == 1.0, "fitting only sets the camera goal");
+        assert!(update_camera(&mut state, 0.016));
+        assert!(state.zoom < 1.0 && state.zoom > state.target_zoom);
+        assert!(state.zoom > state.target_zoom);
+        for _ in 0..120 {
+            update_camera(&mut state, 0.016);
+        }
+        assert!((state.zoom - state.target_zoom).abs() < 0.001);
+        assert!(!update_camera(&mut state, 0.016));
     }
 
     #[test]

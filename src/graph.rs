@@ -9,6 +9,17 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use crate::contact::{ApiGraphNode, ApiRelationship, PartyKind};
 
+/// Frame-rate independent smoothing factor for short graph transitions.
+/// Harnesses sometimes report no elapsed wall-clock time between frames, so a
+/// small visible step is used rather than freezing mid-transition.
+pub fn transition_factor(dt_seconds: f32) -> f32 {
+    if dt_seconds <= 0.0 {
+        0.3
+    } else {
+        1.0 - (-dt_seconds.clamp(0.0, 0.12) * 10.0).exp()
+    }
+}
+
 /// A stable key for one party, shared by the catalogue and every edge.
 pub fn node_key(kind: PartyKind, id: &str) -> String {
     format!("{}:{id}", kind.as_str())
