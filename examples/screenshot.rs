@@ -4,6 +4,7 @@
 //! `cargo run --example screenshot -- docs/contacts.png`
 //! `cargo run --example screenshot -- docs/settings.png settings --live`
 //! `--server=http://127.0.0.1:8485` uses another server for this run only.
+//! `--collapsed` renders the docked main menu as its icon rail.
 
 use std::time::{Duration, Instant};
 
@@ -47,6 +48,7 @@ fn main() {
     let perf = args.iter().any(|arg| arg == "--perf");
     let contact = args.iter().any(|arg| arg == "--contact");
     let client_side = args.iter().any(|arg| arg == "--client");
+    let collapsed = args.iter().any(|arg| arg == "--collapsed");
     let theme_mode = args
         .iter()
         .find_map(|arg| arg.strip_prefix("--theme="))
@@ -122,6 +124,9 @@ fn main() {
     app.set_theme_mode(theme_mode);
     if client_side {
         app.set_client_side_decorations(true);
+    }
+    if collapsed {
+        app.set_menu_collapsed(true);
     }
     if let Some(kind) = intake {
         app.start_intake(kind);

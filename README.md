@@ -369,6 +369,7 @@ Shipped desktop foundations:
 - [x] Collapsible relationship constellation with per-user step and visibility preferences
 - [x] Contact editing with server-stored custom-field metadata
 - [x] Animated page, tab, navigation and notification transitions
+- [x] Collapsible docked main menu that remembers the user's choice
 - [x] Client-side title bar by default on new installs, with optional native decorations
 - [x] Light, Dark and Follow System appearance with live desktop detection
 - [x] Encrypted remembered sign-in using the OS keychain or a local vault
