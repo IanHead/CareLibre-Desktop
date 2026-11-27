@@ -1,6 +1,10 @@
 use carelibre_desktop::{
     CareLibreApp,
-    pages::Page,
+    pages::{
+        Page,
+        constellation::{ConstellationSource, RelationshipNetwork},
+        contact_editor::{ContactWindowState, show_column},
+    },
     theme::{self, ThemeMode},
 };
 use eframe::egui;
@@ -306,4 +310,49 @@ fn pages_can_pop_out_and_dock() {
     harness.get_by_label("Dock page").click_accesskit();
     harness.run_steps(2);
     assert!(!harness.state().page_popped_out(Page::Rostering));
+}
+
+#[test]
+fn contact_column_footer_stays_inside_the_column() {
+    let mut state = ContactWindowState::new("ana".to_owned());
+    state.loading = false;
+    state.given_name = "Ana".to_owned();
+    state.family_name = "Ruiz".to_owned();
+    state.role = "other".to_owned();
+    state.status = "Active".to_owned();
+
+    let mut harness = Harness::builder()
+        .with_size(egui::vec2(390.0, 600.0))
+        .with_max_steps(5)
+        .with_context_setup(|ctx| theme::apply(ctx, ThemeMode::Dark))
+        .build_ui_state(
+            |ui, state: &mut ContactWindowState| {
+                let panel = ui.max_rect();
+                let mut column_ui = ui.new_child(egui::UiBuilder::new().max_rect(panel));
+                column_ui.set_clip_rect(panel);
+                // The column layout sets a minimum height, which expands the
+                // available rect past the clip. The footer must still fit.
+                column_ui.set_min_height(panel.height() + 100.0);
+                let nodes = [];
+                let network = RelationshipNetwork {
+                    edges: Vec::new(),
+                    revision: 0,
+                };
+                let source = ConstellationSource {
+                    nodes: &nodes,
+                    network: &network,
+                    loading: false,
+                    error: None,
+                };
+                let _ = show_column(&mut column_ui, state, &source, &[]);
+            },
+            state,
+        );
+    harness.run();
+
+    let save = harness.get_by_label("Save contact").rect();
+    assert!(
+        save.top() >= 0.0 && save.bottom() <= 600.0,
+        "Save contact should stay inside the column, got {save:?}"
+    );
 }

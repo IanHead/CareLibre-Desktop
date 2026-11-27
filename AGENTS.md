@@ -15,6 +15,15 @@ lists are virtualised.
   request. This includes Rust sources, tests, examples and build/dependency config.
 - **Metadata-only changes may go straight to `main`.** Docs, README edits,
   screenshots, issue templates and this file are examples.
+- **Work in a worktree, not a shared checkout.** When starting work on a branch,
+  or when the primary checkout is already on another branch, create a dedicated
+  `git worktree`. This lets other sessions keep different branches checked out
+  simultaneously instead of waiting for one checkout to become free. Put
+  worktrees outside the repository, for example
+  `../CareLibre-Desktop-worktrees/<branch-slug>`.
+- **Delete branches once their PR is merged or deliberately closed.** Remove the
+  worktree, then delete the local branch and the remote branch. Never delete a
+  branch with an open PR.
 - Do not commit unrelated changes, generated files or another person's work in
   progress. Check `git status` before staging.
 - Do not rewrite or discard uncommitted changes unless explicitly asked.
@@ -26,6 +35,32 @@ lists are virtualised.
   `Add relationship constellation and organisation management`.
 - Pull requests should explain the user-visible change and list the checks run
   (`cargo fmt`, `cargo clippy`, `cargo test`).
+
+## Branches and worktrees
+
+Create a worktree when you start a branch:
+
+```sh
+git fetch origin
+git worktree add ../CareLibre-Desktop-worktrees/fix-roster \
+  -b fix/roster origin/main
+cd ../CareLibre-Desktop-worktrees/fix-roster
+```
+
+When the pull request is merged or deliberately closed:
+
+```sh
+git worktree remove ../CareLibre-Desktop-worktrees/fix-roster
+git branch -d fix/roster
+git push origin --delete fix/roster
+```
+
+GitHub may already delete the remote branch when a PR merges; delete it yourself
+if it remains. `git branch -d` refuses to delete an unmerged branch, which is a
+useful safety net. If the PR was squash- or rebase-merged, `-d` may still refuse
+because the original commits are not ancestors; confirm the PR is merged before
+using `-D`. Use `git worktree remove --force` only when the work is intentionally
+being discarded.
 
 ## Commands
 
