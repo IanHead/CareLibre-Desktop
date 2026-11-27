@@ -558,6 +558,82 @@ impl CareLibreApp {
         }
     }
 
+    /// Drop every workspace surface and cached account snapshot when the
+    /// session ends or moves to another server. The sign-in shell must not keep
+    /// records, pages, intake drafts, roster data or relationship data in memory
+    /// or leave detached windows open.
+    fn clear_authenticated_state(&mut self, ctx: &egui::Context) {
+        self.server.session = None;
+        self.server.refresh_in_flight = false;
+        self.server.auth_in_flight = false;
+        self.restoring_session = false;
+
+        for id in self.contact_windows.keys() {
+            ctx.send_viewport_cmd_to(contact_viewport_id(id), egui::ViewportCommand::Close);
+        }
+        for page in &self.popped_pages {
+            ctx.send_viewport_cmd_to(page_viewport_id(*page), egui::ViewportCommand::Close);
+        }
+        if self.intake.popped_out {
+            ctx.send_viewport_cmd_to(intake_viewport_id(), egui::ViewportCommand::Close);
+        }
+
+        self.contact_windows.clear();
+        self.organisation_editors.clear();
+        self.columns.clear();
+        self.popped_pages.clear();
+        self.active_contact = None;
+        self.drag_column = None;
+        self.column_rects.clear();
+        self.last_column_order.clear();
+        self.columns_initialised = false;
+
+        self.intake = IntakeState::new();
+        self.intake_board.reset();
+        self.intake_case_columns.clear();
+        self.discard_intake_case = None;
+        self.discard_intake_request = None;
+        self.discard_intake_error = None;
+        self.contacts = ContactsState::new(ContactFilter::All);
+        self.organisations = OrganisationsState::new();
+        self.rostering = RosteringState::default();
+        self.known_contacts.clear();
+        self.search.clear();
+
+        self.relationship_list_requests.clear();
+        self.relationship_create_requests.clear();
+        self.relationship_change_requests.clear();
+        self.relationship_history_requests.clear();
+        self.intake_role_links.clear();
+        self.intake_contact_creates.clear();
+        self.intake_relationship_links.clear();
+        self.relationship_contact_creates.clear();
+        self.relationship_types.clear();
+        self.role_options.clear();
+        self.relationship_types_request = None;
+        self.relationship_types_org = None;
+        self.party_catalog.clear();
+        self.party_catalog_request = None;
+        self.relationship_edges.clear();
+        self.relationship_graph_loaded = false;
+        self.relationship_graph_error = None;
+        self.note_relationship_network_changed();
+        self.relationship_network = None;
+
+        self.organisation_list_request = None;
+        self.organisation_save_requests.clear();
+        self.organisation_delete_requests.clear();
+        self.organisation_query_started = None;
+        self.rostering_requests.clear();
+
+        self.cache_counts = ContactCounts::default();
+        self.cache_shifts = None;
+        self.page = Page::Contacts;
+        self.last_page = Page::Contacts;
+        self.notice = None;
+        self.settings.notice = None;
+    }
+
     fn cancel_column_close(&mut self, index: usize) {
         let column = &mut self.columns[index];
         column.closing = false;
@@ -625,6 +701,20 @@ impl CareLibreApp {
 
     pub fn signed_in(&self) -> bool {
         self.server.session.is_some()
+    }
+
+    /// Install an authenticated session without contacting the server. Used by
+    /// headless previews and UI tests that exercise the signed-in workspace.
+    pub fn use_session(&mut self, auth: crate::api::AuthSession) {
+        self.server.auth_in_flight = false;
+        self.server.refresh_in_flight = false;
+        self.restoring_session = false;
+        self.server.session = Some(crate::server::Session {
+            expires_at: Instant::now() + Duration::from_secs(auth.expires_in.max(60)),
+            auth,
+        });
+        self.settings.on_signed_in();
+        self.apply_constellation_preferences();
     }
 
     /// Change the decoration mode for previews/tests without persisting it.
@@ -725,6 +815,19 @@ impl CareLibreApp {
         theme::sync(ui.ctx(), self.config.theme);
         let now = ui.ctx().input(|i| i.time);
         self.frame_time = now;
+        self.perf.begin_frame(ui.ctx());
+        self.poll_server(ui.ctx());
+        self.poll_store(ui.ctx());
+        self.poll_remote(ui.ctx());
+
+        // Nothing in the workspace is reachable without a session. The shell
+        // still runs the workers and renders the sign-in form so the user can
+        // authenticate, restore a remembered login, or see why it expired.
+        if !self.signed_in() {
+            self.signed_out_shell(ui);
+            return;
+        }
+
         if self.page != self.last_page {
             self.last_page = self.page;
             self.page_changed_at = now;
@@ -734,10 +837,6 @@ impl CareLibreApp {
         if page_progress < 1.0 {
             ui.ctx().request_repaint();
         }
-        self.perf.begin_frame(ui.ctx());
-        self.poll_server(ui.ctx());
-        self.poll_store(ui.ctx());
-        self.poll_remote(ui.ctx());
         self.tick_contact_search();
         self.tick_intake_autosave();
         self.ensure_contacts_loaded();
@@ -824,6 +923,40 @@ impl CareLibreApp {
             shifts: self.cache_shifts,
         };
         self.perf.show(ui.ctx(), &perf_info);
+
+        self.show_notice(ui.ctx());
+    }
+
+    /// The signed-out application shell: window chrome, brand bar and status
+    /// only. The main menu becomes a sign-in form, and no workspace, page,
+    /// record or data surface is rendered.
+    fn signed_out_shell(&mut self, ui: &mut Ui) {
+        if self.config.client_side_decorations {
+            egui::Panel::top("app_window_chrome")
+                .exact_size(chrome::HEIGHT)
+                .show_separator_line(false)
+                .frame(
+                    Frame::new()
+                        .fill(theme::sidebar())
+                        .inner_margin(Margin::ZERO),
+                )
+                .show(ui, |ui| {
+                    let ctx = ui.ctx().clone();
+                    chrome::title_bar(ui, &ctx, "CareLibre");
+                });
+        }
+
+        self.top_bar(ui);
+        self.status_bar(ui);
+        self.sidebar(ui);
+
+        egui::CentralPanel::default()
+            .frame(Frame::new().fill(theme::bg()).inner_margin(Margin::ZERO))
+            .show(ui, |_| {});
+
+        if self.config.client_side_decorations {
+            chrome::resize_handles(ui.ctx());
+        }
 
         self.show_notice(ui.ctx());
     }
@@ -939,7 +1072,15 @@ impl CareLibreApp {
             None => Vec::new(),
         };
 
+        let signed_in = self.signed_in();
         for event in events {
+            // Local drafts and cache counts belong to the signed-in account.
+            // Keep the store worker's readiness events so a later sign-in still
+            // sees a working cache, but drop data events while signed out.
+            if !signed_in && !matches!(event, StoreEvent::Ready { .. } | StoreEvent::Failed { .. })
+            {
+                continue;
+            }
             match event {
                 StoreEvent::Ready { path, shifts, .. } => {
                     self.store_ready = true;
@@ -2485,13 +2626,6 @@ impl CareLibreApp {
         }
         if popped_out && let Some(ctx) = &self.app_ctx {
             ctx.send_viewport_cmd_to(contact_viewport_id(id), egui::ViewportCommand::Close);
-        }
-    }
-
-    fn close_all_contact_windows(&mut self) {
-        let ids: Vec<String> = self.contact_windows.keys().cloned().collect();
-        for id in ids {
-            self.close_contact_window(&id);
         }
     }
 
@@ -4490,6 +4624,12 @@ impl CareLibreApp {
             None => Vec::new(),
         };
 
+        if !self.signed_in() {
+            // Discard in-flight responses instead of populating hidden state
+            // after sign-out. A fresh query runs once the user signs in again.
+            return;
+        }
+
         for event in events {
             match event {
                 RemoteEvent::IntakeFlowsLoaded { request_id, result } => {
@@ -5987,10 +6127,8 @@ impl CareLibreApp {
                     Err(_) => {
                         self.server.session = None;
                         self.forget_saved_login();
-                        self.close_all_contact_windows();
-                        self.organisations.reset();
-                        self.refresh_contact_lists();
-                        self.cache_counts = ContactCounts::default();
+                        self.clear_authenticated_state(ctx);
+                        self.settings.on_signed_out();
                         self.settings.error = Some(if was_restoring {
                             "Saved login expired. Please sign in again.".to_owned()
                         } else {
@@ -6001,10 +6139,8 @@ impl CareLibreApp {
                 }
             }
             Event::LoggedOut { result } => {
-                self.refresh_contact_lists();
-                self.organisations.reset();
-                self.close_all_contact_windows();
-                self.cache_counts = ContactCounts::default();
+                self.clear_authenticated_state(ctx);
+                self.settings.on_signed_out();
                 if let Err(error) = result {
                     self.notify(ctx, format!("Signed out locally. Server error: {error}"));
                 }
@@ -6132,10 +6268,8 @@ impl CareLibreApp {
                     }
                     self.server.refresh_in_flight = false;
                     self.forget_saved_login();
-                    self.organisations.reset();
-                    self.intake_board.reset();
+                    self.clear_authenticated_state(ctx);
                     self.settings.on_signed_out();
-                    self.settings.notice = None;
                     self.notify(ctx, "Signed out.");
                 }
             }
@@ -6168,11 +6302,7 @@ impl CareLibreApp {
             self.server.session = None;
             self.server.refresh_in_flight = false;
             self.server.auth_in_flight = false;
-            self.close_all_contact_windows();
-            self.organisations.reset();
-            self.intake_board.reset();
-            self.refresh_contact_lists();
-            self.cache_counts = ContactCounts::default();
+            self.clear_authenticated_state(ctx);
             self.settings.on_signed_out();
             self.notify(ctx, "Server changed. Please sign in again.");
         }
@@ -6214,6 +6344,7 @@ impl CareLibreApp {
 
     fn top_bar(&mut self, ui: &mut Ui) {
         let account = self.account_badge();
+        let signed_in = self.signed_in();
 
         egui::Panel::top("top_bar")
             .exact_size(64.0)
@@ -6261,6 +6392,12 @@ impl CareLibreApp {
                     );
 
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        // Search, intake, notifications and account controls are
+                        // part of the signed-in workspace. A signed-out launch
+                        // shows only the brand and the sign-in menu.
+                        if !signed_in {
+                            return;
+                        }
                         match &account {
                             Some(account) => {
                                 let response = theme::avatar(
@@ -6379,6 +6516,11 @@ impl CareLibreApp {
     }
 
     fn sidebar(&mut self, ui: &mut Ui) {
+        if !self.signed_in() {
+            self.sign_in_menu(ui);
+            return;
+        }
+
         let account = self.account_badge();
         let now = ui.ctx().input(|input| input.time);
         let full_width = ui.available_width().max(1.0);
@@ -6502,6 +6644,111 @@ impl CareLibreApp {
                     });
                 }
             });
+    }
+
+    /// Replace the main menu with the sign-in form while no account is
+    /// signed in. The panel still fills the window, so the form is centred the
+    /// same way the workspace menu is on launch.
+    fn sign_in_menu(&mut self, ui: &mut Ui) {
+        let full_width = ui.available_width().max(1.0);
+        let mut action: Option<Action> = None;
+
+        egui::Panel::left("sidebar")
+            .exact_size(full_width)
+            .resizable(false)
+            .show_separator_line(false)
+            .frame(Frame::new().fill(theme::sidebar()))
+            .show(ui, |ui| {
+                let panel_height = ui.available_height();
+                let content_width = CENTERED_MENU_WIDTH.min((full_width - 48.0).max(280.0));
+                let content_height = (panel_height - 32.0).max(200.0);
+                let content_x = ((full_width - content_width) / 2.0).max(0.0);
+                let content_y = ((panel_height - content_height) / 2.0).max(16.0);
+                let rect = egui::Rect::from_min_size(
+                    ui.min_rect().min + vec2(content_x, content_y),
+                    vec2(content_width, content_height),
+                );
+                let mut menu_ui = ui.new_child(
+                    egui::UiBuilder::new()
+                        .id_salt("sign-in-menu")
+                        .max_rect(rect)
+                        .layout(Layout::top_down(Align::Min)),
+                );
+                menu_ui.set_clip_rect(rect);
+
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .show(&mut menu_ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.label(RichText::new("Sign in").font(theme::strong_font(26.0)));
+                        ui.label(
+                            RichText::new(
+                                "Sign in to your CareLibre server to open the workspace.",
+                            )
+                            .color(theme::muted())
+                            .size(13.0),
+                        );
+                        ui.add_space(16.0);
+
+                        theme::card().show(ui, |ui| {
+                            ui.set_width(ui.available_width());
+                            pages::settings::sign_in_form(
+                                ui,
+                                &mut self.settings,
+                                &self.server,
+                                &mut action,
+                            );
+                        });
+
+                        ui.add_space(12.0);
+                        self.server_menu(ui, &mut action);
+                    });
+            });
+
+        if let Some(action) = action {
+            self.handle_action(ui.ctx(), action);
+        }
+    }
+
+    /// Server address controls for the signed-out sign-in screen. Without this
+    /// the first-run user could not point the client at their own server,
+    /// because settings is only available after signing in.
+    fn server_menu(&mut self, ui: &mut Ui, action: &mut Option<Action>) {
+        egui::CollapsingHeader::new(
+            RichText::new(format!("Server · {}", self.server.base_url))
+                .color(theme::muted())
+                .size(10.5),
+        )
+        .id_salt("sign-in-server")
+        .show(ui, |ui| {
+            ui.label(
+                RichText::new("CareLibre server URL")
+                    .color(theme::muted())
+                    .size(11.0),
+            );
+            ui.add_space(3.0);
+            let edit = ui.add_sized(
+                [ui.available_width(), 34.0],
+                egui::TextEdit::singleline(&mut self.settings.base_url)
+                    .hint_text("http://127.0.0.1:8484")
+                    .margin(Margin::symmetric(10, 8)),
+            );
+            let pressed_enter = edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                if ui.add(theme::primary_button("Save & test")).clicked() || pressed_enter {
+                    self.settings.error = None;
+                    self.settings.notice = None;
+                    *action = Some(Action::SaveServer {
+                        base_url: self.settings.base_url.clone(),
+                    });
+                }
+                if ui.add(theme::secondary_button("Test now")).clicked() {
+                    *action = Some(Action::TestServer);
+                }
+            });
+        });
     }
 
     fn status_bar(&mut self, ui: &mut Ui) {
@@ -6929,6 +7176,27 @@ fn dot(ui: &mut Ui, colour: Color32) {
 mod tests {
     use super::*;
 
+    fn test_auth() -> crate::api::AuthSession {
+        crate::api::AuthSession {
+            access_token: "test-token".to_owned(),
+            refresh_token: "test-refresh".to_owned(),
+            token_type: "Bearer".to_owned(),
+            expires_in: 900,
+            user: crate::api::UserProfile {
+                id: "user-1".to_owned(),
+                email: "owner@example.com".to_owned(),
+                full_name: "Test Owner".to_owned(),
+            },
+            organisation: crate::api::OrganisationProfile {
+                id: "org-test".to_owned(),
+                slug: "test".to_owned(),
+                name: "Test Organisation".to_owned(),
+                edition: "community".to_owned(),
+                role: "owner".to_owned(),
+            },
+        }
+    }
+
     fn test_column(kind: ColumnKind, width: f32) -> ColumnState {
         ColumnState {
             kind,
@@ -7059,6 +7327,7 @@ mod tests {
         use egui_kittest::{Harness, kittest::Queryable};
 
         let mut app = CareLibreApp::new();
+        app.use_session(test_auth());
         app.organisations.apply_list(
             vec![ApiOrganisation {
                 id: "org-1".to_owned(),
@@ -7124,27 +7393,7 @@ mod tests {
             1,
         );
         app.open_page(Page::Organisations);
-        app.server.session = Some(crate::server::Session {
-            auth: crate::api::AuthSession {
-                access_token: "test-token".to_owned(),
-                refresh_token: "test-refresh".to_owned(),
-                token_type: "Bearer".to_owned(),
-                expires_in: 900,
-                user: crate::api::UserProfile {
-                    id: "user-1".to_owned(),
-                    email: "owner@example.com".to_owned(),
-                    full_name: "Test Owner".to_owned(),
-                },
-                organisation: crate::api::OrganisationProfile {
-                    id: "org-test".to_owned(),
-                    slug: "test".to_owned(),
-                    name: "Test Organisation".to_owned(),
-                    edition: "community".to_owned(),
-                    role: "owner".to_owned(),
-                },
-            },
-            expires_at: Instant::now() + Duration::from_secs(900),
-        });
+        app.use_session(test_auth());
         app.organisations.loaded_once = true;
         app.organisations.attempted = true;
 
@@ -7166,6 +7415,7 @@ mod tests {
         use egui_kittest::{Harness, kittest::Queryable};
 
         let mut app = CareLibreApp::new();
+        app.use_session(test_auth());
         app.party_catalog = vec![
             graph_node("alice", "Alice Example"),
             graph_node("bob", "Bob Example"),
@@ -7209,6 +7459,33 @@ mod tests {
                 .constellation
                 .collapsed
         );
+    }
+
+    #[test]
+    fn signing_out_clears_every_workspace_surface() {
+        let mut app = CareLibreApp::new();
+        app.use_session(test_auth());
+        app.set_page(Page::Contacts);
+        app.open_contact("alice");
+        app.start_intake(IntakeKind::Client);
+        app.party_catalog.push(graph_node("alice", "Alice Example"));
+        app.relationship_edges
+            .push(graph_edge("edge-1", "alice", "bob"));
+        app.search = "alice".to_owned();
+
+        app.server.session = None;
+        app.clear_authenticated_state(&egui::Context::default());
+
+        assert!(app.columns.is_empty());
+        assert!(app.contact_windows.is_empty());
+        assert!(app.organisation_editors.is_empty());
+        assert!(app.party_catalog.is_empty());
+        assert!(app.relationship_edges.is_empty());
+        assert!(app.known_contacts.is_empty());
+        assert!(app.rostering.shifts.is_empty());
+        assert!(app.intake.draft.is_none());
+        assert!(app.search.is_empty());
+        assert_eq!(app.page, Page::Contacts);
     }
 
     #[test]

@@ -1,5 +1,6 @@
 use carelibre_desktop::{
     CareLibreApp,
+    api::{AuthSession, OrganisationProfile, UserProfile},
     pages::{
         Page,
         constellation::{ConstellationSource, RelationshipNetwork},
@@ -10,14 +11,42 @@ use carelibre_desktop::{
 use eframe::egui;
 use egui_kittest::{Harness, kittest::Queryable};
 
-fn harness(app: CareLibreApp) -> Harness<'static, CareLibreApp> {
+fn test_auth() -> AuthSession {
+    AuthSession {
+        access_token: "test-token".to_owned(),
+        refresh_token: "test-refresh".to_owned(),
+        token_type: "Bearer".to_owned(),
+        expires_in: 900,
+        user: UserProfile {
+            id: "user-1".to_owned(),
+            email: "owner@example.com".to_owned(),
+            full_name: "Test Owner".to_owned(),
+        },
+        organisation: OrganisationProfile {
+            id: "org-test".to_owned(),
+            slug: "test".to_owned(),
+            name: "Test Organisation".to_owned(),
+            edition: "community".to_owned(),
+            role: "owner".to_owned(),
+        },
+    }
+}
+
+fn harness_with(app: CareLibreApp, signed_in: bool) -> Harness<'static, CareLibreApp> {
     let mut app = app;
+    if signed_in {
+        app.use_session(test_auth());
+    }
     app.set_theme_mode(ThemeMode::Dark);
     Harness::builder()
         .with_size(egui::vec2(1280.0, 800.0))
         .with_max_steps(20)
         .with_context_setup(|ctx| theme::apply(ctx, ThemeMode::Dark))
         .build_ui_state(|ui, app| app.show(ui), app)
+}
+
+fn harness(app: CareLibreApp) -> Harness<'static, CareLibreApp> {
+    harness_with(app, true)
 }
 
 #[test]
@@ -43,30 +72,34 @@ fn every_page_renders() {
 }
 
 #[test]
-fn launch_opens_no_pages_and_centres_the_menu() {
-    let mut harness = harness(CareLibreApp::new());
+fn launch_while_signed_out_shows_the_sign_in_form_instead_of_the_menu() {
+    let mut harness = harness_with(CareLibreApp::new(), false);
     harness.run();
 
+    assert!(!harness.state().signed_in());
     assert!(!harness.state().page_column_open());
     assert!(harness.state().docked_contact_ids().is_empty());
 
-    let menu = harness.get_by_label("WORKSPACE");
-    let centre = menu.rect().center();
+    assert_eq!(harness.query_all_by_label("WORKSPACE").count(), 0);
+    assert_eq!(
+        harness.query_all_by_label("Create organisation").count(),
+        1,
+        "the sign-in form should offer account creation"
+    );
     assert!(
-        centre.x > 400.0,
-        "expected the menu to start centred, got {centre:?}"
+        harness.query_all_by_label("Sign in").count() >= 1,
+        "the sign-in form should be visible"
     );
 
-    harness
-        .get_by_role_and_label(egui::Role::Button, "Rostering")
-        .click();
-    harness.run();
-
-    let menu = harness.get_by_label("WORKSPACE");
-    let centre = menu.rect().center();
+    // The form occupies the main menu's centred slot on a fresh launch.
+    let sign_in = harness
+        .get_all_by_label("Sign in")
+        .next()
+        .expect("the sign-in form");
+    let centre = sign_in.rect().center();
     assert!(
-        centre.x < 200.0,
-        "expected the menu to move to the left, got {centre:?}"
+        centre.x > 300.0 && centre.x < 980.0,
+        "expected the form to be centred, got {centre:?}"
     );
 }
 
@@ -97,6 +130,19 @@ fn settings_offers_all_appearance_modes() {
 }
 
 #[test]
+fn settings_shows_the_account_but_never_the_sign_in_form() {
+    let mut app = CareLibreApp::new();
+    app.set_page(Page::Settings);
+
+    let mut harness = harness(app);
+    harness.run();
+
+    harness.get_by_label("Sign out");
+    assert_eq!(harness.query_all_by_label("Sign in").count(), 0);
+    assert_eq!(harness.query_all_by_label("Create organisation").count(), 0);
+}
+
+#[test]
 fn pointer_clicks_work_across_the_window() {
     let mut app = CareLibreApp::new();
     app.set_page(Page::Contacts);
@@ -104,17 +150,6 @@ fn pointer_clicks_work_across_the_window() {
 
     let mut harness = harness(app);
     harness.run();
-
-    let button = harness.get_by_label("Sign in");
-    let centre = button.rect().center();
-    assert!(
-        centre.x > 800.0,
-        "expected a button on the right-hand side, got {centre:?}"
-    );
-    button.click();
-    harness.run();
-
-    assert_eq!(harness.state().page(), Page::Settings);
 
     let contacts = harness.get_by_role_and_label(egui::Role::Button, "Contacts");
     let centre = contacts.rect().center();
@@ -126,6 +161,17 @@ fn pointer_clicks_work_across_the_window() {
     harness.run();
 
     assert_eq!(harness.state().page(), Page::Contacts);
+
+    let rostering = harness.get_by_role_and_label(egui::Role::Button, "Rostering");
+    let centre = rostering.rect().center();
+    assert!(
+        centre.x < 300.0 && centre.y > 80.0,
+        "expected a button in the left-hand pane, got {centre:?}"
+    );
+    rostering.click();
+    harness.run();
+
+    assert_eq!(harness.state().page(), Page::Rostering);
 }
 
 #[test]
@@ -207,6 +253,7 @@ fn pages_are_limited_to_the_window() {
 fn close_all_button_animates_and_makes_room() {
     let mut app = CareLibreApp::new();
     app.set_page(Page::Contacts);
+    app.use_session(test_auth());
     app.set_theme_mode(ThemeMode::Dark);
     let mut harness = Harness::builder()
         .with_size(egui::vec2(1280.0, 800.0))
@@ -221,7 +268,11 @@ fn close_all_button_animates_and_makes_room() {
         0,
         "Close all should be hidden with a single column"
     );
-    let search_single = harness.get_by_role(egui::Role::TextInput).rect();
+    let search_single = harness
+        .get_all_by_role(egui::Role::TextInput)
+        .next()
+        .expect("the top-bar search")
+        .rect();
 
     harness
         .get_by_role_and_label(egui::Role::Button, "Rostering")
@@ -233,14 +284,22 @@ fn close_all_button_animates_and_makes_room() {
         1,
         "Close all should appear when a second column opens"
     );
-    let search_partial = harness.get_by_role(egui::Role::TextInput).rect();
+    let search_partial = harness
+        .get_all_by_role(egui::Role::TextInput)
+        .next()
+        .expect("the top-bar search")
+        .rect();
     assert!(
         search_partial.right() < search_single.right() - 2.0,
         "expected the search box to start moving left as the button appears"
     );
 
     harness.run();
-    let search_after = harness.get_by_role(egui::Role::TextInput).rect();
+    let search_after = harness
+        .get_all_by_role(egui::Role::TextInput)
+        .next()
+        .expect("the top-bar search")
+        .rect();
     assert!(
         search_after.right() < search_partial.right() - 2.0,
         "expected the search box to keep moving left as the button grows"
