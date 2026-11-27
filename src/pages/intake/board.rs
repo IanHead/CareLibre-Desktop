@@ -343,7 +343,6 @@ pub enum IntakeCaseAction {
     Cancel {
         reason: String,
     },
-    OpenContact(String),
 }
 
 pub fn show(
@@ -456,6 +455,68 @@ pub fn show(
     action
 }
 
+fn intake_flow_card(ui: &mut Ui, flow: &ApiIntakeFlow, selected: bool) -> bool {
+    let mut text = egui::text::LayoutJob::default();
+    text.append(
+        &flow.name,
+        0.0,
+        egui::text::TextFormat {
+            font_id: theme::strong_font(13.0),
+            color: theme::text(),
+            ..Default::default()
+        },
+    );
+    text.append("\n", 0.0, egui::text::TextFormat::default());
+    let description = flow
+        .description
+        .as_deref()
+        .map(str::trim)
+        .filter(|description| !description.is_empty());
+    match description {
+        Some(description) => {
+            text.append(
+                description,
+                0.0,
+                egui::text::TextFormat {
+                    font_id: egui::FontId::proportional(11.0),
+                    color: theme::muted(),
+                    ..Default::default()
+                },
+            );
+        }
+        None => {
+            text.append(
+                "No description set for this path.",
+                0.0,
+                egui::text::TextFormat {
+                    font_id: egui::FontId::proportional(11.0),
+                    color: theme::faint(),
+                    ..Default::default()
+                },
+            );
+        }
+    }
+    let response = ui.add(
+        egui::Button::new(text)
+            .selected(selected)
+            .frame(true)
+            .wrap()
+            .fill(if selected {
+                theme::surface_raised()
+            } else {
+                theme::surface()
+            })
+            .stroke(if selected {
+                Stroke::new(1.5, theme::accent())
+            } else {
+                Stroke::new(1.0, theme::border())
+            })
+            .corner_radius(egui::CornerRadius::same(10))
+            .min_size(egui::vec2(ui.available_width(), 0.0)),
+    );
+    response.clicked()
+}
+
 fn new_intake_dialog(
     ctx: &egui::Context,
     state: &mut IntakeBoardState,
@@ -465,7 +526,7 @@ fn new_intake_dialog(
     egui::Window::new("New intake")
         .open(&mut open)
         .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-        .default_width(440.0)
+        .default_width(620.0)
         .resizable(false)
         .collapsible(false)
         .show(ctx, |ui| {
@@ -475,28 +536,22 @@ fn new_intake_dialog(
                     .color(theme::muted())
                     .size(11.0),
             );
-            let current_flow = state
-                .new_flow_id
-                .as_deref()
-                .and_then(|id| state.flows.iter().find(|flow| flow.id == id))
-                .map(|flow| flow.name.clone())
-                .unwrap_or_else(|| "Choose intake path".to_owned());
-            ui.menu_button(current_flow, |ui| {
-                ui.set_min_width(300.0);
-                for flow in &state.flows {
-                    let label = match flow.variant.as_deref() {
-                        Some(variant) if !variant.is_empty() => {
-                            format!("{} · {variant}", flow.name)
+            let selected_id = state.new_flow_id.clone();
+            ScrollArea::vertical()
+                .id_salt("new-intake-paths")
+                .max_height(300.0)
+                .auto_shrink([false, false])
+                .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    for flow in &state.flows {
+                        let selected = selected_id.as_deref() == Some(flow.id.as_str());
+                        if intake_flow_card(ui, flow, selected) {
+                            state.new_flow_id = Some(flow.id.clone());
                         }
-                        _ => flow.name.clone(),
-                    };
-                    let selected = state.new_flow_id.as_deref() == Some(flow.id.as_str());
-                    if ui.selectable_label(selected, label).clicked() {
-                        state.new_flow_id = Some(flow.id.clone());
-                        ui.close();
+                        ui.add_space(4.0);
                     }
-                }
-            });
+                });
             ui.add_space(8.0);
 
             ui.horizontal(|ui| {
@@ -641,13 +696,7 @@ fn toolbar(ui: &mut Ui, state: &mut IntakeBoardState, action: &mut Option<Intake
             ui.separator();
             for flow in &state.flows {
                 let mut selected = state.selected_flows.contains(&flow.id);
-                let label = match flow.variant.as_deref() {
-                    Some(variant) if !variant.is_empty() => {
-                        format!("{} · {variant}", flow.name)
-                    }
-                    _ => flow.name.clone(),
-                };
-                if ui.checkbox(&mut selected, label).changed() {
+                if ui.checkbox(&mut selected, flow.name.clone()).changed() {
                     if selected {
                         state.selected_flows.insert(flow.id.clone());
                     } else {
@@ -732,7 +781,8 @@ fn board_columns(ui: &mut Ui, board: &ApiIntakeBoard, action: &mut Option<Intake
     ScrollArea::vertical()
         .auto_shrink([false, false])
         .show(ui, |ui| {
-            let (per_row, width) = board_layout(ui.available_width());
+            let available = (ui.available_width() - BOARD_RIGHT_PADDING).max(1.0);
+            let (per_row, width) = board_layout(available);
             for row in board.columns.chunks(per_row) {
                 ui.horizontal_top(|ui| {
                     for (position, column) in row.iter().enumerate() {
@@ -752,6 +802,7 @@ fn board_columns(ui: &mut Ui, board: &ApiIntakeBoard, action: &mut Option<Intake
 
 const BOARD_MIN_COLUMN_WIDTH: f32 = 240.0;
 const BOARD_GAP: f32 = 8.0;
+const BOARD_RIGHT_PADDING: f32 = 12.0;
 
 /// Fit as many columns as possible on each row without horizontal scrolling.
 /// A single column always takes the full available width, however narrow.
@@ -889,16 +940,11 @@ fn case_body(
         });
         if let Some(contact) = &case.contact {
             ui.add_space(6.0);
-            ui.horizontal_wrapped(|ui| {
-                ui.label(
-                    RichText::new(format!("{} · {}", contact.display_name, contact.role))
-                        .color(theme::muted())
-                        .size(12.0),
-                );
-                if ui.small_button("Open contact").clicked() {
-                    *action = Some(IntakeCaseAction::OpenContact(contact.id.clone()));
-                }
-            });
+            ui.label(
+                RichText::new(format!("{} · {}", contact.display_name, contact.role))
+                    .color(theme::muted())
+                    .size(12.0),
+            );
         }
         ui.label(
             RichText::new(format!("Intake path: {}", case.case.flow.name))
@@ -1038,7 +1084,11 @@ fn case_body(
         }
         ui.add_enabled_ui(!state.transitioning && !state.dirty, |ui| {
             ui.horizontal_wrapped(|ui| {
-                for stage in &case.allowed_transitions {
+                for stage in case
+                    .allowed_transitions
+                    .iter()
+                    .filter(|stage| stage.kind != "cancelled")
+                {
                     if ui
                         .button(format!("→ {}", stage.name))
                         .on_hover_text(format!("Move to {}", stage.name))

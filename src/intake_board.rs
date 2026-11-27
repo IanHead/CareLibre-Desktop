@@ -18,6 +18,8 @@ pub struct ApiIntakeFlow {
     pub subject_kind: String,
     pub variant: Option<String>,
     #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
     pub is_active: bool,
     #[serde(default)]
     pub stages: Vec<ApiIntakeStage>,

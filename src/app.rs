@@ -1840,7 +1840,6 @@ impl CareLibreApp {
             IntakeCaseAction::Cancel { reason } => {
                 self.request_intake_cancel(case_id.to_owned(), reason);
             }
-            IntakeCaseAction::OpenContact(contact_id) => self.open_contact(&contact_id),
         }
     }
 
@@ -6208,20 +6207,6 @@ impl CareLibreApp {
                         }
 
                         ui.add_space(4.0);
-
-                        let intake_button = ui.add(
-                            egui::Button::new(
-                                RichText::new("+  Intake")
-                                    .color(theme::on_accent())
-                                    .font(theme::strong_font(13.0)),
-                            )
-                            .fill(theme::accent())
-                            .corner_radius(CornerRadius::same(8))
-                            .min_size(vec2(92.0, 32.0)),
-                        );
-                        if intake_button.clicked() {
-                            self.open_intake();
-                        }
 
                         let close_all_target = if self.visible_column_count() > 1 {
                             1.0
