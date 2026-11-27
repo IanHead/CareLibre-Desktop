@@ -65,6 +65,12 @@ struct Visited {
     zoom: f32,
 }
 
+/// What one direct-relationship row asked for.
+enum DirectRowAction {
+    OpenContact(String),
+    Select(String),
+}
+
 /// What the page wants the shell to do after this frame.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ExplorerAction {
@@ -1689,8 +1695,14 @@ fn panel(
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
                         for edge in edges {
-                            if let Some(next) = direct_row(ui, edge, &selected_key) {
-                                action = Some(next);
+                            match direct_row(ui, edge, &selected_key) {
+                                Some(DirectRowAction::OpenContact(id)) => {
+                                    action = Some(ExplorerAction::OpenContact(id));
+                                }
+                                Some(DirectRowAction::Select(key)) => {
+                                    state.selection = Some(key);
+                                }
+                                None => {}
                             }
                         }
                     });
@@ -1703,7 +1715,7 @@ fn panel(
     action
 }
 
-fn direct_row(ui: &mut Ui, edge: &ApiRelationship, selected_key: &str) -> Option<ExplorerAction> {
+fn direct_row(ui: &mut Ui, edge: &ApiRelationship, selected_key: &str) -> Option<DirectRowAction> {
     let from_key = node_key(edge.from_kind, &edge.from_id);
     let (other_kind, other_id, other_name, my_role, their_role) = if from_key == selected_key {
         (
@@ -1753,9 +1765,36 @@ fn direct_row(ui: &mut Ui, edge: &ApiRelationship, selected_key: &str) -> Option
                                 )
                                 .frame(false),
                             )
+                            .on_hover_text("Open this party's record")
                             .clicked()
                     {
-                        action = Some(ExplorerAction::OpenContact(other_id.to_owned()));
+                        action = Some(DirectRowAction::OpenContact(other_id.to_owned()));
+                    }
+
+                    let other_key = node_key(other_kind, other_id);
+                    let already_selected = other_key == selected_key;
+                    let select = ui.add_enabled(
+                        !already_selected,
+                        egui::Button::new(
+                            RichText::new(if already_selected {
+                                "Selected"
+                            } else {
+                                "Select"
+                            })
+                            .color(if already_selected {
+                                theme::faint()
+                            } else {
+                                theme::text()
+                            })
+                            .size(10.0),
+                        )
+                        .frame(false),
+                    );
+                    if select
+                        .on_hover_text("Show this party's direct relationships in the side pane")
+                        .clicked()
+                    {
+                        action = Some(DirectRowAction::Select(other_key));
                     }
                 });
             });
@@ -2293,6 +2332,20 @@ mod tests {
                 .current_focus()
                 .map(|focus| focus.id.as_str()),
             Some("a")
+        );
+
+        harness.get_by_label("Select").click();
+        harness.run();
+        assert_eq!(
+            harness.state().explorer.selection.as_deref(),
+            Some("contact:b")
+        );
+        assert!(
+            harness
+                .query_all_by_label_contains("Alice")
+                .next()
+                .is_some(),
+            "the side pane now lists Bob's relationships"
         );
     }
 }
