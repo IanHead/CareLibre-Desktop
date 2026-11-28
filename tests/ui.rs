@@ -251,6 +251,35 @@ fn docked_menu_collapses_to_a_rail_and_expands_again() {
 }
 
 #[test]
+fn docked_menu_hides_page_descriptions() {
+    let mut harness = harness(CareLibreApp::new());
+    harness.run();
+
+    // The full-width launch menu reserves a second line for each description.
+    let launch = harness
+        .get_by_role_and_label(egui::Role::Button, "Contacts")
+        .rect();
+    assert!(
+        launch.height() > 40.0,
+        "expected the launch menu to show page descriptions, got {launch:?}"
+    );
+
+    // Opening a page docks the menu beside the work area.
+    harness
+        .get_by_role_and_label(egui::Role::Button, "Rostering")
+        .click();
+    harness.run_steps(40);
+
+    let docked = harness
+        .get_by_role_and_label(egui::Role::Button, "Contacts")
+        .rect();
+    assert!(
+        docked.height() < 40.0 && docked.height() < launch.height(),
+        "the docked menu should hide page descriptions, launch {launch:?} docked {docked:?}"
+    );
+}
+
+#[test]
 fn settings_offers_all_appearance_modes() {
     let mut app = CareLibreApp::new();
     app.set_page(Page::Settings);

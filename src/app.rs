@@ -6822,6 +6822,9 @@ impl CareLibreApp {
         let rail = ((panel_width - SIDEBAR_RAIL_WIDTH)
             / (SIDEBAR_WIDTH - SIDEBAR_RAIL_WIDTH).max(1.0))
         .clamp(0.0, 1.0);
+        // Page descriptions only fit on the full-width launch menu. Once a
+        // column docks the menu, items shrink to their label alone.
+        let detail = centeredness;
         let content_width = if panel_width < SIDEBAR_WIDTH {
             (panel_width - 24.0).max(24.0)
         } else {
@@ -6872,8 +6875,8 @@ impl CareLibreApp {
                     "Intake",
                     "Enquiries, referrals and onboarding across configurable stages.",
                     rail,
-                    rail,
-                    38.0 + 8.0 * rail,
+                    detail,
+                    38.0 + 8.0 * detail,
                 )
                 .clicked()
                 {
@@ -6885,7 +6888,7 @@ impl CareLibreApp {
                     Page::Organisations,
                     Page::Rostering,
                 ] {
-                    if nav_item(&mut menu_ui, page, rail, rail).clicked() {
+                    if nav_item(&mut menu_ui, page, rail, detail).clicked() {
                         self.open_page(page);
                     }
                 }
@@ -6898,7 +6901,7 @@ impl CareLibreApp {
                     Page::Communications,
                     Page::Reports,
                 ] {
-                    if nav_item(&mut menu_ui, page, rail, rail).clicked() {
+                    if nav_item(&mut menu_ui, page, rail, detail).clicked() {
                         self.open_page(page);
                     }
                 }
