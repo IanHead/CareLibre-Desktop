@@ -11,7 +11,10 @@ use eframe::egui::{
     Ui, Vec2, pos2, vec2,
 };
 
-use crate::config::{CONSTELLATION_MAX_STEPS, CONSTELLATION_MIN_STEPS, RelationshipViewPreference};
+use crate::config::{
+    CONSTELLATION_DEFAULT_HEIGHT, CONSTELLATION_MAX_HEIGHT, CONSTELLATION_MAX_STEPS,
+    CONSTELLATION_MIN_HEIGHT, CONSTELLATION_MIN_STEPS, RelationshipViewPreference,
+};
 use crate::contact::{ApiGraphNode, ApiRelationship, PartyKind, relationship_role_label};
 use crate::graph::{
     FocusTrace, GraphFilters, HUB_BADGE_MIN, HUB_DEGREE, RelationshipGraph, WalkPolicy, node_key,
@@ -24,8 +27,8 @@ pub use crate::graph::RelationshipNetwork;
 /// Total nodes drawn. Beyond this the graph becomes unreadable, so we stop and
 /// point the user at the relationship list instead.
 pub const MAX_NODES: usize = 60;
-const CANVAS_HEIGHT: f32 = 300.0;
-const NARROW_CANVAS_HEIGHT: f32 = 230.0;
+/// Height of the drag strip under the canvas.
+const RESIZE_HANDLE_HEIGHT: f32 = 12.0;
 
 /// Interpolated positions for the constellation, so changing the step count or
 /// resizing the record glides nodes to their new rings instead of snapping.
@@ -142,11 +145,20 @@ impl ConstellationSource<'_> {
     }
 }
 
+/// One party the user asked to open from the constellation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PartyTarget {
+    pub kind: PartyKind,
+    pub id: String,
+}
+
 /// What the section wants the record to do after this frame.
 #[derive(Default)]
 pub struct SectionResult {
     pub preference_changed: bool,
-    pub open_contact: Option<String>,
+    /// A party double-clicked in the graph. Contacts open their record and
+    /// organisations focus their editor, decided by the caller.
+    pub open_party: Option<PartyTarget>,
     pub reload: bool,
 }
 
@@ -157,6 +169,7 @@ pub struct ViewKey {
     height: u32,
     revision: u64,
     focus: String,
+    focus_kind: PartyKind,
     skip_hubs: bool,
 }
 
@@ -196,6 +209,7 @@ pub struct ConstellationView {
 pub fn section(
     ui: &mut Ui,
     source: &ConstellationSource<'_>,
+    focus_kind: PartyKind,
     focus_id: &str,
     focus_label: &str,
     preference: &mut RelationshipViewPreference,
@@ -204,6 +218,7 @@ pub fn section(
     selection: &mut Option<String>,
 ) -> SectionResult {
     let mut result = SectionResult::default();
+    let focus_noun = focus_noun(focus_kind);
 
     ui.horizontal(|ui| {
         let arrow = if preference.collapsed { "▶" } else { "▼" };
@@ -220,9 +235,9 @@ pub fn section(
             result.preference_changed = true;
         }
         response.on_hover_text(if preference.collapsed {
-            "Show this contact's relationship network"
+            format!("Show this {focus_noun}'s relationship network")
         } else {
-            "Hide this contact's relationship network"
+            format!("Hide this {focus_noun}'s relationship network")
         });
 
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -280,7 +295,7 @@ pub fn section(
         increase.on_hover_text("Show more steps");
 
         ui.label(
-            RichText::new("away from this contact")
+            RichText::new(format!("away from this {focus_noun}"))
                 .color(theme::faint())
                 .size(10.0),
         );
@@ -298,9 +313,9 @@ pub fn section(
     });
 
     ui.label(
-        RichText::new(
-            "Each ring is one step from this contact. Click a party to inspect it, or double-click a contact to open their record.",
-        )
+        RichText::new(format!(
+            "Each ring is one step from this {focus_noun}. Click a party to inspect it, or double-click a contact or organisation to open it."
+        ))
         .color(theme::faint())
         .size(10.0),
     );
@@ -328,23 +343,23 @@ pub fn section(
     }
 
     let width = ui.available_width().max(180.0);
-    let height = if width < 360.0 {
-        NARROW_CANVAS_HEIGHT
-    } else {
-        CANVAS_HEIGHT
-    };
+    let height = preference
+        .height
+        .clamp(CONSTELLATION_MIN_HEIGHT, CONSTELLATION_MAX_HEIGHT);
     let key = ViewKey {
         steps: preference.steps,
         width: width.round() as u32,
         height: height.round() as u32,
         revision: source.network.revision,
         focus: focus_id.to_owned(),
+        focus_kind,
         skip_hubs: preference.skip_hubs,
     };
     if cache.as_ref().map(|view| &view.key) != Some(&key) {
         let mut view = build_view(
             source.nodes(),
             &source.network.edges,
+            focus_kind,
             focus_id,
             focus_label,
             preference.steps,
@@ -390,19 +405,24 @@ pub fn section(
         ui.add_space(2.0);
     }
 
-    if let Some(contact_id) = draw_canvas(
+    if let Some(target) = draw_canvas(
         ui,
         view,
+        focus_kind,
         focus_id,
         vec2(width, height),
         animation,
         selection,
     ) {
-        result.open_contact = Some(contact_id);
+        result.open_party = Some(target);
+    }
+
+    if resize_handle(ui, preference) {
+        result.preference_changed = true;
     }
 
     ui.add_space(3.0);
-    legend(ui, preference.steps);
+    legend(ui, preference.steps, focus_kind);
     if !view.hubs.is_empty() {
         ui.label(
             RichText::new(
@@ -416,7 +436,92 @@ pub fn section(
     result
 }
 
-fn legend(ui: &mut Ui, steps: u8) {
+/// The lower-case noun for the party a constellation is centred on.
+fn focus_noun(kind: PartyKind) -> &'static str {
+    match kind {
+        PartyKind::Contact => "contact",
+        PartyKind::Organisation => "organisation",
+    }
+}
+
+/// A drag strip under the canvas. Dragging changes the height continuously;
+/// releasing or double-clicking persists it, so a drag writes the account
+/// preference once rather than every frame. Arrow keys resize when focused.
+fn resize_handle(ui: &mut Ui, preference: &mut RelationshipViewPreference) -> bool {
+    let mut persist = false;
+    let (rect, response) = ui.allocate_exact_size(
+        vec2(ui.available_width(), RESIZE_HANDLE_HEIGHT),
+        Sense::click_and_drag(),
+    );
+    let hovered = response.hovered() || response.dragged();
+    if hovered {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
+    }
+
+    if response.clicked() {
+        response.request_focus();
+    }
+
+    if response.dragged() {
+        preference.height = (preference.height + response.drag_delta().y)
+            .clamp(CONSTELLATION_MIN_HEIGHT, CONSTELLATION_MAX_HEIGHT);
+    }
+    if response.drag_stopped() {
+        persist = true;
+    }
+
+    let mut nudge = 0.0;
+    if response.has_focus() {
+        let step = if ui.input(|input| input.modifiers.shift) {
+            40.0
+        } else {
+            12.0
+        };
+        if ui.input(|input| input.key_pressed(egui::Key::ArrowDown)) {
+            nudge -= step;
+        }
+        if ui.input(|input| input.key_pressed(egui::Key::ArrowUp)) {
+            nudge += step;
+        }
+        if ui.input(|input| input.key_pressed(egui::Key::Home)) {
+            preference.height = CONSTELLATION_DEFAULT_HEIGHT;
+            persist = true;
+        }
+    }
+    if nudge != 0.0 {
+        preference.height =
+            (preference.height + nudge).clamp(CONSTELLATION_MIN_HEIGHT, CONSTELLATION_MAX_HEIGHT);
+        persist = true;
+    }
+    if response.double_clicked() {
+        preference.height = CONSTELLATION_DEFAULT_HEIGHT;
+        persist = true;
+    }
+
+    let grip = Rect::from_center_size(rect.center(), vec2(46.0, 3.0));
+    let colour = if hovered {
+        theme::accent()
+    } else {
+        theme::border_strong()
+    };
+    ui.painter()
+        .rect_filled(grip, CornerRadius::same(2), colour);
+
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(
+            egui::Role::Splitter,
+            true,
+            "Resize relationship constellation",
+        )
+    });
+    response.on_hover_text(
+        "Drag to resize the constellation. Double-click or press Home to reset the height.",
+    );
+
+    persist
+}
+
+fn legend(ui: &mut Ui, steps: u8, focus_kind: PartyKind) {
     ui.horizontal(|ui| {
         legend_swatch(ui, true, theme::accent_blue());
         ui.label(RichText::new("Contact").color(theme::muted()).size(9.5));
@@ -429,9 +534,13 @@ fn legend(ui: &mut Ui, steps: u8) {
         );
         ui.add_space(8.0);
         ui.label(
-            RichText::new(format!("Focus contact · rings show up to {steps} steps"))
-                .color(theme::faint())
-                .size(9.5),
+            RichText::new(format!(
+                "Focus {} · rings show up to {steps} step{}",
+                focus_noun(focus_kind),
+                if steps == 1 { "" } else { "s" }
+            ))
+            .color(theme::faint())
+            .size(9.5),
         );
     });
 }
@@ -449,11 +558,12 @@ fn legend_swatch(ui: &mut Ui, circle: bool, colour: Color32) {
 fn draw_canvas(
     ui: &mut Ui,
     view: &ConstellationView,
+    focus_kind: PartyKind,
     focus_id: &str,
     size: Vec2,
     animation: &ConstellationAnimation,
     selection: &mut Option<String>,
-) -> Option<String> {
+) -> Option<PartyTarget> {
     let (rect, response) = ui.allocate_exact_size(size, Sense::click());
     let painter = ui.painter_at(rect);
 
@@ -728,7 +838,8 @@ fn draw_canvas(
 
     if let Some(index) = hovered {
         let node = &view.nodes[index];
-        if node.kind == PartyKind::Contact && node.id != focus_id {
+        let is_focus = node.kind == focus_kind && node.id == focus_id;
+        if !is_focus {
             ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
         }
 
@@ -771,10 +882,11 @@ fn draw_canvas(
             );
             ui.label(
                 RichText::new(format!(
-                    "{} · {} step{} from this contact",
+                    "{} · {} step{} from this {}",
                     node.kind.label(),
                     node.hop,
-                    if node.hop == 1 { "" } else { "s" }
+                    if node.hop == 1 { "" } else { "s" },
+                    focus_noun(focus_kind)
                 ))
                 .color(theme::muted())
                 .size(10.5),
@@ -800,11 +912,16 @@ fn draw_canvas(
                         .size(10.0),
                 );
             }
-            if node.kind == PartyKind::Contact && node.id != focus_id {
+            if node.kind != focus_kind || node.id != focus_id {
                 ui.label(
-                    RichText::new("Click to inspect · double-click to open this record")
-                        .color(theme::accent())
-                        .size(10.0),
+                    RichText::new(match node.kind {
+                        PartyKind::Contact => "Click to inspect · double-click to open this record",
+                        PartyKind::Organisation => {
+                            "Click to inspect · double-click to open this organisation"
+                        }
+                    })
+                    .color(theme::accent())
+                    .size(10.0),
                 );
             }
         });
@@ -851,10 +968,12 @@ fn draw_canvas(
 
     if response.double_clicked()
         && let Some(node) = hovered_node
-        && node.kind == PartyKind::Contact
-        && node.id != focus_id
+        && (node.kind != focus_kind || node.id != focus_id)
     {
-        return Some(node.id.clone());
+        return Some(PartyTarget {
+            kind: node.kind,
+            id: node.id.clone(),
+        });
     }
 
     None
@@ -942,20 +1061,24 @@ fn draw_node_label(
 pub fn build_view(
     catalog: &[ApiGraphNode],
     edges: &[ApiRelationship],
+    focus_kind: PartyKind,
     focus_id: &str,
     focus_label: &str,
     steps: u8,
     size: Vec2,
     skip_hubs: bool,
 ) -> ConstellationView {
-    let focus_key = node_key(PartyKind::Contact, focus_id);
+    let focus_key = node_key(focus_kind, focus_id);
     let mut graph =
         RelationshipGraph::build(catalog, edges, &GraphFilters::default(), Some(&focus_key));
     graph.ensure_label(
-        PartyKind::Contact,
+        focus_kind,
         focus_id,
         if focus_label.trim().is_empty() {
-            "This contact"
+            match focus_kind {
+                PartyKind::Contact => "This contact",
+                PartyKind::Organisation => "This organisation",
+            }
         } else {
             focus_label
         },
@@ -1071,6 +1194,7 @@ pub fn build_view(
             height: size.y.round() as u32,
             revision: 0,
             focus: focus_id.to_owned(),
+            focus_kind,
             skip_hubs,
         },
         nodes,
@@ -1163,12 +1287,30 @@ mod tests {
             edge("3", "c", "d"),
         ];
 
-        let one = build_view(&catalog, &edges, "a", "Alice", 1, vec2(400.0, 300.0), false);
+        let one = build_view(
+            &catalog,
+            &edges,
+            PartyKind::Contact,
+            "a",
+            "Alice",
+            1,
+            vec2(400.0, 300.0),
+            false,
+        );
         assert_eq!(one.nodes.len(), 2);
         assert!(one.nodes.iter().any(|node| node.id == "b"));
         assert!(!one.nodes.iter().any(|node| node.id == "c"));
 
-        let two = build_view(&catalog, &edges, "a", "Alice", 2, vec2(400.0, 300.0), false);
+        let two = build_view(
+            &catalog,
+            &edges,
+            PartyKind::Contact,
+            "a",
+            "Alice",
+            2,
+            vec2(400.0, 300.0),
+            false,
+        );
         assert_eq!(two.nodes.len(), 3);
         assert!(two.nodes.iter().any(|node| node.id == "c"));
     }
@@ -1185,6 +1327,7 @@ mod tests {
         let view = build_view(
             &catalog,
             &[ended],
+            PartyKind::Contact,
             "a",
             "Alice",
             4,
@@ -1207,7 +1350,16 @@ mod tests {
             edge("3", "a", "b"),
         ];
 
-        let view = build_view(&catalog, &edges, "a", "Alice", 2, vec2(400.0, 300.0), false);
+        let view = build_view(
+            &catalog,
+            &edges,
+            PartyKind::Contact,
+            "a",
+            "Alice",
+            2,
+            vec2(400.0, 300.0),
+            false,
+        );
         assert_eq!(view.nodes.len(), 2);
     }
 
@@ -1225,8 +1377,26 @@ mod tests {
             edge("3", "a", "d"),
         ];
 
-        let first = build_view(&catalog, &edges, "a", "Alice", 2, vec2(400.0, 300.0), false);
-        let second = build_view(&catalog, &edges, "a", "Alice", 2, vec2(400.0, 300.0), false);
+        let first = build_view(
+            &catalog,
+            &edges,
+            PartyKind::Contact,
+            "a",
+            "Alice",
+            2,
+            vec2(400.0, 300.0),
+            false,
+        );
+        let second = build_view(
+            &catalog,
+            &edges,
+            PartyKind::Contact,
+            "a",
+            "Alice",
+            2,
+            vec2(400.0, 300.0),
+            false,
+        );
         assert_eq!(first.nodes.len(), second.nodes.len());
         for (left, right) in first.nodes.iter().zip(&second.nodes) {
             assert_eq!(left.pos, right.pos);
@@ -1247,6 +1417,7 @@ mod tests {
         let view = build_view(
             &catalog,
             &[org_edge],
+            PartyKind::Contact,
             "a",
             "Alice",
             1,
@@ -1272,7 +1443,16 @@ mod tests {
         let ctx = egui::Context::default();
         let size = vec2(400.0, 300.0);
 
-        let one = build_view(&catalog, &edges, "a", "Alice", 1, size, false);
+        let one = build_view(
+            &catalog,
+            &edges,
+            PartyKind::Contact,
+            "a",
+            "Alice",
+            1,
+            size,
+            false,
+        );
         let mut animation = ConstellationAnimation::default();
         animation.update(&one, &ctx, 0.0);
         for step in 1..=30 {
@@ -1283,7 +1463,16 @@ mod tests {
             .expect("the focus is drawn");
         assert!(focus.alpha > 0.95);
 
-        let two = build_view(&catalog, &edges, "a", "Alice", 2, size, false);
+        let two = build_view(
+            &catalog,
+            &edges,
+            PartyKind::Contact,
+            "a",
+            "Alice",
+            2,
+            size,
+            false,
+        );
         animation.update(&two, &ctx, 0.5);
         let carol = animation
             .get(PartyKind::Contact, "c")
@@ -1334,7 +1523,16 @@ mod tests {
         }
 
         let size = vec2(400.0, 300.0);
-        let hidden = build_view(&catalog, &edges, "a", "Alice", 2, size, true);
+        let hidden = build_view(
+            &catalog,
+            &edges,
+            PartyKind::Contact,
+            "a",
+            "Alice",
+            2,
+            size,
+            true,
+        );
         assert!(hidden.nodes.iter().any(|node| node.id == "org"));
         assert!(!hidden.nodes.iter().any(|node| node.id == "n0"));
         assert_eq!(
@@ -1342,9 +1540,54 @@ mod tests {
             Some(&13)
         );
 
-        let shown = build_view(&catalog, &edges, "a", "Alice", 2, size, false);
+        let shown = build_view(
+            &catalog,
+            &edges,
+            PartyKind::Contact,
+            "a",
+            "Alice",
+            2,
+            size,
+            false,
+        );
         assert!(shown.nodes.iter().any(|node| node.id == "n0"));
         assert!(shown.hubs.is_empty());
+    }
+
+    #[test]
+    fn an_organisation_can_be_the_focus_of_the_walk() {
+        let catalog = vec![
+            node(PartyKind::Organisation, "org", "Care Co"),
+            node(PartyKind::Contact, "a", "Alice"),
+            node(PartyKind::Contact, "b", "Bob"),
+        ];
+        let mut to_alice = edge("1", "org", "a");
+        to_alice.from_kind = PartyKind::Organisation;
+        to_alice.from_name = "Care Co".to_owned();
+        let mut to_bob = edge("2", "org", "b");
+        to_bob.from_kind = PartyKind::Organisation;
+        to_bob.from_name = "Care Co".to_owned();
+
+        let view = build_view(
+            &catalog,
+            &[to_alice, to_bob],
+            PartyKind::Organisation,
+            "org",
+            "Care Co",
+            1,
+            vec2(400.0, 300.0),
+            false,
+        );
+
+        let focus = view
+            .nodes
+            .iter()
+            .find(|node| node.hop == 0)
+            .expect("the organisation is the centre");
+        assert_eq!(focus.kind, PartyKind::Organisation);
+        assert_eq!(focus.label, "Care Co");
+        assert_eq!(view.key.focus_kind, PartyKind::Organisation);
+        assert!(view.nodes.iter().any(|node| node.id == "a"));
     }
 
     #[test]
@@ -1392,6 +1635,7 @@ mod tests {
                     section(
                         ui,
                         &source,
+                        PartyKind::Contact,
                         "a",
                         "Alice",
                         &mut state.preference,
@@ -1463,6 +1707,7 @@ mod tests {
         let view = build_view(
             &catalog,
             &edges,
+            PartyKind::Contact,
             "focus",
             "Focus",
             1,

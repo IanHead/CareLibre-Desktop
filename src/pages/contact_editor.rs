@@ -129,6 +129,8 @@ pub enum ContactEditorAction {
     PopOut,
     Dock,
     OpenContact(String),
+    /// Focus an organisation editor for a party in the constellation.
+    OpenOrganisation(String),
     CreateRelationship {
         from_role: String,
         to_kind: PartyKind,
@@ -2540,6 +2542,7 @@ fn relationships_card(
         let constellation = constellation::section(
             ui,
             source,
+            PartyKind::Contact,
             &state.contact_id,
             &focus_label,
             &mut state.constellation,
@@ -2552,8 +2555,11 @@ fn relationships_card(
                 state.constellation,
             ));
         }
-        if let Some(contact_id) = constellation.open_contact {
-            action = Some(ContactEditorAction::OpenContact(contact_id));
+        if let Some(target) = constellation.open_party {
+            action = Some(match target.kind {
+                PartyKind::Contact => ContactEditorAction::OpenContact(target.id),
+                PartyKind::Organisation => ContactEditorAction::OpenOrganisation(target.id),
+            });
         }
         if constellation.reload {
             action = Some(ContactEditorAction::ReloadConstellation);

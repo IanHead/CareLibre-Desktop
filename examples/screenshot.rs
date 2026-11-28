@@ -257,6 +257,24 @@ fn main() {
                     .click();
                 harness.run();
             }
+            if org_edit && constellation {
+                let deadline = Instant::now() + Duration::from_secs(10);
+                while !harness.state().relationship_graph_ready() && Instant::now() < deadline {
+                    harness.run();
+                    std::thread::sleep(Duration::from_millis(25));
+                }
+                // Expand in memory only, like the contact record, so a
+                // screenshot run does not change the saved preference.
+                harness.state_mut().preview_constellation(false, 2);
+                harness.run();
+                harness
+                    .get_by_label_contains("records within")
+                    .scroll_to_me();
+                for _ in 0..30 {
+                    harness.run();
+                    std::thread::sleep(Duration::from_millis(16));
+                }
+            }
         }
 
         if page == Page::Intake {
